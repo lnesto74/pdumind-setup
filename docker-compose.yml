@@ -1,0 +1,25 @@
+version: "3.9"
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "9000:5000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DATA_DIR=/app/data
+    restart: always
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+
+    depends_on:
+      - backend
+volumes:
+  pdu_data:

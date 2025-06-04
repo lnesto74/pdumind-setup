@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.chat-bubble {
+  opacity: 0;
+  transform: translateY(20px) scale(0.95);
+  animation: cardEntry 0.5s cubic-bezier(0.68, -0.55, 0.27, 1.55) forwards;
+}
+
+.chat-bubble::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 200%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(0, 123, 255, 0.05),
+    rgba(0, 255, 136, 0.05),
+    transparent
+  );
+  animation: shimmer 2s ease-in-out infinite;
+}
+
+@keyframes cardEntry {
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%) skewX(-15deg);
+  }
+  100% {
+    transform: translateX(50%) skewX(-15deg);
+  }
+}
+
+body {
+  font-family: system-ui, sans-serif;
+  background: #0f172a;
+  min-height: 100vh;
+}
