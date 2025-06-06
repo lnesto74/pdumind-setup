@@ -1,24 +1,553 @@
-.dashboard {
-  padding: 2rem;
-  max-width: 1400px;
-  margin: 0 auto;
-  background: #1e1e1e;
-  color: #e0e0e0;
+/* Base styles */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --color-bg: #0f172a;
+  --color-text: #e0e0e0;
+  --color-primary: #00CFFF;
+  --color-success: #10B981;
+  --color-warning: #F59E0B;
+  --color-error: #EF4444;
+  --color-off: #374151;
+  --font-mono: 'JetBrains Mono', monospace;
+  --font-size-xs: 0.65rem;
+  --font-size-sm: 0.75rem;
+  --font-size-base: 0.875rem;
+  --font-size-lg: 1rem;
+  --font-size-xl: 1.25rem;
 }
 
-.device-info {
+.dashboard {
+  padding: 0;
+  max-width: 100%;
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  display: grid;
+  grid-template-columns: 240px 1fr;
+}
+
+/* Glass card utility */
+.glass-card {
   background: rgba(255, 255, 255, 0.05);
   backdrop-filter: blur(10px);
-  padding: 1.5rem;
   border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 1.5rem;
+}
+
+/* Sidebar styles */
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  padding: 2rem;
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.sidebar-logo {
   margin-bottom: 2rem;
+  padding: 1rem;
+}
+
+.sidebar-logo img {
+  width: 100%;
+  height: auto;
+  max-width: 180px;
+  display: block;
+  margin: 0 auto;
+}
+
+.sidebar-title {
+  font-size: 1.2rem;
+  font-weight: 500;
+  margin-bottom: 1.5rem;
+  color: var(--color-primary);
+}
+
+.sidebar-list {
+  list-style: none;
+  padding: 0;
+}
+
+.sidebar-item {
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.5rem;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.sidebar-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.sidebar-item.active {
+  background: rgba(0, 207, 255, 0.15);
+  border-left: 3px solid var(--color-primary);
+}
+
+/* System header styles */
+.system-header {
+  margin-bottom: 2rem;
+  padding: 1rem 2rem;
+}
+
+/* Remove old logo styles */
+
+.system-title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  margin-bottom: 1.5rem;
+  color: var(--color-primary);
+}
+
+.system-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+}
+
+.metric-badge {
+  padding: 1rem;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-.device-info h1 {
-  font-size: 2rem;
+.metric-badge-label {
+  font-size: 0.875rem;
+  color: rgba(224, 224, 224, 0.8);
+  margin-bottom: 0.5rem;
+}
+
+.metric-badge-value {
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.metric-badge-unit {
+  font-size: 1rem;
+  margin-left: 0.25rem;
+  opacity: 0.8;
+}
+
+/* Phase status indicators */
+.phase-status {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 12px;
+}
+
+.phase-indicator {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  position: relative;
+}
+
+.phase-indicator::after {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  right: -1px;
+  bottom: -1px;
+  border-radius: 50%;
+  filter: blur(1px);
+  opacity: 0.8;
+}
+
+.phase-indicator.status-green {
+  background: var(--color-success);
+  box-shadow: 0 0 4px var(--color-success);
+}
+
+.phase-indicator.status-green::after {
+  background: var(--color-success);
+}
+
+.phase-indicator.status-yellow {
+  background: var(--color-warning);
+  box-shadow: 0 0 4px var(--color-warning);
+}
+
+.phase-indicator.status-yellow::after {
+  background: var(--color-warning);
+}
+
+.phase-indicator.status-red {
+  background: var(--color-error);
+  box-shadow: 0 0 4px var(--color-error);
+}
+
+.phase-indicator.status-red::after {
+  background: var(--color-error);
+}
+
+.phase-status-container {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.phase-status-label {
+  font-size: 0.875rem;
+  color: var(--color-text);
+  opacity: 0.8;
+}
+
+/* Outlet grid styles */
+.outlet-grid-section {
+  margin-top: 2rem;
+}
+
+.outlet-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 1rem;
+}
+
+.outlet-cell {
+  aspect-ratio: 1;
+  padding: 0.75rem;
+  border-radius: 8px;
+  background: linear-gradient(rgba(15, 23, 42, 0.92), rgba(15, 23, 42, 0.95)), url('/socket-bgnd.png') center/cover no-repeat;
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  height: 130px;
+  transition: all 0.3s ease;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  position: relative;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.outlet-cell .metric {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.45rem;
+  background: rgba(15, 23, 42, 0.6);
+  padding: 0.15rem 0.3rem;
+  border-radius: 4px;
+  margin: 0 -0.3rem;
+}
+
+.outlet-alert {
+  position: absolute;
+  top: -1.5rem;
+  left: 0;
+  background: var(--color-error);
+  color: white;
+  font-size: var(--font-size-xs);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-weight: 500;
+  font-family: var(--font-mono);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  z-index: 1;
+  white-space: nowrap;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.25rem;
+}
+
+.outlet-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.35rem;
+}
+
+.outlet-header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+/* LED indicator styles */
+.outlet-led {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  position: relative;
+}
+
+.outlet-led::after {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  right: -1px;
+  bottom: -1px;
+  border-radius: 50%;
+  filter: blur(1px);
+  opacity: 0.8;
+}
+
+.led-on {
+  background: #10B981;
+  box-shadow: 0 0 4px #10B981;
+}
+
+.led-on::after {
+  background: #10B981;
+}
+
+.led-off {
+  background: #EF4444;
+  box-shadow: 0 0 4px #EF4444;
+}
+
+.led-off::after {
+  background: #EF4444;
+}
+
+.outlet-number {
+  font-size: var(--font-size-xl);
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+.outlet-metrics {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+}
+
+.outlet-metric {
+  display: flex;
+  justify-content: space-between;
+  white-space: nowrap;
+  font-family: monospace;
+}
+
+.metric-label {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.metric-value {
+  font-size: var(--font-size-sm);
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+/* Status colors and indicators */
+.status-green {
+  border-color: var(--color-success);
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.status-yellow {
+  border-color: var(--color-warning);
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.status-red {
+  border-color: var(--color-error);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.status-alert {
+  border-color: var(--color-error);
+}
+
+.status-off {
+  border-color: var(--color-off);
+  opacity: 0.5;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 0.5rem;
+}
+
+/* Flashing border animation for high load */
+@keyframes flash-border {
+  0%, 100% { border-color: var(--color-error); }
+  50% { border-color: transparent; }
+}
+
+.flash-border {
+  animation: flash-border 1s ease-in-out infinite;
+}
+
+/* Status legend */
+.status-legend {
+  display: flex;
+  gap: 1.5rem;
+  font-size: 0.875rem;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+}
+
+/* Dashboard main content */
+.dashboard-main {
+  flex: 1;
+  padding: 0 2rem 2rem;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1.5rem;
+  margin-top: 2rem;
+}
+
+/* Section title style */
+.telemetry-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   margin-bottom: 1rem;
-  color: #007bff;
+}
+
+.section-title {
+  font-size: var(--font-size-xl);
+  font-weight: 600;
+  font-family: var(--font-mono);
+  letter-spacing: 0.05em;
+  color: var(--color-primary);
+  margin-bottom: 1.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* Environmental section */
+.environmental-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem;
+}
+
+.env-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.env-label {
+  font-size: 0.875rem;
+  color: rgba(224, 224, 224, 0.6);
+}
+
+.env-value {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+/* Telemetry charts */
+.telemetry-charts {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.chart-container {
+  flex: 1;
+  min-height: 200px;
+}
+
+.chart-legend {
+  display: flex;
+  justify-content: center;
+  gap: 2rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.legend-color {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+}
+
+/* Analysis section */
+.analysis-list {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.analysis-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  font-size: 0.875rem;
+  line-height: 1.4;
+  font-family: var(--font-mono);
+}
+
+.analysis-icon {
+  font-size: 1.25rem;
+  font-family: var(--font-mono);
+}
+
+.telemetry-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  font-family: var(--font-mono);
+}
+
+/* Make OutletGrid span full width */
+.outlet-grid-section {
+  grid-column: 1 / -1;
+}
+
+/* Responsive adjustments */
+@media (max-width: 1200px) {
+  .dashboard {
+    grid-template-columns: 1fr;
+  }
+  
+  .sidebar {
+    position: static;
+    height: auto;
+    margin-bottom: 2rem;
+  }
+  
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .device-details {
@@ -165,4 +694,18 @@
   min-height: 200px;
   font-size: 1.2rem;
   color: #007bff;
+}
+
+/* Load trends styles */
+.load-trends {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-family: var(--font-mono);
+}
+
+.load-trends .peak-demand {
+  font-size: 0.8rem;
+  color: rgba(224,224,224,0.8);
+  text-align: right;
 }

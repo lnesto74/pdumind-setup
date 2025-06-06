@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { usePDUContext } from '../context/PDUContext';
 
 export default function Form({ onSubmit }) {
-  const { setIp, setPort } = usePDUContext();
+  const { addPdu } = usePDUContext();
   const [ipInput, setIpInput] = useState('');
   const [portInput, setPortInput] = useState('161');
   const [error, setError] = useState(null);
@@ -13,9 +13,8 @@ export default function Form({ onSubmit }) {
       setError('IP address required');
       return;
     }
-    setIp(ipInput);
-    setPort(portInput);
-    onSubmit();
+    addPdu(ipInput, portInput);
+    onSubmit?.();
   };
 
   return (

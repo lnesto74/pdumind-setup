@@ -1,5 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { usePDUContext } from '../context/PDUContext';
+import Sidebar from './Sidebar';
+import SystemHeader from './SystemHeader';
+import OutletGrid from './OutletGrid';
+import TelemetryCharts from './TelemetryCharts';
+import LoadTrends from './LoadTrends';
+import clsx from 'clsx';
 import '../styles/Dashboard.css';
 
 const MetricCard = ({ title, value, unit = '' }) => (
@@ -56,11 +62,15 @@ const EnvironmentalMetrics = ({ data }) => {
       <div className="metrics-grid">
         {sensors.map(({ key, label, unit }) => {
           const sensor = data?.results?.find(r => r.name === key);
+          let value = sensor?.value || '--';
+          if (value !== '--' && (key.startsWith('Temperature') || key.startsWith('Humidity'))) {
+            value = (parseFloat(value.replace(/"/g, '')) / 10).toFixed(1);
+          }
           return (
             <MetricCard
               key={key}
               title={label}
-              value={sensor?.value || '--'}
+              value={value}
               unit={unit}
             />
           );
@@ -101,7 +111,8 @@ const OutputGrid = ({ data }) => {
 
 const Dashboard = () => {
   const [data, setData] = useState(null);
-  const { ip } = usePDUContext();
+  const [activeCluster, setActiveCluster] = useState('Cluster A');
+  const { activePdu } = usePDUContext();
 
   useEffect(() => {
     const fetchData = async () => {
@@ -114,53 +125,125 @@ const Dashboard = () => {
       }
     };
 
-    if (ip) {
+    if (activePdu?.ip) {
       fetchData();
       const interval = setInterval(fetchData, 5000);
       return () => clearInterval(interval);
     }
-  }, [ip]);
-
-  if (!data) return <div className="loading">Loading...</div>;
-
-  const deviceInfo = {
-    name: data.results?.find(r => r.name === 'DeviceName')?.value,
-    type: data.results?.find(r => r.name === 'DeviceType')?.value,
-    mac: data.results?.find(r => r.name === 'DeviceMac')?.value
-  };
+  }, [activePdu]);
 
   return (
     <div className="dashboard">
-      <div className="device-info">
-        <h1>{deviceInfo.name || 'PDU Device'}</h1>
-        <div className="device-details">
-          <span>Type: {deviceInfo.type || '--'}</span>
-          <span>MAC: {deviceInfo.mac || '--'}</span>
+      <Sidebar />
+      
+      {!activePdu ? (
+        <main className="dashboard-main">
+          <div className="glass-card flex items-center justify-center p-8">
+            <p className="text-lg text-gray-400">Please add a PDU using the sidebar</p>
+          </div>
+        </main>
+      ) : !data ? (
+        <main className="dashboard-main">
+          <div className="glass-card flex items-center justify-center p-8">
+            <p className="text-lg text-gray-400">Loading PDU data...</p>
+          </div>
+        </main>
+      ) : (
+
+        <main className="dashboard-main">
+        <SystemHeader data={data} />
+        
+        <div className="dashboard-grid">
+          <OutletGrid data={data} />
+          
+          <section className="glass-card telemetry-section">
+            <h2 className="section-title">TELEMETRY</h2>
+            <TelemetryCharts data={data} />
+          </section>
+          
+          <section className="glass-card trends-section">
+            <h2 className="section-title">LOAD TRENDS</h2>
+            <LoadTrends />
+          </section>
+          
+          <section className="glass-card environmental-section">
+            <h2 className="section-title">ENVIRONMENTAL</h2>
+            <div className="environmental-grid">
+              <div className="env-metric">
+                <span className="env-label">Temperature 1</span>
+                <span className={clsx(
+                  'env-value',
+                  (parseFloat(data.results?.find(r => r.name === 'Temperature1')?.value?.replace(/"/g, '') || 0) / 10) > 40 && 'status-red',
+                  (parseFloat(data.results?.find(r => r.name === 'Temperature1')?.value?.replace(/"/g, '') || 0) / 10) > 30 && 'status-yellow'
+                )}>
+                  {((parseFloat(data.results?.find(r => r.name === 'Temperature1')?.value?.replace(/"/g, '') || 0) / 10).toFixed(1))}°C
+                </span>
+              </div>
+              <div className="env-metric">
+                <span className="env-label">Temperature 2</span>
+                <span className={clsx(
+                  'env-value',
+                  (parseFloat(data.results?.find(r => r.name === 'Temperature2')?.value?.replace(/"/g, '') || 0) / 10) > 40 && 'status-red',
+                  (parseFloat(data.results?.find(r => r.name === 'Temperature2')?.value?.replace(/"/g, '') || 0) / 10) > 30 && 'status-yellow'
+                )}>
+                  {((parseFloat(data.results?.find(r => r.name === 'Temperature2')?.value?.replace(/"/g, '') || 0) / 10).toFixed(1))}°C
+                </span>
+              </div>
+              <div className="env-metric">
+                <span className="env-label">Humidity</span>
+                <span className={clsx(
+                  'env-value',
+                  (parseFloat(data.results?.find(r => r.name === 'Humidity')?.value?.replace(/"/g, '') || 0) / 10) > 80 && 'status-red',
+                  (parseFloat(data.results?.find(r => r.name === 'Humidity')?.value?.replace(/"/g, '') || 0) / 10) > 60 && 'status-yellow'
+                )}>
+                  {((parseFloat(data.results?.find(r => r.name === 'Humidity')?.value?.replace(/"/g, '') || 0) / 10).toFixed(1))}%
+                </span>
+              </div>
+              <div className="env-metric">
+                <span className="env-label">Door</span>
+                <span className={clsx(
+                  'env-value',
+                  data.results?.find(r => r.name === 'DoorStatus')?.value === 'open' && 'status-red'
+                )}>
+                  {data.results?.find(r => r.name === 'DoorStatus')?.value || 'closed'}
+                </span>
+              </div>
+            </div>
+          </section>
+          
+          <section className="glass-card analysis-section">
+            <h2 className="section-title">ANALYSIS</h2>
+            <ul className="analysis-list">
+              <li className="analysis-item">
+                <span className="analysis-icon">🔧</span>
+                Optimize power distribution by disabling idle outputs
+              </li>
+              <li className="analysis-item">
+                <span className="analysis-icon">🚨</span>
+                Check cooling system – abnormal temp values detected
+              </li>
+              <li className="analysis-item">
+                <span className="analysis-icon">🔍</span>
+                Unusual idle consumption detected in output 2
+              </li>
+            </ul>
+          </section>
         </div>
-      </div>
 
-      <div className="phases">
-        <PhaseMetrics data={data} phase={1} />
-        <PhaseMetrics data={data} phase={2} />
-        <PhaseMetrics data={data} phase={3} />
-      </div>
-
-      <EnvironmentalMetrics data={data} />
-      <OutputGrid data={data} />
-
-      {data.errors?.length > 0 && (
-        <div className="errors">
-          <h3>Errors</h3>
-          <ul>
-            {data.errors.map((error, i) => (
-              <li key={i}>{error.name}: {error.error}</li>
-            ))}
-          </ul>
-        </div>
+        {data.errors?.length > 0 && (
+          <div className="errors glass-card">
+            <h3>Errors</h3>
+            <ul>
+              {data.errors.map((error, i) => (
+                <li key={i}>{error.name}: {error.error}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        </main>
       )}
     </div>
   );
 };
 
 export default Dashboard;
-

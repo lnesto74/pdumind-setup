@@ -3,14 +3,36 @@ import React, { createContext, useContext, useState } from 'react';
 const PDUContext = createContext();
 
 export function PDUProvider({ children }) {
-  const [ip, setIp] = useState('');
-  const [port, setPort] = useState('');
+  // Load saved list from localStorage
+  const [pduList, setPduList] = useState(() => {
+    const saved = localStorage.getItem('pduList');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  // Index of active PDU in list
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  const addPdu = (ip, port) => {
+    if (!ip) return;
+    setPduList(prev => {
+      const newList = [...prev, { ip, port }];
+      localStorage.setItem('pduList', JSON.stringify(newList));
+      return newList;
+    });
+    setActiveIndex(pduList.length); // select the newly added PDU
+  };
+
+  const setActivePdu = (index) => {
+    setActiveIndex(index);
+  };
+
+  const activePdu = pduList[activeIndex] || null;
 
   const value = {
-    ip,
-    setIp,
-    port,
-    setPort
+    pduList,
+    activePdu,
+    addPdu,
+    setActivePdu
   };
 
   return (
