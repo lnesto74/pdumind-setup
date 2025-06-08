@@ -11,6 +11,10 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - DATA_DIR=/app/data
+      - MAX_SNMP_THREADS=12
+      - SNMP_BATCH_SIZE=2
+      - OUTLET_BASE_TIMEOUT=3
+      - OUTLET_MAX_RETRIES=2
     restart: always
   frontend:
     build:
