@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     snmp \
     iputils-ping \
     netcat-openbsd \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -22,7 +23,7 @@ RUN useradd -m -u 1000 appuser && \
     chown -R appuser:appuser /app
 
 COPY --chown=appuser:appuser backend/requirements.txt .
-RUN pip install -r requirements.txt
+RUN pip install -r requirements.txt && pip install requests==2.31.0
 
 COPY --chown=appuser:appuser backend .
 

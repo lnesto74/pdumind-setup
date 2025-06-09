@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import clsx from 'clsx';
+import api from '../api';
 
 const OutletCell = ({ number, data }) => {
   const status = data?.results?.find(r => r.name === `Output${number}Status`)?.value?.replace(/"/g, '');
@@ -12,6 +13,28 @@ const OutletCell = ({ number, data }) => {
   const statusClass = !isOn ? 'status-off' :
                      isHighLoad ? 'status-alert' :
                      current > 0 ? 'status-green' : 'status-idle';
+
+  // Local UI state for toggle action
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+  const toggleLabel = isOn ? 'Turn OFF' : 'Turn ON';
+  const handleToggle = async () => {
+    const newState = isOn ? 'off' : 'on';
+    try {
+      setLoading(true);
+      const response = await api.put(`/api/outlet/${number}/status`, { state: newState });
+      console.log('Toggle response:', response.data);
+      if (response.data.error) {
+        throw new Error(response.data.error);
+      }
+    } catch (e) {
+      console.error(e);
+      setErr(e.message || 'Failed to toggle outlet');
+      setTimeout(() => setErr(null), 3000);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div className={clsx('outlet-cell', statusClass, isHighLoad && 'flash-border')}>
@@ -40,6 +63,14 @@ const OutletCell = ({ number, data }) => {
           High load
         </div>
       )}
+      <button
+        className="outlet-toggle-btn"
+        disabled={loading}
+        onClick={handleToggle}
+      >
+        {loading ? '...' : toggleLabel}
+      </button>
+      {err && (<div className="outlet-error">{err}</div>)}
     </div>
   );
 };

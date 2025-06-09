@@ -20,8 +20,13 @@ OUTLET_BATCH_SIZE = 2  # Small batches to avoid timeouts
 DEFAULT_COMMUNITY = os.getenv('SNMP_COMMUNITY', 'private')
 
 # Timeouts and retries for outlet polling
-OUTLET_BASE_TIMEOUT = 3  # 3s timeout with retries for reliability
-OUTLET_MAX_RETRIES = 2   # Two retries to handle occasional timeouts
+OUTLET_BASE_TIMEOUT = 5
+OUTLET_BASE_RETRIES = 3
+
+GENERIC_TIMEOUT = 5
+GENERIC_RETRIES = 3
+
+BATCH_SIZE = 1 # Two retries to handle occasional timeouts
 
 # Master outlet OIDs for v1.0.1 PDU structure
 # Each OID needs .{outlet_number}.0 appended for the actual SNMP query
@@ -104,6 +109,7 @@ CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 DEFAULT_COMMUNITY = os.getenv("SNMP_COMMUNITY", "private")
 
 app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}})
 # CORS configuration
 CORS(app, resources={r"/*": {"origins": "*", "methods": ["GET", "POST", "OPTIONS"]}})
 
@@ -242,24 +248,23 @@ def test_parse_mib():
 
 
 # Optimised batch SNMP fetcher
-def snmp_get_batch(ip: str, port: int, oids: list[str]) -> dict[str, str | None]:
+def snmp_get_batch(ip: str, port: int, oids: list[str], retries: int | None = None, timeout: int | None = None) -> dict[str, str | None]:
     """Fetch a list of OIDs in a *single* snmpget process call to drastically
     reduce overhead. Returns a mapping of oid -> value (None on error).
-
-    Notes: we rely on the positional order of returned lines to match the order
-    of OIDs supplied when using `-Oqv` which omits the OID from the output. If
-    output line count mismatches, remaining OIDs are treated as failures.
+    Optionally override timeout (seconds) and retries for this batch.
     """
     import subprocess, shlex
 
-    # Build command once; use SNMP v2c for get-bulk like behaviour on multiple
-    # OIDs but still simple snmpget for device compatibility.
+    # Fallback to sensible defaults if not specified
+    retry_count = retries if retries is not None else 3
+    base_timeout = timeout if timeout is not None else 2
+
     cmd = [
         "snmpget",
         "-v2c",
         "-c", DEFAULT_COMMUNITY,
-        "-t", "2",    # shorter timeout
-        "-r", "3",    # more retries
+        "-t", str(base_timeout),
+        "-r", str(retry_count),
         "-Oqv",        # numerics for enums
         "-Oe",         # 
         f"{ip}:{port}",
@@ -267,7 +272,7 @@ def snmp_get_batch(ip: str, port: int, oids: list[str]) -> dict[str, str | None]
 
     start_time = time.time()
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=7)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=base_timeout * (retry_count + 1))
         elapsed = time.time() - start_time
         print(f"[snmp_get_batch] {len(oids)} OIDs took {elapsed:.2f}s (rc={result.returncode})")
         if result.returncode != 0:
@@ -282,31 +287,35 @@ def snmp_get_batch(ip: str, port: int, oids: list[str]) -> dict[str, str | None]
         for oid in oids[len(values):]:
             mapping[oid] = None
         return mapping
-    except subprocess.TimeoutExpired:
-        print("[snmp_get_batch] Timeout after 7 s")
+    except Exception as e:
+        print(f"[snmp_get_batch] Error: {str(e)}")
         return {oid: None for oid in oids}
 
 
-def snmp_get_outlets(ip: str, port: int, base_oid: str, timeout: int = 10) -> dict[str, str | None]:
+def snmp_get_outlets(ip: str, port: int, base_oid: str, timeout: int = 3) -> Dict[str, str]:
+    """Run snmpget for all outlet OIDs of a given type.
+    Returns a mapping of OID to value.
+    """
     import subprocess
     try:
         # Build OIDs for all 24 outlets
-        oids = [f"{base_oid}.{i}.0" for i in range(1, OUTPUT_COUNT + 1)]
+        oids = [f"{base_oid}.{i}.0" for i in range(1, 25)]
         
         cmd = [
             "snmpget",
             "-v2c",
-            "-c", DEFAULT_COMMUNITY,
+            "-c", "private",
             "-t", str(timeout),
             "-r", "2",
             "-On", "-Ov", "-Oe",
             f"{ip}:{port}"
         ] + oids
-        
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 0.5)
-        if result.returncode == 0:
-            mapping = {}
-            lines = result.stdout.strip().splitlines()
+
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode == 0:
+            # Parse output lines and map OIDs to values
+            mapping: Dict[str, str] = {}
+            lines = proc.stdout.strip().split('\n')
             for oid_full, line in zip(oids, lines):
                 try:
                     _, value = line.split(" = ", 1)
@@ -314,16 +323,78 @@ def snmp_get_outlets(ip: str, port: int, base_oid: str, timeout: int = 10) -> di
                         value = value[8:].strip('"')
                     if "No Such Object" not in value and "Error:" not in value and "Timeout:" not in value:
                         mapping[oid_full] = value
-                    else:
-                        mapping[oid_full] = None
-                except (ValueError, IndexError):
+                except Exception:
                     mapping[oid_full] = None
             return mapping
         return {oid: None for oid in oids}
-    except (subprocess.TimeoutExpired, Exception) as e:
+    except Exception as e:
         print(f"[snmp_get_outlets] Error: {str(e)}")
         return {oid: None for oid in oids}
 
+
+def poll_outlet_status_priority(ip: str, outlet: int) -> None:
+    """Poll a specific outlet's status with high priority after control."""
+    try:
+        # Build OIDs for this outlet
+        oids = [
+            f".1.3.6.1.4.1.23273.3.1.1.6.{outlet}.0",  # status
+            f".1.3.6.1.4.1.23273.3.1.1.7.{outlet}.0",  # current
+            f".1.3.6.1.4.1.23273.3.1.1.10.{outlet}.0"  # energy
+        ]
+        
+        # Use higher timeout and retries for priority polling
+        cmd = [
+            "snmpget", "-v2c", "-c", "private",
+            "-t", "3",  # 3 second timeout
+            "-r", "3",  # 3 retries
+            "-Oqv", "-Oe",
+            f"{ip}:1663"
+        ] + oids
+        
+        print(f"[DEBUG] Priority polling outlet {outlet}")
+        subprocess.run(cmd, capture_output=True, text=True, timeout=12)  # 3s * (3+1) retries
+        print(f"[DEBUG] Priority polling completed for outlet {outlet}")
+    except Exception as e:
+        print(f"[DEBUG] Priority polling failed for outlet {outlet}: {str(e)}")
+
+def set_outlet_status_via_http(ip: str, outlet: int, state: str) -> tuple[bool, str]:
+    """Set outlet status using HTTP control interface.
+    state must be 'on' or 'off'
+    Returns (success, error_message)
+    """
+    try:
+        print(f"[DEBUG] set_outlet_status_via_http called with ip={ip}, outlet={outlet}, state={state}")
+        # PDU uses port 6663 for control interface
+        # b=1 for ON, b=2 for OFF
+        value = "2" if state.lower() == "on" else "1"  # b=2 for ON, b=1 for OFF
+        
+        import requests
+        url = f"http://{ip}:6663/setcontrol?a={outlet}&b={value}"
+        print(f"[DEBUG] Sending request to: {url}")
+        response = requests.get(url, timeout=5)
+        print(f"[DEBUG] Response status: {response.status_code}, text: {response.text}")
+        
+        if response.status_code == 200 and response.text.strip() == "OK":
+            print(f"[DEBUG] Control operation successful")
+            return True, ""
+        error_msg = f"HTTP Error: {response.status_code} - {response.text}"
+        print(f"[DEBUG] Control operation failed: {error_msg}")
+        return False, error_msg
+        
+    except Exception as e:
+        error_msg = f"Request failed: {str(e)}"
+        print(f"[DEBUG] Control operation exception: {error_msg}")
+        return False, error_msg
+
+
+def snmp_set_outlet_status(ip: str, port: int, outlet: int, state: str) -> tuple[bool, str]:
+    """Set outlet status using HTTP control interface.
+    This function now uses HTTP instead of SNMP for better reliability.
+    state must be 'on' or 'off'
+    Returns (success, error_message)
+    """
+    # Ignore the SNMP port parameter, use HTTP control interface
+    return set_outlet_status_via_http(ip, outlet, state)
 
 # ---------------------------------------------------------------------------
 # Routes
@@ -334,6 +405,59 @@ POLL_RESULTS: Dict[str, Dict[str, Any]] = {}
 POLL_ERRORS: Dict[str, Dict[str, Any]] = {}
 POLL_THREAD: Thread | None = None
 POLL_STOP: bool = False
+
+@app.route("/api/outlet/<int:outlet>/status", methods=["PUT"])
+def set_outlet_status(outlet: int):
+    try:
+        print(f"[DEBUG] ====== START OUTLET CONTROL REQUEST ======")
+        print(f"[DEBUG] Received PUT request for outlet {outlet}")
+        print(f"[DEBUG] Request headers: {dict(request.headers)}")
+        raw_data = request.get_data(as_text=True)
+        print(f"[DEBUG] Raw request data: {raw_data}")
+        print(f"[DEBUG] Request form: {request.form}")
+        print(f"[DEBUG] Request args: {request.args}")
+        try:
+            body = request.get_json(force=True)
+            print(f"[DEBUG] Parsed JSON body: {body}")
+            state = body.get("state")
+        except Exception as e:
+            print(f"[DEBUG] Error parsing JSON: {str(e)}")
+            return jsonify({"error": "Invalid JSON body"}), 400
+        
+        if not state or state not in ["on", "off"]:
+            print(f"[DEBUG] Invalid state: {state}")
+            return jsonify({"error": "Invalid state, must be 'on' or 'off'"}), 400
+            
+        cfg = load_config()
+        print(f"[DEBUG] Loaded config: {cfg}")
+        
+        if not cfg or "ip" not in cfg:
+            print(f"[DEBUG] Invalid config: {cfg}")
+            return jsonify({"error": "No PDU configuration found"}), 400
+            
+        print(f"[DEBUG] Calling set_outlet_status_via_http with ip={cfg['ip']}, outlet={outlet}, state={state}")
+        success, error = set_outlet_status_via_http(
+            cfg["ip"],
+            outlet,
+            state
+        )
+        
+        print(f"[DEBUG] Control result: success={success}, error={error}")
+        if success:
+            # Trigger priority polling for this outlet after successful control
+            try:
+                poll_outlet_status_priority(cfg["ip"], outlet)
+            except Exception as e:
+                print(f"[DEBUG] Priority polling error (non-fatal): {str(e)}")
+            return jsonify({"status": "success", "state": state})
+            
+        return jsonify({"error": error or "Failed to set outlet status"}), 500
+        
+    except Exception as e:
+        print(f"[DEBUG] Exception in set_outlet_status: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Internal error: {str(e)}"}), 500
 
 # ------------------------------ Poller Thread ------------------------------ #
 def poller():
@@ -355,84 +479,84 @@ def poller():
         cycle_start = time.time()
         print(f"[poller] Cycle start {time.strftime('%H:%M:%S')} with {len(symbols)} symbols")
 
-        # 1️⃣ Poll all generic symbols (non-outlet metrics) in batches
+        # Build task list for parallel polling of both generic symbols and outlets
         generic_symbols = [pair for pair in symbols 
                          if not pair[0].startswith("Output") 
                          and not any(pair[0].startswith(slave) for slave in ["SlaveOne", "SlaveTwo", "SlaveThree", "SlaveFour"])]
-        batches = [generic_symbols[i : i + SNMP_BATCH_SIZE] for i in range(0, len(generic_symbols), SNMP_BATCH_SIZE)]
 
-        def fetch_batch(batch: list[tuple[str, str]]):
+        def fetch_generic_batch(batch: list[tuple[str, str]]):
+            """Poll a batch of generic (non-outlet) symbols and return list of tuples."""
             names: list[str] = []
-            oid_list: list[str] = []
+            oids: list[str] = []
             for n, o in batch:
                 names.append(n)
-                oid_list.append(o if o.endswith(".0") else f"{o}.0")
+                oids.append(o if o.endswith(".0") else f"{o}.0")
             print(f"[poller] polling generic batch of {len(batch)} OIDs ...")
-            local_map = snmp_get_batch(ip, port, oid_list)
-            return [
-                (names[idx], oid_list[idx], local_map.get(oid_list[idx]))
-                for idx in range(len(oid_list))
-            ]
+            mapping = snmp_get_batch(ip, port, oids)
+            return [(names[i], oids[i], mapping.get(oids[i])) for i in range(len(oids))]
 
-        with ThreadPoolExecutor(max_workers=min(MAX_SNMP_THREADS, max(1, len(batches)))) as executor:
-            for fut in as_completed([executor.submit(fetch_batch, b) for b in batches]):
-                for name, oid_full, value in fut.result():
-                    with POLL_LOCK:
-                        if value is not None and not str(value).startswith("Error:"):
-                            POLL_RESULTS[name] = {"name": name, "oid": oid_full, "value": value}
-                            POLL_ERRORS.pop(name, None)
-                        else:
-                            POLL_ERRORS[name] = {"name": name, "oid": oid_full, "error": value or "No response"}
-                            POLL_RESULTS.pop(name, None)
-
-        # 2️⃣ Poll outlet metrics in pairs for better reliability
-        for outlet in range(1, OUTPUT_COUNT + 1):
-            # Batch 1: Status and Current
+        def fetch_outlet(outlet: int):
+            """Poll a single outlet (two 2-OID batches) and return list of tuples."""
+            tuples: list[tuple[str, str, Any]] = []
+            # Batch 1: Status + Current (higher retries/timeout for critical metrics)
             status_oid = f"{OUTPUT_PREFIXES['Status']}.{outlet}.0"
             current_oid = f"{OUTPUT_PREFIXES['Current']}.{outlet}.0"
-            batch1_result = snmp_get_batch(ip, port, [status_oid, current_oid])
-            
-            # Update Status and Current
-            status_name = f"Output{outlet}Status"
-            current_name = f"Output{outlet}Current"
-            with POLL_LOCK:
-                if batch1_result.get(status_oid):
-                    POLL_RESULTS[status_name] = {"name": status_name, "oid": status_oid, "value": batch1_result[status_oid]}
-                    POLL_ERRORS.pop(status_name, None)
-                else:
-                    POLL_ERRORS[status_name] = {"name": status_name, "oid": status_oid, "error": "No response"}
-                    POLL_RESULTS.pop(status_name, None)
-                    
-                if batch1_result.get(current_oid):
-                    POLL_RESULTS[current_name] = {"name": current_name, "oid": current_oid, "value": batch1_result[current_oid]}
-                    POLL_ERRORS.pop(current_name, None)
-                else:
-                    POLL_ERRORS[current_name] = {"name": current_name, "oid": current_oid, "error": "No response"}
-                    POLL_RESULTS.pop(current_name, None)
+            mapping1 = snmp_get_batch(ip, port, [status_oid, current_oid], retries=4, timeout=4)
+            tuples.append((f"Output{outlet}Status", status_oid, mapping1.get(status_oid)))
+            tuples.append((f"Output{outlet}Current", current_oid, mapping1.get(current_oid)))
 
-            # Batch 2: Energy and Name
+            # Batch 2: Energy + Name (standard retries/timeout for non-critical metrics)
             energy_oid = f"{OUTPUT_PREFIXES['Energy']}.{outlet}.0"
             name_oid = f"{OUTPUT_PREFIXES['Name']}.{outlet}.0"
-            batch2_result = snmp_get_batch(ip, port, [energy_oid, name_oid])
-            
-            # Update Energy and Name
-            energy_name = f"Output{outlet}Energy"
-            name_name = f"Output{outlet}Name"
-            with POLL_LOCK:
-                if batch2_result.get(energy_oid):
-                    POLL_RESULTS[energy_name] = {"name": energy_name, "oid": energy_oid, "value": batch2_result[energy_oid]}
-                    POLL_ERRORS.pop(energy_name, None)
-                else:
-                    POLL_ERRORS[energy_name] = {"name": energy_name, "oid": energy_oid, "error": "No response"}
-                    POLL_RESULTS.pop(energy_name, None)
-                    
-                if batch2_result.get(name_oid):
-                    POLL_RESULTS[name_name] = {"name": name_name, "oid": name_oid, "value": batch2_result[name_oid]}
-                    POLL_ERRORS.pop(name_name, None)
-                else:
-                    POLL_ERRORS[name_name] = {"name": name_name, "oid": name_oid, "error": "No response"}
-                    POLL_RESULTS.pop(name_name, None)
+            mapping2 = snmp_get_batch(ip, port, [energy_oid, name_oid])
+            tuples.append((f"Output{outlet}Energy", energy_oid, mapping2.get(energy_oid)))
+            tuples.append((f"Output{outlet}Name", name_oid, mapping2.get(name_oid)))
+            return tuples
 
+        # Prepare batches for generic symbols
+        generic_batches = [generic_symbols[i : i + SNMP_BATCH_SIZE] for i in range(0, len(generic_symbols), SNMP_BATCH_SIZE)]
+
+        # Interleave generic and outlet polling tasks for true parallelism
+        tasks = []
+        with ThreadPoolExecutor(max_workers=MAX_SNMP_THREADS) as executor:
+            # Submit tasks in a round-robin fashion
+            generic_iter = iter(generic_batches)
+            outlet_range = range(1, OUTPUT_COUNT + 1)
+            outlet_iter = iter(outlet_range)
+            
+            while True:
+                # Try to submit a generic batch
+                try:
+                    batch = next(generic_iter)
+                    tasks.append(executor.submit(fetch_generic_batch, batch))
+                except StopIteration:
+                    pass
+                
+                # Try to submit an outlet
+                try:
+                    outlet = next(outlet_iter)
+                    tasks.append(executor.submit(fetch_outlet, outlet))
+                except StopIteration:
+                    pass
+                
+                # If both iterators are exhausted, we're done
+                if len(tasks) == len(generic_batches) + OUTPUT_COUNT:
+                    break
+
+            # Collect results as they complete
+            for fut in as_completed(tasks):
+                try:
+                    for name, oid_full, value in fut.result():
+                        with POLL_LOCK:
+                            if value is not None and not str(value).startswith("Error:"):
+                                POLL_RESULTS[name] = {"name": name, "oid": oid_full, "value": value}
+                                POLL_ERRORS.pop(name, None)
+                            else:
+                                POLL_ERRORS[name] = {"name": name, "oid": oid_full, "error": "No response"}
+                                POLL_RESULTS.pop(name, None)
+                except Exception as e:
+                    print(f"[poller] Task error: {e}")
+        
         elapsed = time.time() - cycle_start
         print(f"[poller] Cycle finished in {elapsed:.2f}s")
         if elapsed < 2:

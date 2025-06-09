@@ -8,19 +8,29 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': {
-        target: 'http://backend:5000',
+        target: 'http://backend:5000',  // Use internal Docker network port
         changeOrigin: true,
         secure: false,
         ws: true,
         configure: (proxy, options) => {
           proxy.on('error', (err, req, res) => {
-            console.log('proxy error', err);
+            console.error('PROXY ERROR:', err);
           });
           proxy.on('proxyReq', (proxyReq, req, res) => {
-            console.log('Sending Request to the Target:', req.method, req.url);
+            console.log('PROXY REQUEST:', {
+              method: req.method,
+              url: req.url,
+              headers: req.headers,
+              body: req.body
+            });
           });
           proxy.on('proxyRes', (proxyRes, req, res) => {
-            console.log('Received Response from the Target:', proxyRes.statusCode, req.url);
+            console.log('PROXY RESPONSE:', {
+              statusCode: proxyRes.statusCode,
+              method: req.method,
+              url: req.url,
+              headers: proxyRes.headers
+            });
           });
         }
       }

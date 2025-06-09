@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { usePowerHistory } from '../context/PowerHistoryContext';
 import { useSimulation } from '../context/SimulationContext';
 import { Line } from 'react-chartjs-2';
@@ -38,6 +38,9 @@ const PowerTelemetry = ({ data, className }) => {
     }
   }, [isSimulated, updateSimulatedData]);
 
+  // Use ref to track last power value to prevent duplicate updates
+  const lastPowerRef = useRef(null);
+
   useEffect(() => {
     if (data?.results) {
       // Sum power from all three phases
@@ -46,10 +49,14 @@ const PowerTelemetry = ({ data, className }) => {
       const power3 = parseFloat(data.results.find(r => r.name === 'PowerP3')?.value?.replace(/"/g, '') || '0');
       const totalPower = power1 + power2 + power3;
       
-      addPowerReading({
-        timestamp: new Date(),
-        value: totalPower
-      });
+      // Only add power reading if the value has changed
+      if (lastPowerRef.current !== totalPower) {
+        lastPowerRef.current = totalPower;
+        addPowerReading({
+          timestamp: new Date(),
+          value: totalPower
+        });
+      }
     }
   }, [data, addPowerReading]);
 
