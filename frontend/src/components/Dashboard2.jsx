@@ -552,7 +552,16 @@ const Dashboard2 = () => {
 
           {/* Data Hall Designer View */}
           {activeTab === 'datahall' && (
-            <DataHallDesigner />
+            <DataHallDesigner 
+              onNavigateToPdu={(pdu) => {
+                // Find matching PDU in sidebar by IP and expand it
+                const matchingPdu = generatedPDUs.find(p => p.ip === pdu.ip);
+                if (matchingPdu) {
+                  setExpandedPdu(matchingPdu.id);
+                }
+                setActiveTab('telemetry');
+              }}
+            />
           )}
 
           {/* Activity Ledger View */}

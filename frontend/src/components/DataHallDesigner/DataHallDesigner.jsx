@@ -30,7 +30,7 @@ const FloorGrid = ({ hall, tileSize }) => {
 };
 
 // Rack 3D Component
-const Rack3D = ({ rack, isSelected, isHovered, alertLevel, showLabel, onSelect, onHover }) => {
+const Rack3D = ({ rack, isSelected, isHovered, alertLevel, alertInfo, showLabel, onSelect, onHover }) => {
   const { position, dimensions } = rack;
   
   // Determine colors based on alert level
@@ -52,6 +52,10 @@ const Rack3D = ({ rack, isSelected, isHovered, alertLevel, showLabel, onSelect, 
   
   const colors = getColors();
   const labelColor = alertLevel === 'critical' ? '#EF4444' : alertLevel === 'warning' ? '#F59E0B' : '#00E5FF';
+  
+  // Hologram colors based on alert level
+  const holoColor = alertLevel === 'critical' ? '#EF4444' : '#F59E0B';
+  const holoHeight = 0.6;
   
   return (
     <group position={[position.x, position.y + dimensions.height / 2, position.z]}>
@@ -77,18 +81,74 @@ const Rack3D = ({ rack, isSelected, isHovered, alertLevel, showLabel, onSelect, 
         <lineBasicMaterial color={colors.outline} />
       </lineSegments>
       
-      {/* Alert indicator - pulsing sphere on top for critical */}
-      {alertLevel === 'critical' && (
-        <mesh position={[0, dimensions.height / 2 + 0.25, 0]}>
-          <sphereGeometry args={[0.08, 16, 16]} />
-          <meshStandardMaterial color="#EF4444" emissive="#EF4444" emissiveIntensity={0.8} />
-        </mesh>
+      {/* Flat Hologram Alert Panel - floats above rack */}
+      {alertLevel && (
+        <group position={[0, dimensions.height / 2 + holoHeight / 2 + 0.35, 0]}>
+          {/* Flat panel with minimal depth */}
+          <mesh>
+            <boxGeometry args={[dimensions.width * 1.2, holoHeight, 0.02]} />
+            <meshStandardMaterial 
+              color={holoColor}
+              emissive={holoColor}
+              emissiveIntensity={0.3}
+              transparent
+              opacity={0.25}
+            />
+          </mesh>
+          
+          {/* Panel outline */}
+          <lineSegments>
+            <edgesGeometry args={[new THREE.BoxGeometry(dimensions.width * 1.2, holoHeight, 0.02)]} />
+            <lineBasicMaterial color={holoColor} transparent opacity={0.8} />
+          </lineSegments>
+          
+          {/* Alert title */}
+          <Text
+            position={[0, holoHeight * 0.25, 0.02]}
+            fontSize={0.07}
+            color={holoColor}
+            anchorX="center"
+            anchorY="middle"
+            fontWeight="bold"
+          >
+            {alertLevel === 'critical' ? '⚠ CRITICAL' : '⚡ WARNING'}
+          </Text>
+          
+          {/* Alert details */}
+          <Text
+            position={[0, 0, 0.02]}
+            fontSize={0.05}
+            color="#ffffff"
+            anchorX="center"
+            anchorY="middle"
+            maxWidth={dimensions.width * 1.1}
+          >
+            {alertInfo?.title || 'PDU Alert'}
+          </Text>
+          
+          {/* PDU info */}
+          <Text
+            position={[0, -holoHeight * 0.25, 0.02]}
+            fontSize={0.04}
+            color={holoColor}
+            anchorX="center"
+            anchorY="middle"
+          >
+            {alertInfo?.pduPosition || 'PDU-A'} | {alertInfo?.ip || '10.20.0.x'}
+          </Text>
+          
+          {/* Connecting beam from rack to panel */}
+          <mesh position={[0, -holoHeight / 2 - 0.15, 0]}>
+            <cylinderGeometry args={[0.01, 0.025, 0.3, 6]} />
+            <meshStandardMaterial color={holoColor} emissive={holoColor} emissiveIntensity={0.6} transparent opacity={0.4} />
+          </mesh>
+        </group>
       )}
       
       {/* Rack label */}
-      {showLabel && (
+      {showLabel && !alertLevel && (
         <Text
-          position={[0, dimensions.height / 2 + (alertLevel === 'critical' ? 0.4 : 0.15), 0]}
+          position={[0, dimensions.height / 2 + 0.15, 0]}
           fontSize={0.12}
           color={labelColor}
           anchorX="center"
@@ -155,12 +215,19 @@ const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showLabels, 
   
   const { hall, floor, racks, rows } = layout;
   
-  // Get alert level for a rack based on its PDUs
-  const getRackAlertLevel = (rack) => {
+  // Get alert info for a rack based on its PDUs
+  const getRackAlertInfo = (rack) => {
     for (const pdu of rack.pdus) {
       const alert = alerts.find(a => a.pduId === pdu.id || a.rackId === rack.id);
-      if (alert?.severity === 'critical') return 'critical';
-      if (alert?.severity === 'warning') return 'warning';
+      if (alert) {
+        return {
+          level: alert.severity,
+          title: alert.title,
+          message: alert.message,
+          pduPosition: pdu.position,
+          ip: pdu.ip
+        };
+      }
     }
     return null;
   };
@@ -184,18 +251,22 @@ const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showLabels, 
       ))}
       
       {/* Racks */}
-      {racks.map(rack => (
-        <Rack3D
-          key={rack.id}
-          rack={rack}
-          isSelected={selectedRack?.id === rack.id}
-          isHovered={hoveredRack?.id === rack.id}
-          alertLevel={getRackAlertLevel(rack)}
-          showLabel={showLabels}
-          onSelect={onSelectRack}
-          onHover={onHoverRack}
-        />
-      ))}
+      {racks.map(rack => {
+        const alertInfo = getRackAlertInfo(rack);
+        return (
+          <Rack3D
+            key={rack.id}
+            rack={rack}
+            isSelected={selectedRack?.id === rack.id}
+            isHovered={hoveredRack?.id === rack.id}
+            alertLevel={alertInfo?.level}
+            alertInfo={alertInfo}
+            showLabel={showLabels}
+            onSelect={onSelectRack}
+            onHover={onHoverRack}
+          />
+        );
+      })}
       
       {/* Camera Controls */}
       <OrbitControls
@@ -278,7 +349,7 @@ const ParamSelect = ({ label, value, onChange, options }) => (
 );
 
 // Rack Details Panel
-const RackDetailsPanel = ({ rack, alerts = [], onClose }) => {
+const RackDetailsPanel = ({ rack, alerts = [], onClose, onPduClick }) => {
   if (!rack) return null;
   
   // Get alerts for this rack
@@ -351,7 +422,11 @@ const RackDetailsPanel = ({ rack, alerts = [], onClose }) => {
             {rack.pdus.map(pdu => {
               const pduAlert = alerts.find(a => a.pduId === pdu.id);
               return (
-                <div key={pdu.id} className={`flex items-center justify-between p-2 rounded ${pduAlert ? (pduAlert.severity === 'critical' ? 'bg-red-500/10' : 'bg-amber-500/10') : 'bg-[#0B1120]'}`}>
+                <button
+                  key={pdu.id}
+                  onClick={() => onPduClick && onPduClick(pdu)}
+                  className={`w-full flex items-center justify-between p-2 rounded cursor-pointer hover:ring-1 hover:ring-[#00E5FF]/50 transition-all ${pduAlert ? (pduAlert.severity === 'critical' ? 'bg-red-500/10 hover:bg-red-500/20' : 'bg-amber-500/10 hover:bg-amber-500/20') : 'bg-[#0B1120] hover:bg-[#1a2535]'}`}
+                >
                   <div className="flex items-center">
                     <span className="w-4 flex-shrink-0">
                       {pduAlert && <span className={`w-1.5 h-1.5 rounded-full inline-block ${pduAlert.severity === 'critical' ? 'bg-red-500' : 'bg-amber-500'}`}></span>}
@@ -359,8 +434,11 @@ const RackDetailsPanel = ({ rack, alerts = [], onClose }) => {
                     <span className="text-[#00E5FF] w-4">{pdu.position}</span>
                     <span className="text-slate-500 ml-2">{pdu.model}</span>
                   </div>
-                  <span className="text-emerald-400">{pdu.ip}</span>
-                </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-emerald-400">{pdu.ip}</span>
+                    <span className="material-icons-outlined text-[#00E5FF] text-xs">open_in_new</span>
+                  </div>
+                </button>
               );
             })}
           </div>
@@ -371,7 +449,7 @@ const RackDetailsPanel = ({ rack, alerts = [], onClose }) => {
 };
 
 // Main Component
-const DataHallDesigner = () => {
+const DataHallDesigner = ({ onNavigateToPdu }) => {
   const [config, setConfig] = useState(defaultDataHallConfig);
   const [selectedRack, setSelectedRack] = useState(null);
   const [hoveredRack, setHoveredRack] = useState(null);
@@ -724,7 +802,12 @@ const DataHallDesigner = () => {
         </Canvas>
         
         {/* Rack Details Panel */}
-        <RackDetailsPanel rack={selectedRack} alerts={alerts} onClose={() => setSelectedRack(null)} />
+        <RackDetailsPanel 
+          rack={selectedRack} 
+          alerts={alerts} 
+          onClose={() => setSelectedRack(null)} 
+          onPduClick={(pdu) => onNavigateToPdu && onNavigateToPdu(pdu)}
+        />
         
         {/* Alert Legend */}
         <div className="absolute top-4 left-4 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-4 py-3">

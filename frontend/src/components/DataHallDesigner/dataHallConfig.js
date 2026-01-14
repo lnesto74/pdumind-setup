@@ -46,20 +46,25 @@ export const defaultDataHallConfig = {
 
 /**
  * Generate IP address from subnet and index
+ * Supports starting from a specific host address (e.g., 192.168.10.100/24 starts at .100)
  */
 function generateIP(subnet, index) {
   const [base, mask] = subnet.split('/');
   const parts = base.split('.').map(Number);
-  const hostIndex = index + 1; // Start from .1
+  const startHost = parts[3] || 1; // Use 4th octet as starting point, default to 1
+  const hostIndex = startHost + index;
   
-  // Simple sequential assignment within /24
+  // Handle /24 subnet (256 addresses)
   if (parseInt(mask) === 24) {
-    return `${parts[0]}.${parts[1]}.${parts[2]}.${hostIndex}`;
+    // Wrap around if exceeding 254 (avoid .0 and .255)
+    const finalHost = hostIndex > 254 ? ((hostIndex - 1) % 254) + 1 : hostIndex;
+    return `${parts[0]}.${parts[1]}.${parts[2]}.${finalHost}`;
   }
   
-  // For larger subnets, handle accordingly
-  const totalIndex = hostIndex;
-  return `${parts[0]}.${parts[1]}.${Math.floor(totalIndex / 256)}.${totalIndex % 256}`;
+  // For larger subnets (/16, /8), handle overflow into next octet
+  const thirdOctet = parts[2] + Math.floor(hostIndex / 256);
+  const fourthOctet = hostIndex % 256;
+  return `${parts[0]}.${parts[1]}.${thirdOctet}.${fourthOctet}`;
 }
 
 /**
