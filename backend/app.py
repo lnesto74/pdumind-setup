@@ -41,6 +41,10 @@ OUTPUT_PREFIXES: dict[str, str] = {
 from database import init_db, store_poll_results
 from pm_agent.agent import answer as pm_answer
 
+# Import new persistence layer
+from db import init_db as init_persistence_db, HallRepo, RackRepo, PDURepo, TelemetryRepo, EventRepo
+from db.persistence import save_hall_state, store_poll_snapshot
+
 def snmp_walk(ip: str, port: int, base_oid: str, timeout: int = OUTLET_BASE_TIMEOUT) -> dict[str, str]:
     """Walk an OID tree and return {full_oid: value} mapping. Uses numeric OIDs and prints
     value only for easier parsing while keeping the OID on each line ("-On -Ov").
@@ -410,6 +414,7 @@ POLL_THREAD: Thread | None = None
 POLL_STOP: bool = False
 
 init_db()
+init_persistence_db()  # Initialize new persistence layer
 
 @app.route("/api/outlet/<int:outlet>/status", methods=["PUT"])
 def set_outlet_status(outlet: int):
@@ -614,12 +619,20 @@ def get_pdu_data():
             results_snapshot = list(POLL_RESULTS.values())
             errors_snapshot = list(POLL_ERRORS.values())
 
-        # Persist to DB
+        # Persist to DB (legacy)
         try:
             cfg_cur = load_config()
             store_poll_results(cfg_cur.get("ip"), POLL_RESULTS)
         except Exception as e:
             print(f"[DB] store_poll_results error: {e}")
+        
+        # Persist to new persistence layer (full JSON payload)
+        try:
+            cfg_cur = load_config()
+            if cfg_cur.get("ip"):
+                store_poll_snapshot(cfg_cur.get("ip"), POLL_RESULTS)
+        except Exception as e:
+            print(f"[DB] store_poll_snapshot error: {e}")
 
         return jsonify({
             "ip": load_config().get("ip"),
@@ -743,6 +756,175 @@ def maintenance_alerts():
             }
             for row in alerts
         ])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# =============================================================================
+# HALL STATE PERSISTENCE API
+# =============================================================================
+
+@app.route("/api/halls", methods=["GET"])
+def get_halls():
+    """Get all data halls."""
+    try:
+        halls = HallRepo.get_all()
+        return jsonify({"halls": halls})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/halls", methods=["POST"])
+def create_hall():
+    """Create a new data hall."""
+    try:
+        data = request.get_json(force=True)
+        name = data.get("name", "New Hall")
+        description = data.get("description")
+        hall_id = HallRepo.create(name, description)
+        return jsonify({"id": hall_id, "name": name}), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/halls/<int:hall_id>/state", methods=["GET"])
+def get_hall_state(hall_id: int):
+    """Get complete hall state including config, racks, and PDUs."""
+    try:
+        state = HallRepo.get_full_state(hall_id)
+        if not state:
+            return jsonify({"error": "Hall not found"}), 404
+        return jsonify(state)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/halls/<int:hall_id>/state", methods=["POST"])
+def save_hall_state_endpoint(hall_id: int):
+    """Save complete hall state (config + racks + PDUs)."""
+    try:
+        data = request.get_json(force=True)
+        config = data.get("config", {})
+        racks = data.get("racks", [])
+        pdus = data.get("pdus", [])
+        
+        # Ensure hall exists
+        hall = HallRepo.get(hall_id)
+        if not hall:
+            return jsonify({"error": "Hall not found"}), 404
+        
+        save_hall_state(hall_id, config, racks, pdus)
+        return jsonify({"success": True, "message": "Hall state saved"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/halls/default", methods=["GET"])
+def get_default_hall():
+    """Get or create default hall and return its state."""
+    try:
+        hall_id = HallRepo.get_or_create_default()
+        state = HallRepo.get_full_state(hall_id)
+        return jsonify(state)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# =============================================================================
+# TELEMETRY HISTORY API
+# =============================================================================
+
+@app.route("/api/pdus/<int:pdu_id>/telemetry/latest", methods=["GET"])
+def get_pdu_telemetry_latest(pdu_id: int):
+    """Get latest telemetry for a PDU."""
+    try:
+        telemetry = TelemetryRepo.get_latest(pdu_id)
+        if not telemetry:
+            return jsonify({"error": "No telemetry found"}), 404
+        return jsonify(telemetry)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/pdus/<int:pdu_id>/telemetry", methods=["GET"])
+def get_pdu_telemetry_history(pdu_id: int):
+    """Get telemetry history for a PDU."""
+    try:
+        from_ts = request.args.get("from")
+        to_ts = request.args.get("to")
+        limit = int(request.args.get("limit", 1000))
+        
+        history = TelemetryRepo.get_history(pdu_id, from_ts, to_ts, limit)
+        return jsonify({"telemetry": history, "count": len(history)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/pdus/by-ip/<path:ip_address>/telemetry/latest", methods=["GET"])
+def get_pdu_telemetry_by_ip(ip_address: str):
+    """Get latest telemetry for a PDU by IP address."""
+    try:
+        pdu = PDURepo.get_by_ip(ip_address)
+        if not pdu:
+            return jsonify({"error": "PDU not found"}), 404
+        
+        telemetry = TelemetryRepo.get_latest(pdu["id"])
+        if not telemetry:
+            return jsonify({"error": "No telemetry found"}), 404
+        return jsonify(telemetry)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# =============================================================================
+# EVENTS API
+# =============================================================================
+
+@app.route("/api/events", methods=["GET"])
+def get_events():
+    """Get events with optional filtering."""
+    try:
+        status = request.args.get("status")
+        limit = int(request.args.get("limit", 100))
+        offset = int(request.args.get("offset", 0))
+        
+        events = EventRepo.get_history(limit, offset, status)
+        return jsonify({"events": events, "count": len(events)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/events/active", methods=["GET"])
+def get_active_events():
+    """Get all active events."""
+    try:
+        pdu_id = request.args.get("pdu_id", type=int)
+        hall_id = request.args.get("hall_id", type=int)
+        
+        events = EventRepo.get_active(pdu_id, hall_id)
+        return jsonify({"events": events, "count": len(events)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/events/<int:event_id>/clear", methods=["POST"])
+def clear_event(event_id: int):
+    """Clear an event."""
+    try:
+        EventRepo.clear(event_id)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/events/<int:event_id>/acknowledge", methods=["POST"])
+def acknowledge_event(event_id: int):
+    """Acknowledge an event."""
+    try:
+        data = request.get_json(force=True) if request.data else {}
+        acknowledged_by = data.get("acknowledged_by")
+        EventRepo.acknowledge(event_id, acknowledged_by)
+        return jsonify({"success": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

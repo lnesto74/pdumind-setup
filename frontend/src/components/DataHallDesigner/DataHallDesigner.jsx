@@ -1,8 +1,11 @@
-import React, { useState, useMemo, useCallback, Suspense } from 'react';
+import React, { useState, useMemo, useCallback, Suspense, useEffect } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Grid, Text, Environment } from '@react-three/drei';
 import * as THREE from 'three';
 import { defaultDataHallConfig, generateDataHallLayout, validateConfig } from './dataHallConfig';
+
+// API base URL
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 // Floor Grid Component
 const FloorGrid = ({ hall, tileSize }) => {
@@ -455,6 +458,93 @@ const DataHallDesigner = ({ onNavigateToPdu }) => {
   const [hoveredRack, setHoveredRack] = useState(null);
   const [showLabels, setShowLabels] = useState(false);
   const [panelCollapsed, setPanelCollapsed] = useState(false);
+  const [hallId, setHallId] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [lastSaved, setLastSaved] = useState(null);
+  
+  // Load hall state on mount
+  useEffect(() => {
+    const loadHallState = async () => {
+      try {
+        setIsLoading(true);
+        const response = await fetch(`${API_BASE}/api/halls/default`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.hall) {
+            setHallId(data.hall.id);
+          }
+          if (data.config) {
+            setConfig(data.config);
+            console.log('[DataHallDesigner] Loaded config from DB:', data.config);
+          }
+        }
+      } catch (error) {
+        console.error('[DataHallDesigner] Failed to load hall state:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    loadHallState();
+  }, []);
+  
+  // Save hall state
+  const saveHallState = useCallback(async () => {
+    if (!hallId) return;
+    
+    try {
+      setIsSaving(true);
+      const layout = generateDataHallLayout(config);
+      
+      // Prepare racks data
+      const racks = layout.success ? layout.layout.racks.map(rack => ({
+        rack_code: rack.id,
+        row_index: rack.rowIndex,
+        position_index: rack.positionInRow,
+        x_m: rack.position.x,
+        y_m: rack.position.y,
+        z_m: rack.position.z,
+        width_mm: Math.round(rack.dimensions.width * 1000),
+        depth_mm: Math.round(rack.dimensions.depth * 1000),
+        height_u: rack.heightU,
+        model: rack.model
+      })) : [];
+      
+      // Prepare PDUs data
+      const pdus = layout.success ? layout.layout.pdus.map(pdu => ({
+        ip_address: pdu.ip,
+        rack_code: pdu.rackId,
+        mount_position: pdu.position,
+        label: pdu.id
+      })) : [];
+      
+      const response = await fetch(`${API_BASE}/api/halls/${hallId}/state`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config, racks, pdus })
+      });
+      
+      if (response.ok) {
+        setLastSaved(new Date().toLocaleTimeString());
+        console.log('[DataHallDesigner] Saved hall state to DB');
+      }
+    } catch (error) {
+      console.error('[DataHallDesigner] Failed to save hall state:', error);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [hallId, config]);
+  
+  // Auto-save on config change (debounced)
+  useEffect(() => {
+    if (!hallId || isLoading) return;
+    
+    const timeoutId = setTimeout(() => {
+      saveHallState();
+    }, 2000); // 2 second debounce
+    
+    return () => clearTimeout(timeoutId);
+  }, [config, hallId, isLoading, saveHallState]);
   
   // Generate layout from config
   const layoutResult = useMemo(() => generateDataHallLayout(config), [config]);
@@ -830,6 +920,19 @@ const DataHallDesigner = ({ onNavigateToPdu }) => {
           </div>
         </div>
         
+        {/* Save Status Indicator */}
+        <div className="absolute top-4 right-4 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-3 py-2 text-[10px] font-mono">
+          {isLoading ? (
+            <span className="text-slate-400">Loading...</span>
+          ) : isSaving ? (
+            <span className="text-[#00E5FF]">Saving...</span>
+          ) : lastSaved ? (
+            <span className="text-emerald-400">✓ Saved {lastSaved}</span>
+          ) : (
+            <span className="text-slate-500">Auto-save enabled</span>
+          )}
+        </div>
+        
         {/* View Controls Legend */}
         <div className="absolute bottom-4 left-4 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-3 py-2 text-[10px] font-mono text-slate-400">
           <span className="mr-4">🖱️ Orbit: Drag</span>
@@ -839,7 +942,7 @@ const DataHallDesigner = ({ onNavigateToPdu }) => {
         
         {/* Hovered Rack Tooltip */}
         {hoveredRack && !selectedRack && (
-          <div className="absolute top-4 right-4 bg-[#161E2E] border border-[#00E5FF]/30 rounded-lg px-3 py-2">
+          <div className="absolute top-14 right-4 bg-[#161E2E] border border-[#00E5FF]/30 rounded-lg px-3 py-2">
             <p className="text-sm font-mono text-[#00E5FF]">{hoveredRack.id}</p>
             <p className="text-xs text-slate-400">{hoveredRack.pdus.length} PDUs</p>
           </div>
