@@ -49,28 +49,26 @@ const OutletCell = ({ number, data }) => {
       
       <div className="outlet-metrics">
         <div className="outlet-metric">
-          <span className="metric-label">Current</span>
-          <span className="metric-value">{current.toFixed(1)} A</span>
-        </div>
-        <div className="outlet-metric">
-          <span className="metric-label">Energy</span>
-          <span className="metric-value">{energy.toFixed(1)} kWh</span>
+          <div className="metric-row">
+            <span className="metric-label">Current</span>
+            <span className="metric-value">{current.toFixed(1)}A</span>
+          </div>
+          <div className="metric-row">
+            <span className="metric-label">Energy</span>
+            <span className="metric-value">{energy.toFixed(1)}kWh</span>
+          </div>
         </div>
       </div>
       
-      {isHighLoad && (
-        <div className="outlet-alert">
-          High load
-        </div>
-      )}
       <button
-        className="outlet-toggle-btn"
+        className={clsx('outlet-toggle-btn', loading && 'loading')}
         disabled={loading}
         onClick={handleToggle}
       >
         {loading ? '...' : toggleLabel}
       </button>
-      {err && (<div className="outlet-error">{err}</div>)}
+      
+      {err && <div className="outlet-error">{err}</div>}
     </div>
   );
 };
@@ -88,7 +86,7 @@ const OutletGrid = ({ data }) => {
             <span className="status-dot status-green"></span> Normal
           </span>
           <span className="legend-item">
-            <span className="status-dot status-idle"></span> Idle
+            <span className="status-dot" style={{background: '#6366F1'}}></span> No Load
           </span>
           <span className="legend-item">
             <span className="status-dot status-alert"></span> Alert

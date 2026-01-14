@@ -38,6 +38,9 @@ OUTPUT_PREFIXES: dict[str, str] = {
     'Name': '.1.3.6.1.4.1.23273.3.1.1.5'      # Returns outlet name
 }
 
+from database import init_db, store_poll_results
+from pm_agent.agent import answer as pm_answer
+
 def snmp_walk(ip: str, port: int, base_oid: str, timeout: int = OUTLET_BASE_TIMEOUT) -> dict[str, str]:
     """Walk an OID tree and return {full_oid: value} mapping. Uses numeric OIDs and prints
     value only for easier parsing while keeping the OID on each line ("-On -Ov").
@@ -364,12 +367,12 @@ def set_outlet_status_via_http(ip: str, outlet: int, state: str) -> tuple[bool, 
     """
     try:
         print(f"[DEBUG] set_outlet_status_via_http called with ip={ip}, outlet={outlet}, state={state}")
-        # PDU uses port 6663 for control interface
-        # b=1 for ON, b=2 for OFF
+        # PDU uses port 80 for control interface
+        # b=2 for ON, b=1 for OFF
         value = "2" if state.lower() == "on" else "1"  # b=2 for ON, b=1 for OFF
         
         import requests
-        url = f"http://{ip}:6663/setcontrol?a={outlet}&b={value}"
+        url = f"http://{ip}:80/setcontrol?a={outlet}&b={value}"
         print(f"[DEBUG] Sending request to: {url}")
         response = requests.get(url, timeout=5)
         print(f"[DEBUG] Response status: {response.status_code}, text: {response.text}")
@@ -405,6 +408,8 @@ POLL_RESULTS: Dict[str, Dict[str, Any]] = {}
 POLL_ERRORS: Dict[str, Dict[str, Any]] = {}
 POLL_THREAD: Thread | None = None
 POLL_STOP: bool = False
+
+init_db()
 
 @app.route("/api/outlet/<int:outlet>/status", methods=["PUT"])
 def set_outlet_status(outlet: int):
@@ -609,6 +614,13 @@ def get_pdu_data():
             results_snapshot = list(POLL_RESULTS.values())
             errors_snapshot = list(POLL_ERRORS.values())
 
+        # Persist to DB
+        try:
+            cfg_cur = load_config()
+            store_poll_results(cfg_cur.get("ip"), POLL_RESULTS)
+        except Exception as e:
+            print(f"[DB] store_poll_results error: {e}")
+
         return jsonify({
             "ip": load_config().get("ip"),
             "results": results_snapshot,
@@ -698,6 +710,41 @@ def test_snmp():
                 })
 
     return jsonify(results)
+
+
+@app.route("/api/maintenance/ask", methods=["POST"])
+def maintenance_ask():
+    data = request.get_json(force=True)
+    question = data.get("question", "") if isinstance(data, dict) else ""
+    if not question:
+        return jsonify({"error": "question required"}), 400
+    try:
+        response = pm_answer(question)
+        return jsonify({"answer": response})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/maintenance/alerts", methods=["GET"])
+def maintenance_alerts():
+    try:
+        with _connect() as conn:
+            alerts = conn.execute(
+                "SELECT id, outlet_id, ts_utc, type, severity, message FROM maintenance_alert ORDER BY ts_utc DESC LIMIT 100"
+            ).fetchall()
+        return jsonify([
+            {
+                "id": row[0],
+                "outlet_id": row[1],
+                "ts": row[2],
+                "type": row[3],
+                "severity": row[4],
+                "message": row[5],
+            }
+            for row in alerts
+        ])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":

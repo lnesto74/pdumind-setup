@@ -1,6 +1,7 @@
 import React from 'react';
 import clsx from 'clsx';
 import PowerTelemetry from './PowerTelemetry';
+import RotatingLogo from './RotatingLogo';
 import '../styles/PowerTelemetry.css';
 
 const MetricBadge = ({ label, value, unit = '', status = 'normal', className }) => (
@@ -72,6 +73,8 @@ const SystemHeader = ({ data }) => {
           className="energy-badge"
         />
         
+        <RotatingLogo className="rotating-logo" />
+
         <div className="phase-status-container">
           <div className="phase-status-label">Phase Status</div>
           <PhaseStatus phases={phaseStatus} />

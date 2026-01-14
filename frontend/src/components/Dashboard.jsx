@@ -3,8 +3,10 @@ import { usePDUContext } from '../context/PDUContext';
 import Sidebar from './Sidebar';
 import SystemHeader from './SystemHeader';
 import OutletGrid from './OutletGrid';
+import ErrorsCard from './ErrorsCard';
 import TelemetryCharts from './TelemetryCharts';
 import LoadTrends from './LoadTrends';
+import DesignSpecsCard from './DesignSpecsCard';
 import clsx from 'clsx';
 import '../styles/Dashboard.css';
 
@@ -155,6 +157,8 @@ const Dashboard = () => {
         
         <div className="dashboard-grid">
           <OutletGrid data={data} />
+
+          <DesignSpecsCard specs={data?.designSpecs} />
           
           <section className="glass-card telemetry-section">
             <h2 className="section-title">TELEMETRY</h2>
@@ -230,16 +234,7 @@ const Dashboard = () => {
           </section>
         </div>
 
-        {data.errors?.length > 0 && (
-          <div className="errors glass-card">
-            <h3>Errors</h3>
-            <ul>
-              {data.errors.map((error, i) => (
-                <li key={i}>{error.name}: {error.error}</li>
-              ))}
-            </ul>
-          </div>
-        )}
+        <ErrorsCard errors={data.errors} />
         </main>
       )}
     </div>

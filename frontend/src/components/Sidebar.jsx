@@ -13,9 +13,7 @@ const Sidebar = () => {
 
   return (
     <aside className="sidebar">
-      <div className="sidebar-logo">
-        <img src="/logo/pdumind-logo-2.png" alt="PDUMind Logo" />
-      </div>
+
       <h2 className="sidebar-title">PDUs</h2>
       <ul className="sidebar-list">
         {pduList.map((p, idx) => (
