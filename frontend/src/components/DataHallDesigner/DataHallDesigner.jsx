@@ -1,11 +1,12 @@
-import React, { useState, useMemo, useCallback, Suspense, useEffect } from 'react';
-import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Grid, Text, Environment } from '@react-three/drei';
+import React, { useState, useMemo, useCallback, Suspense, useEffect, useRef } from 'react';
+import { Canvas, useLoader } from '@react-three/fiber';
+import { OrbitControls, Grid, Text, Environment, useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
 import { defaultDataHallConfig, generateDataHallLayout, validateConfig } from './dataHallConfig';
 
 // API base URL
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5002';
 
 // Floor Grid Component
 const FloorGrid = ({ hall, tileSize }) => {
@@ -32,8 +33,128 @@ const FloorGrid = ({ hall, tileSize }) => {
   );
 };
 
+// Custom GLTF Rack Model Component
+const CustomRackModel = ({ url, dimensions, colors, onClick, onPointerOver, onPointerOut, assets }) => {
+  const groupRef = useRef();
+  const [model, setModel] = useState(null);
+  
+  useEffect(() => {
+    if (!url) return;
+    
+    // Create custom loading manager to resolve relative paths for multi-file gltf
+    const loadingManager = new THREE.LoadingManager();
+    
+    if (assets && Object.keys(assets).length > 1) {
+      // Override URL resolution for multi-file glTF
+      loadingManager.setURLModifier((originalUrl) => {
+        // Extract filename from URL path
+        const fileName = originalUrl.split('/').pop();
+        
+        // Check if we have this asset
+        if (assets[fileName]) {
+          return assets[fileName];
+        }
+        
+        // Check in textures subfolder pattern
+        const textureMatch = originalUrl.match(/textures\/(.+)$/);
+        if (textureMatch && assets[textureMatch[1]]) {
+          return assets[textureMatch[1]];
+        }
+        
+        // Check for any asset that ends with this filename
+        for (const [key, blobUrl] of Object.entries(assets)) {
+          if (key.endsWith(fileName) || originalUrl.includes(key)) {
+            return blobUrl;
+          }
+        }
+        
+        return originalUrl;
+      });
+    }
+    
+    const loader = new GLTFLoader(loadingManager);
+    loader.load(
+      url,
+      (gltf) => {
+        const loadedModel = gltf.scene.clone();
+        
+        // Reset any existing transforms
+        loadedModel.position.set(0, 0, 0);
+        loadedModel.rotation.set(0, 0, 0);
+        loadedModel.scale.set(1, 1, 1);
+        
+        // Calculate original bounding box
+        const originalBox = new THREE.Box3().setFromObject(loadedModel);
+        const originalSize = new THREE.Vector3();
+        originalBox.getSize(originalSize);
+        const originalCenter = new THREE.Vector3();
+        originalBox.getCenter(originalCenter);
+        
+        // Target dimensions (the default rack box)
+        const targetWidth = dimensions.width;   // X axis
+        const targetHeight = dimensions.height; // Y axis
+        const targetDepth = dimensions.depth;   // Z axis
+        
+        // Calculate uniform scale to fit within rack box while preserving proportions
+        // Use the smallest scale factor to ensure model fits completely inside
+        const scaleX = targetWidth / originalSize.x;
+        const scaleY = targetHeight / originalSize.y;
+        const scaleZ = targetDepth / originalSize.z;
+        const uniformScale = Math.min(scaleX, scaleY, scaleZ);
+        
+        // Apply uniform scale (preserves proportions - no stretching)
+        loadedModel.scale.set(uniformScale, uniformScale, uniformScale);
+        
+        // Recalculate bounding box after scaling
+        const scaledBox = new THREE.Box3().setFromObject(loadedModel);
+        const scaledSize = new THREE.Vector3();
+        scaledBox.getSize(scaledSize);
+        const scaledMin = scaledBox.min.clone();
+        const scaledCenter = new THREE.Vector3();
+        scaledBox.getCenter(scaledCenter);
+        
+        // Position model:
+        // - Center horizontally (X) within the rack space
+        // - Align bottom of model with bottom of rack (Y = -height/2 relative to rack center)
+        // - Center depth-wise (Z) within the rack space
+        loadedModel.position.set(
+          -scaledCenter.x,                              // Center on X
+          -scaledMin.y - (targetHeight / 2),           // Align bottom with rack bottom
+          -scaledCenter.z                               // Center on Z
+        );
+        
+        // Apply color tint to materials for selection/alert states
+        loadedModel.traverse((child) => {
+          if (child.isMesh && child.material) {
+            child.material = child.material.clone();
+            child.material.emissive = new THREE.Color(colors.emissive);
+            child.material.emissiveIntensity = colors.intensity;
+          }
+        });
+        
+        setModel(loadedModel);
+      },
+      undefined,
+      (error) => console.error('Error loading GLTF:', error)
+    );
+  }, [url, dimensions, colors, assets]);
+  
+  if (!model) return null;
+  
+  return (
+    <group ref={groupRef}>
+      <primitive 
+        object={model} 
+        onClick={onClick}
+        onPointerOver={onPointerOver}
+        onPointerOut={onPointerOut}
+      />
+    </group>
+  );
+};
+
 // Rack 3D Component
-const Rack3D = ({ rack, isSelected, isHovered, alertLevel, alertInfo, showLabel, onSelect, onHover }) => {
+const Rack3D = ({ rack, isSelected, isHovered, alertLevel, alertInfo, showLabel, onSelect, onHover, customModelUrl, customModelAssets }) => {
   const { position, dimensions } = rack;
   
   // Determine colors based on alert level
@@ -62,27 +183,41 @@ const Rack3D = ({ rack, isSelected, isHovered, alertLevel, alertInfo, showLabel,
   
   return (
     <group position={[position.x, position.y + dimensions.height / 2, position.z]}>
-      {/* Main rack body */}
-      <mesh
-        onClick={(e) => { e.stopPropagation(); onSelect(rack); }}
-        onPointerOver={(e) => { e.stopPropagation(); onHover(rack); }}
-        onPointerOut={(e) => { e.stopPropagation(); onHover(null); }}
-      >
-        <boxGeometry args={[dimensions.width, dimensions.height, dimensions.depth]} />
-        <meshStandardMaterial 
-          color={colors.color} 
-          emissive={colors.emissive}
-          emissiveIntensity={colors.intensity}
-          transparent
-          opacity={0.85}
+      {/* Main rack body - Custom model or default box */}
+      {customModelUrl ? (
+        <CustomRackModel
+          url={customModelUrl}
+          dimensions={dimensions}
+          colors={colors}
+          assets={customModelAssets}
+          onClick={(e) => { e.stopPropagation(); onSelect(rack); }}
+          onPointerOver={(e) => { e.stopPropagation(); onHover(rack); }}
+          onPointerOut={(e) => { e.stopPropagation(); onHover(null); }}
         />
-      </mesh>
-      
-      {/* Rack outline */}
-      <lineSegments>
-        <edgesGeometry args={[new THREE.BoxGeometry(dimensions.width, dimensions.height, dimensions.depth)]} />
-        <lineBasicMaterial color={colors.outline} />
-      </lineSegments>
+      ) : (
+        <>
+          <mesh
+            onClick={(e) => { e.stopPropagation(); onSelect(rack); }}
+            onPointerOver={(e) => { e.stopPropagation(); onHover(rack); }}
+            onPointerOut={(e) => { e.stopPropagation(); onHover(null); }}
+          >
+            <boxGeometry args={[dimensions.width, dimensions.height, dimensions.depth]} />
+            <meshStandardMaterial 
+              color={colors.color} 
+              emissive={colors.emissive}
+              emissiveIntensity={colors.intensity}
+              transparent
+              opacity={0.85}
+            />
+          </mesh>
+          
+          {/* Rack outline */}
+          <lineSegments>
+            <edgesGeometry args={[new THREE.BoxGeometry(dimensions.width, dimensions.height, dimensions.depth)]} />
+            <lineBasicMaterial color={colors.outline} />
+          </lineSegments>
+        </>
+      )}
       
       {/* Flat Hologram Alert Panel - floats above rack */}
       {alertLevel && (
@@ -213,7 +348,7 @@ const Walls = ({ hall }) => {
 };
 
 // Main 3D Scene
-const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showLabels, onSelectRack, onHoverRack }) => {
+const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showLabels, onSelectRack, onHoverRack, customRackModelUrl, customRackModelAssets }) => {
   if (!layout) return null;
   
   const { hall, floor, racks, rows } = layout;
@@ -267,6 +402,8 @@ const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showLabels, 
             showLabel={showLabels}
             onSelect={onSelectRack}
             onHover={onHoverRack}
+            customModelUrl={customRackModelUrl}
+            customModelAssets={customRackModelAssets}
           />
         );
       })}
@@ -452,41 +589,118 @@ const RackDetailsPanel = ({ rack, alerts = [], onClose, onPduClick }) => {
 };
 
 // Main Component
-const DataHallDesigner = ({ onNavigateToPdu }) => {
+const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onHallChange, onConfigSaved }) => {
   const [config, setConfig] = useState(defaultDataHallConfig);
   const [selectedRack, setSelectedRack] = useState(null);
   const [hoveredRack, setHoveredRack] = useState(null);
   const [showLabels, setShowLabels] = useState(false);
   const [panelCollapsed, setPanelCollapsed] = useState(false);
+  
+  // Hall management state
+  const [halls, setHalls] = useState([]);
+  const [currentHall, setCurrentHall] = useState(null);
   const [hallId, setHallId] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [lastSaved, setLastSaved] = useState(null);
+  const [showNewHallDialog, setShowNewHallDialog] = useState(false);
+  const [newHallName, setNewHallName] = useState('');
   
-  // Load hall state on mount
+  // Fetch all halls
+  const fetchHalls = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/halls`);
+      if (response.ok) {
+        const data = await response.json();
+        setHalls(data.halls || []);
+        return data.halls || [];
+      }
+    } catch (error) {
+      console.log('[DataHallDesigner] Failed to fetch halls:', error);
+    }
+    return [];
+  }, []);
+  
+  // Load specific hall state
+  const loadHallState = useCallback(async (id) => {
+    try {
+      setIsLoading(true);
+      const response = await fetch(`${API_BASE}/api/halls/${id}/state`);
+      if (response.ok) {
+        const data = await response.json();
+        setCurrentHall(data.hall);
+        setHallId(data.hall.id);
+        if (data.config) {
+          setConfig(data.config);
+          console.log('[DataHallDesigner] Loaded config for hall:', data.hall.name);
+        } else {
+          setConfig(defaultDataHallConfig);
+        }
+        setLastSaved(null);
+      }
+    } catch (error) {
+      console.log('[DataHallDesigner] Failed to load hall state:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+  
+  // Create new hall
+  const createHall = useCallback(async (name) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/halls`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, description: `Data hall: ${name}` })
+      });
+      if (response.ok) {
+        const data = await response.json();
+        await fetchHalls();
+        await loadHallState(data.id);
+        return data.id;
+      }
+    } catch (error) {
+      console.log('[DataHallDesigner] Failed to create hall:', error);
+    }
+    return null;
+  }, [fetchHalls, loadHallState]);
+  
+  // Load halls on mount
   useEffect(() => {
-    const loadHallState = async () => {
+    const init = async () => {
+      setIsLoading(true);
       try {
-        setIsLoading(true);
-        const response = await fetch(`${API_BASE}/api/halls/default`);
-        if (response.ok) {
-          const data = await response.json();
-          if (data.hall) {
-            setHallId(data.hall.id);
+        const hallsList = await fetchHalls();
+        if (hallsList.length > 0) {
+          // Use external hall ID if provided, otherwise use first hall
+          const targetHallId = externalHallId || hallsList[0].id;
+          await loadHallState(targetHallId);
+          // Notify parent of initial hall selection
+          if (onHallChange && !externalHallId) {
+            onHallChange(hallsList[0].id);
           }
-          if (data.config) {
-            setConfig(data.config);
-            console.log('[DataHallDesigner] Loaded config from DB:', data.config);
+        } else {
+          // Create default hall if none exist
+          const newId = await createHall('Default Hall');
+          if (onHallChange && newId) {
+            onHallChange(newId);
           }
         }
       } catch (error) {
-        console.error('[DataHallDesigner] Failed to load hall state:', error);
+        console.log('[DataHallDesigner] Init failed:', error);
       } finally {
         setIsLoading(false);
       }
     };
-    loadHallState();
+    init();
   }, []);
+  
+  // Sync with external hall selection from parent (Dashboard2 sidebar)
+  useEffect(() => {
+    if (externalHallId && externalHallId !== hallId && !isLoading) {
+      loadHallState(externalHallId);
+    }
+  }, [externalHallId, hallId, isLoading, loadHallState]);
   
   // Save hall state
   const saveHallState = useCallback(async () => {
@@ -527,13 +741,17 @@ const DataHallDesigner = ({ onNavigateToPdu }) => {
       if (response.ok) {
         setLastSaved(new Date().toLocaleTimeString());
         console.log('[DataHallDesigner] Saved hall state to DB');
+        // Notify parent to refresh PDU list
+        if (onConfigSaved) {
+          onConfigSaved();
+        }
       }
     } catch (error) {
       console.error('[DataHallDesigner] Failed to save hall state:', error);
     } finally {
       setIsSaving(false);
     }
-  }, [hallId, config]);
+  }, [hallId, config, onConfigSaved]);
   
   // Auto-save on config change (debounced)
   useEffect(() => {
@@ -643,6 +861,99 @@ const DataHallDesigner = ({ onNavigateToPdu }) => {
             <span className="material-icons-outlined">tune</span>
             Parameters
           </h2>
+        
+        {/* Hall Manager */}
+        <div className="mb-6 p-3 bg-[#161E2E] border border-[#233544] rounded-lg">
+          <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-3">
+            Data Hall
+          </h3>
+          
+          {/* Hall Selector */}
+          <div className="flex gap-2 mb-3">
+            <select
+              value={hallId || ''}
+              onChange={(e) => {
+                const newHallId = parseInt(e.target.value);
+                if (newHallId) {
+                  loadHallState(newHallId);
+                  // Notify parent of hall change
+                  if (onHallChange) {
+                    onHallChange(newHallId);
+                  }
+                }
+              }}
+              className="flex-1 bg-[#0B1120] border border-[#233544] rounded px-2 py-1.5 text-xs text-slate-300 font-mono focus:outline-none focus:border-[#00E5FF]"
+            >
+              {halls.map(hall => (
+                <option key={hall.id} value={hall.id}>{hall.name}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => setShowNewHallDialog(true)}
+              className="px-2 py-1.5 bg-[#00E5FF]/10 border border-[#00E5FF]/30 rounded text-[#00E5FF] hover:bg-[#00E5FF]/20 transition-colors"
+              title="Create New Hall"
+            >
+              <span className="material-icons-outlined text-sm">add</span>
+            </button>
+          </div>
+          
+          {/* Current Hall Info */}
+          {currentHall && (
+            <div className="text-[10px] text-slate-500">
+              <span className="text-slate-400">ID:</span> {currentHall.id} &nbsp;|&nbsp;
+              <span className="text-slate-400">Created:</span> {new Date(currentHall.created_at).toLocaleDateString()}
+            </div>
+          )}
+        </div>
+        
+        {/* New Hall Dialog */}
+        {showNewHallDialog && (
+          <div className="mb-4 p-3 bg-[#00E5FF]/5 border border-[#00E5FF]/30 rounded-lg">
+            <p className="text-xs font-bold text-[#00E5FF] mb-2">Create New Data Hall</p>
+            <input
+              type="text"
+              value={newHallName}
+              onChange={(e) => setNewHallName(e.target.value)}
+              placeholder="Enter hall name..."
+              className="w-full bg-[#0B1120] border border-[#233544] rounded px-2 py-1.5 text-xs text-slate-300 font-mono mb-2 focus:outline-none focus:border-[#00E5FF]"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && newHallName.trim()) {
+                  createHall(newHallName.trim());
+                  setNewHallName('');
+                  setShowNewHallDialog(false);
+                } else if (e.key === 'Escape') {
+                  setShowNewHallDialog(false);
+                  setNewHallName('');
+                }
+              }}
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  if (newHallName.trim()) {
+                    createHall(newHallName.trim());
+                    setNewHallName('');
+                    setShowNewHallDialog(false);
+                  }
+                }}
+                disabled={!newHallName.trim()}
+                className="flex-1 px-2 py-1 bg-[#00E5FF]/20 border border-[#00E5FF]/50 rounded text-xs text-[#00E5FF] hover:bg-[#00E5FF]/30 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Create
+              </button>
+              <button
+                onClick={() => {
+                  setShowNewHallDialog(false);
+                  setNewHallName('');
+                }}
+                className="px-2 py-1 bg-slate-500/20 border border-slate-500/30 rounded text-xs text-slate-400 hover:bg-slate-500/30"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
         
         {/* Validation Errors */}
         {layoutResult.errors?.length > 0 && (
@@ -858,6 +1169,113 @@ const DataHallDesigner = ({ onNavigateToPdu }) => {
             </div>
           </div>
         )}
+        
+        {/* Media Section - Custom Rack Model */}
+        <div className="mt-6 p-4 bg-[#161E2E] rounded-lg border border-[#233544]">
+          <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2">
+            <span className="material-icons-outlined text-sm">view_in_ar</span>
+            Custom Rack Model
+          </h3>
+          
+          {config.rackModel?.name ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-2 bg-[#0B1120] rounded border border-[#233544]">
+                <div className="flex items-center gap-2">
+                  <span className="material-icons-outlined text-[#00E5FF] text-sm">check_circle</span>
+                  <span className="text-xs text-slate-300 font-mono">{config.rackModel.name}</span>
+                </div>
+                <button
+                  onClick={() => updateConfig('rackModel', null)}
+                  className="text-red-400 hover:text-red-300 transition-colors"
+                  title="Remove model"
+                >
+                  <span className="material-icons-outlined text-sm">delete</span>
+                </button>
+              </div>
+              <p className="text-[9px] text-slate-500">Custom 3D model will be used for all racks</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <input
+                type="text"
+                placeholder="Model name..."
+                id="rackModelName"
+                className="w-full bg-[#0B1120] border border-[#233544] rounded px-3 py-2 text-xs text-slate-300 font-mono focus:outline-none focus:border-[#00E5FF]"
+              />
+              {/* GLB Upload (single file - recommended) */}
+              <label className="flex items-center justify-center gap-2 w-full py-3 bg-[#0B1120] border border-dashed border-[#233544] rounded-lg cursor-pointer hover:border-[#00E5FF] hover:bg-[#00E5FF]/5 transition-all">
+                <input
+                  type="file"
+                  accept=".glb"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    const nameInput = document.getElementById('rackModelName');
+                    const modelName = nameInput?.value || file?.name?.replace(/\.glb$/i, '') || 'Custom Rack';
+                    if (file) {
+                      const url = URL.createObjectURL(file);
+                      updateConfig('rackModel', {
+                        name: modelName,
+                        url: url,
+                        fileName: file.name,
+                        type: 'glb'
+                      });
+                    }
+                  }}
+                />
+                <span className="material-icons-outlined text-[#00E5FF] text-lg">upload_file</span>
+                <span className="text-xs text-slate-400">Upload <span className="text-[#00E5FF] font-bold">.GLB</span> file (recommended)</span>
+              </label>
+              
+              {/* Folder Upload (gltf + bin + textures) */}
+              <label className="flex items-center justify-center gap-2 w-full py-2 bg-[#0B1120] border border-dashed border-[#233544] rounded-lg cursor-pointer hover:border-slate-500 transition-all">
+                <input
+                  type="file"
+                  webkitdirectory=""
+                  directory=""
+                  className="hidden"
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files || []);
+                    const gltfFile = files.find(f => f.name.endsWith('.gltf'));
+                    if (!gltfFile) {
+                      alert('No .gltf file found in folder. Please select a folder containing a .gltf file.');
+                      return;
+                    }
+                    
+                    const nameInput = document.getElementById('rackModelName');
+                    const modelName = nameInput?.value || gltfFile.name.replace(/\.gltf$/i, '') || 'Custom Rack';
+                    
+                    // Create object URLs for all files, preserving folder structure
+                    const fileUrls = {};
+                    files.forEach(file => {
+                      // Use webkitRelativePath for subfolder files (e.g., textures/image.png)
+                      const relativePath = file.webkitRelativePath;
+                      const pathParts = relativePath.split('/');
+                      // Remove the root folder name, keep rest of path
+                      const fileKey = pathParts.slice(1).join('/') || file.name;
+                      fileUrls[fileKey] = URL.createObjectURL(file);
+                      // Also add just the filename for direct matches
+                      fileUrls[file.name] = URL.createObjectURL(file);
+                    });
+                    
+                    updateConfig('rackModel', {
+                      name: modelName,
+                      url: fileUrls[gltfFile.name],
+                      fileName: gltfFile.name,
+                      type: 'gltf',
+                      assets: fileUrls
+                    });
+                  }}
+                />
+                <span className="material-icons-outlined text-slate-600 text-sm">folder_open</span>
+                <span className="text-[10px] text-slate-600">Or select entire model folder</span>
+              </label>
+              <p className="text-[9px] text-slate-600 text-center mt-1">
+                <span className="text-[#00E5FF]">GLB recommended</span> - single file with textures bundled
+              </p>
+            </div>
+          )}
+        </div>
         </div>
       </div>
       
@@ -872,11 +1290,12 @@ const DataHallDesigner = ({ onNavigateToPdu }) => {
       </button>
       
       {/* Right Panel - 3D View */}
-      <div className="flex-1 relative overflow-hidden">
+      <div className="flex-1 relative overflow-hidden" style={{ isolation: 'isolate' }}>
         <Canvas
           camera={{ position: [15, 12, 15], fov: 50 }}
           gl={{ antialias: true }}
           style={{ background: '#0a1520' }}
+          className="!absolute !inset-0"
         >
           <Suspense fallback={null}>
             <DataHallScene
@@ -887,6 +1306,8 @@ const DataHallDesigner = ({ onNavigateToPdu }) => {
               showLabels={showLabels}
               onSelectRack={setSelectedRack}
               onHoverRack={setHoveredRack}
+              customRackModelUrl={config.rackModel?.url}
+              customRackModelAssets={config.rackModel?.assets}
             />
           </Suspense>
         </Canvas>
@@ -900,7 +1321,7 @@ const DataHallDesigner = ({ onNavigateToPdu }) => {
         />
         
         {/* Alert Legend */}
-        <div className="absolute top-4 left-4 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-4 py-3">
+        <div className="absolute top-4 left-4 z-20 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-4 py-3">
           <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">Status Legend</p>
           <div className="flex flex-col gap-2 text-[10px] font-mono">
             <div className="flex items-center gap-2">
@@ -921,20 +1342,29 @@ const DataHallDesigner = ({ onNavigateToPdu }) => {
         </div>
         
         {/* Save Status Indicator */}
-        <div className="absolute top-4 right-4 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-3 py-2 text-[10px] font-mono">
-          {isLoading ? (
-            <span className="text-slate-400">Loading...</span>
-          ) : isSaving ? (
-            <span className="text-[#00E5FF]">Saving...</span>
-          ) : lastSaved ? (
-            <span className="text-emerald-400">✓ Saved {lastSaved}</span>
-          ) : (
-            <span className="text-slate-500">Auto-save enabled</span>
+        <div className="absolute top-4 right-4 z-20 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-3 py-2 text-[10px] font-mono w-36">
+          {currentHall && (
+            <div className="text-[#00E5FF] font-bold mb-1 truncate">{currentHall.name}</div>
           )}
+          <div className="h-4">
+            {isLoading ? (
+              <span className="text-slate-400 flex items-center gap-1">
+                <span className="animate-pulse">●</span> Loading...
+              </span>
+            ) : isSaving ? (
+              <span className="text-amber-400 flex items-center gap-1">
+                <span className="animate-spin">⟳</span> Saving...
+              </span>
+            ) : lastSaved ? (
+              <span className="text-emerald-400">✓ Saved {lastSaved}</span>
+            ) : (
+              <span className="text-slate-500">Auto-save enabled</span>
+            )}
+          </div>
         </div>
         
         {/* View Controls Legend */}
-        <div className="absolute bottom-4 left-4 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-3 py-2 text-[10px] font-mono text-slate-400">
+        <div className="absolute bottom-4 left-4 z-20 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-3 py-2 text-[10px] font-mono text-slate-400">
           <span className="mr-4">🖱️ Orbit: Drag</span>
           <span className="mr-4">⚙️ Pan: Right-drag</span>
           <span>🔍 Zoom: Scroll</span>
@@ -942,7 +1372,7 @@ const DataHallDesigner = ({ onNavigateToPdu }) => {
         
         {/* Hovered Rack Tooltip */}
         {hoveredRack && !selectedRack && (
-          <div className="absolute top-14 right-4 bg-[#161E2E] border border-[#00E5FF]/30 rounded-lg px-3 py-2">
+          <div className="absolute top-14 right-4 z-20 bg-[#161E2E] border border-[#00E5FF]/30 rounded-lg px-3 py-2">
             <p className="text-sm font-mono text-[#00E5FF]">{hoveredRack.id}</p>
             <p className="text-xs text-slate-400">{hoveredRack.pdus.length} PDUs</p>
           </div>

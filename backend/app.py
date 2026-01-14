@@ -116,27 +116,7 @@ CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 DEFAULT_COMMUNITY = os.getenv("SNMP_COMMUNITY", "private")
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
-# CORS configuration
-CORS(app, resources={r"/*": {"origins": "*", "methods": ["GET", "POST", "OPTIONS"]}})
-
-@app.before_request
-def handle_preflight():
-    if request.method == "OPTIONS":
-        response = make_response()
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', '*')
-        response.headers.add('Access-Control-Allow-Methods', '*')
-        response.headers.add('Access-Control-Max-Age', '3600')
-        return response
-
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', '*')
-    response.headers.add('Access-Control-Allow-Methods', '*')
-    response.headers.add('Access-Control-Expose-Headers', '*')
-    return response
+CORS(app, resources={r"/*": {"origins": "*", "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]}})
 
 
 def load_config() -> Dict[str, Any]:

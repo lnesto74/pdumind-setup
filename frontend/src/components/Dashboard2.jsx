@@ -1,7 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { usePDUContext } from '../context/PDUContext';
 import api from '../api';
 import DataHallDesigner from './DataHallDesigner/DataHallDesigner';
+
+// API base URL
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5002';
 
 // Outlet Card Component matching reference design
 const OutletCard = ({ number, data }) => {
@@ -111,13 +114,98 @@ const Dashboard2 = () => {
   const [expandedPdu, setExpandedPdu] = useState(null);
   const { activePdu } = usePDUContext();
   
-  // Mock PDU list from Data Hall Designer - in production this would come from the designer
-  const generatedPDUs = [
-    { id: 'PDU-01', ip: '192.168.10.106', port: '161', location: 'Row-01/Rack-03', status: 'critical' },
-    { id: 'PDU-02', ip: '192.168.10.107', port: '161', location: 'Row-01/Rack-08', status: 'warning' },
-    { id: 'PDU-03', ip: '192.168.10.108', port: '161', location: 'Row-02/Rack-05', status: 'normal' },
-    { id: 'PDU-04', ip: '192.168.10.109', port: '161', location: 'Row-02/Rack-10', status: 'normal' },
-  ];
+  // Hall management state
+  const [halls, setHalls] = useState([]);
+  const [selectedHallId, setSelectedHallId] = useState(null);
+  const [selectedHall, setSelectedHall] = useState(null);
+  const [hallPDUs, setHallPDUs] = useState([]);
+  const [hallLoading, setHallLoading] = useState(true);
+  
+  // Fetch all halls
+  const fetchHalls = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/halls`);
+      if (response.ok) {
+        const data = await response.json();
+        return data.halls || [];
+      }
+    } catch (error) {
+      console.log('[Dashboard2] Failed to fetch halls:', error);
+    }
+    return [];
+  }, []);
+  
+  // Fetch hall state with PDUs (silent=true skips loading indicator to avoid blinking)
+  const fetchHallState = useCallback(async (hallId, silent = false) => {
+    try {
+      if (!silent) setHallLoading(true);
+      const response = await fetch(`${API_BASE}/api/halls/${hallId}/state`);
+      if (response.ok) {
+        const data = await response.json();
+        setSelectedHall(data.hall);
+        
+        // Generate PDUs from config if available
+        if (data.config && data.pdus) {
+          // Use stored PDUs from DB
+          const pdusWithStatus = data.pdus.map((pdu, idx) => ({
+            id: pdu.label || `PDU-${String(idx + 1).padStart(2, '0')}`,
+            ip: pdu.ip_address,
+            port: pdu.snmp_port || '161',
+            location: pdu.rack_code || 'Unknown',
+            status: 'normal', // Would come from real telemetry
+            dbId: pdu.id
+          }));
+          setHallPDUs(pdusWithStatus);
+        } else if (data.config) {
+          // Generate from config layout
+          const { generateDataHallLayout } = await import('./DataHallDesigner/dataHallConfig');
+          const layout = generateDataHallLayout(data.config);
+          if (layout.success) {
+            const pdusFromLayout = layout.layout.pdus.map((pdu, idx) => ({
+              id: pdu.id,
+              ip: pdu.ip,
+              port: '161',
+              location: pdu.rackId,
+              status: 'normal'
+            }));
+            setHallPDUs(pdusFromLayout);
+          }
+        } else {
+          setHallPDUs([]);
+        }
+      }
+    } catch (error) {
+      console.log('[Dashboard2] Failed to fetch hall state:', error);
+      setHallPDUs([]);
+    } finally {
+      if (!silent) setHallLoading(false);
+    }
+  }, []);
+  
+  // Initialize halls on mount
+  useEffect(() => {
+    const init = async () => {
+      const hallsList = await fetchHalls();
+      setHalls(hallsList);
+      if (hallsList.length > 0) {
+        setSelectedHallId(hallsList[0].id);
+        await fetchHallState(hallsList[0].id);
+      } else {
+        setHallLoading(false);
+      }
+    };
+    init();
+  }, [fetchHalls, fetchHallState]);
+  
+  // Fetch hall state when selection changes
+  useEffect(() => {
+    if (selectedHallId) {
+      fetchHallState(selectedHallId);
+    }
+  }, [selectedHallId, fetchHallState]);
+  
+  // Use hallPDUs for the PDU list
+  const generatedPDUs = hallPDUs;
 
   useEffect(() => {
     const fetchData = async () => {
@@ -189,14 +277,44 @@ const Dashboard2 = () => {
             </button>
           </div>
 
-          {/* PDU Tree Navigation */}
+          {/* Hall Selector */}
           <div className="mb-6">
             <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest mb-3 font-mono">
-              PDU Monitoring
+              Data Hall
             </h3>
-            <div className="space-y-1">
+            <select
+              value={selectedHallId || ''}
+              onChange={(e) => setSelectedHallId(parseInt(e.target.value))}
+              className="w-full bg-[#161E2E] border border-[#233544] rounded-lg px-3 py-2 text-sm text-slate-300 font-mono focus:outline-none focus:border-[#00E5FF]"
+            >
+              {halls.map(hall => (
+                <option key={hall.id} value={hall.id}>{hall.name}</option>
+              ))}
+            </select>
+            {selectedHall && (
+              <p className="text-[9px] text-slate-600 font-mono mt-1 px-1">
+                ID: {selectedHall.id} • {new Date(selectedHall.created_at).toLocaleDateString()}
+              </p>
+            )}
+          </div>
+
+          {/* PDU Tree Navigation */}
+          <div className="mb-6 flex flex-col" style={{ maxHeight: '40vh' }}>
+            <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest mb-3 font-mono flex items-center justify-between flex-shrink-0">
+              <span>PDU Monitoring</span>
+              <span className="text-[#00E5FF]">{generatedPDUs.length}</span>
+            </h3>
+            {hallLoading ? (
+              <div className="text-center py-4 text-slate-500 text-xs">Loading PDUs...</div>
+            ) : generatedPDUs.length === 0 ? (
+              <div className="text-center py-4 text-slate-600 text-xs">
+                No PDUs configured.<br/>
+                <span className="text-slate-500">Use Data Hall Designer to add PDUs.</span>
+              </div>
+            ) : (
+            <div className="space-y-1 overflow-y-auto flex-1 pr-1" style={{ scrollbarWidth: 'thin', scrollbarColor: '#233544 transparent' }}>
               {generatedPDUs.map(pdu => (
-                <div key={pdu.id}>
+                <div key={pdu.id} id={`pdu-item-${pdu.id}`}>
                   {/* PDU Header */}
                   <button
                     onClick={() => setExpandedPdu(expandedPdu === pdu.id ? null : pdu.id)}
@@ -248,6 +366,7 @@ const Dashboard2 = () => {
                 </div>
               ))}
             </div>
+            )}
             
             {/* Add PDU Button */}
             <button className="w-full mt-3 py-2 bg-[#233544] hover:bg-[#2D4A5E] text-slate-400 hover:text-white font-medium text-xs uppercase tracking-wider rounded-lg flex items-center justify-center gap-2 transition-all">
@@ -553,11 +672,26 @@ const Dashboard2 = () => {
           {/* Data Hall Designer View */}
           {activeTab === 'datahall' && (
             <DataHallDesigner 
+              selectedHallId={selectedHallId}
+              onHallChange={(hallId) => setSelectedHallId(hallId)}
+              onConfigSaved={() => {
+                // Refresh PDU list silently (no loading indicator)
+                if (selectedHallId) {
+                  fetchHallState(selectedHallId, true);
+                }
+              }}
               onNavigateToPdu={(pdu) => {
                 // Find matching PDU in sidebar by IP and expand it
                 const matchingPdu = generatedPDUs.find(p => p.ip === pdu.ip);
                 if (matchingPdu) {
                   setExpandedPdu(matchingPdu.id);
+                  // Scroll to the PDU in the sidebar list
+                  setTimeout(() => {
+                    const pduElement = document.getElementById(`pdu-item-${matchingPdu.id}`);
+                    if (pduElement) {
+                      pduElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
+                  }, 100);
                 }
                 setActiveTab('telemetry');
               }}
