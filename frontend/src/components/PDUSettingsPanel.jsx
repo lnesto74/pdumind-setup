@@ -6,6 +6,7 @@ const TABS = [
   { id: 'network', label: 'Network', icon: 'lan' },
   { id: 'snmp', label: 'SNMP', icon: 'vpn_key' },
   { id: 'time', label: 'Time', icon: 'schedule' },
+  { id: 'alarms', label: 'Alarms', icon: 'warning_amber' },
   { id: 'telemetry', label: 'Live Telemetry', icon: 'electric_bolt' },
   { id: 'logs', label: 'Event Logs', icon: 'history' },
 ];
@@ -48,6 +49,7 @@ const PDUSettingsPanel = ({ pdu }) => {
   const [network, setNetwork] = useState({});
   const [snmp, setSnmp] = useState({});
   const [timeConfig, setTimeConfig] = useState({});
+  const [alarms, setAlarms] = useState({});
   const [telemetry, setTelemetry] = useState(null);
   const [logs, setLogs] = useState([]);
   const [deviceInfo, setDeviceInfo] = useState({});
@@ -124,6 +126,21 @@ const PDUSettingsPanel = ({ pdu }) => {
         const data = await res.json();
         if (data.success) setLogs(data.logs || []);
       } catch {}
+    })();
+  }, [tab, host, queryParams]);
+
+  // Fetch alarm thresholds when switching to alarms tab
+  useEffect(() => {
+    if (tab !== 'alarms' || !host) return;
+    setLoading(true);
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/pdu-admin/${host}/alarm-thresholds?${queryParams}`);
+        const data = await res.json();
+        if (data.success) setAlarms(data.thresholds || {});
+        else setError(data.error || 'Failed to read alarm thresholds');
+      } catch (e) { setError(`Alarm fetch failed: ${e.message}`); }
+      finally { setLoading(false); }
     })();
   }, [tab, host, queryParams]);
 
@@ -211,6 +228,22 @@ const PDUSettingsPanel = ({ pdu }) => {
       });
       const data = await res.json();
       if (data.success) { setSuccess('Time settings applied'); setTimeout(() => setSuccess(null), 3000); }
+      else setError(data.error);
+    } catch (e) { setError(e.message); }
+    finally { setSaving(false); }
+  };
+
+  const saveAlarms = async () => {
+    setSaving(true); setError(null); setSuccess(null);
+    try {
+      const { raw, raw_fields, csrf_token, ...payload } = alarms;
+      const res = await fetch(`${API_BASE}/api/pdu-admin/${host}/alarm-thresholds?${queryParams}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.success) { setSuccess('Alarm thresholds applied'); setTimeout(() => setSuccess(null), 3000); }
       else setError(data.error);
     } catch (e) { setError(e.message); }
     finally { setSaving(false); }
@@ -470,6 +503,125 @@ const PDUSettingsPanel = ({ pdu }) => {
                   <InputField label="Correction" value={timeConfig.correction}
                     onChange={v => setTimeConfig(p => ({ ...p, correction: v }))} />
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* ALARMS TAB */}
+          {tab === 'alarms' && (
+            <div className="space-y-4">
+              {/* Device Alarm Thresholds */}
+              <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <span className="material-icons-outlined text-amber-400 text-sm">warning_amber</span>
+                    Device Alarm Thresholds
+                  </h3>
+                  <button onClick={saveAlarms} disabled={saving}
+                    className="px-4 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded-lg text-xs font-mono hover:bg-emerald-500/30 disabled:opacity-50 transition-all flex items-center gap-1.5">
+                    {saving ? <span className="material-icons-outlined text-sm animate-spin">sync</span> : <span className="material-icons-outlined text-sm">save</span>}
+                    Apply to PDU
+                  </button>
+                </div>
+
+                {/* Beep Alarm */}
+                <div className="flex items-center gap-3 mb-4 pb-4 border-b border-[#233544]">
+                  <span className="text-xs text-slate-400">Beep Alarm</span>
+                  <select value={alarms.beep_alarm || '0'}
+                    onChange={e => setAlarms(p => ({ ...p, beep_alarm: e.target.value }))}
+                    className="bg-[#161E2E] border border-[#233544] rounded-lg px-3 py-1.5 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF]">
+                    <option value="1">ON</option>
+                    <option value="0">OFF</option>
+                  </select>
+                </div>
+
+                {/* Phase thresholds */}
+                {[
+                  { label: 'Phase L1 Voltage', upper: 'l1_voltage_upper', lower: 'l1_voltage_lower', unit: 'V', color: 'text-red-400' },
+                  { label: 'Phase L1 Current', upper: 'l1_current_upper', lower: 'l1_current_lower', unit: 'A', color: 'text-red-400' },
+                  { label: 'Phase L2 Voltage', upper: 'l2_voltage_upper', lower: 'l2_voltage_lower', unit: 'V', color: 'text-amber-400' },
+                  { label: 'Phase L2 Current', upper: 'l2_current_upper', lower: 'l2_current_lower', unit: 'A', color: 'text-amber-400' },
+                  { label: 'Phase L3 Voltage', upper: 'l3_voltage_upper', lower: 'l3_voltage_lower', unit: 'V', color: 'text-blue-400' },
+                  { label: 'Phase L3 Current', upper: 'l3_current_upper', lower: 'l3_current_lower', unit: 'A', color: 'text-blue-400' },
+                ].map(row => (
+                  <div key={row.upper} className="grid grid-cols-[1fr_1fr_1fr] gap-3 items-center mb-2">
+                    <span className={`text-xs font-mono ${row.color}`}>{row.label}</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[9px] text-slate-500 w-12">Upper</span>
+                      <input type="text" value={alarms[row.upper] || ''}
+                        onChange={e => setAlarms(p => ({ ...p, [row.upper]: e.target.value }))}
+                        className="w-24 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF]" />
+                      <span className="text-[10px] text-slate-500">{row.unit}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[9px] text-slate-500 w-12">Lower</span>
+                      <input type="text" value={alarms[row.lower] || ''}
+                        onChange={e => setAlarms(p => ({ ...p, [row.lower]: e.target.value }))}
+                        className="w-24 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF]" />
+                      <span className="text-[10px] text-slate-500">{row.unit}</span>
+                    </div>
+                  </div>
+                ))}
+
+                {/* Neutral + Phase Unbalance */}
+                <div className="grid grid-cols-2 gap-3 mt-4 pt-4 border-t border-[#233544]">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-400 w-28">Neutral Line</span>
+                    <input type="text" value={alarms.neutral_line || ''}
+                      onChange={e => setAlarms(p => ({ ...p, neutral_line: e.target.value }))}
+                      className="w-24 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF]" />
+                    <span className="text-[10px] text-slate-500">A</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-400 w-28">Phase Unbalance</span>
+                    <input type="text" value={alarms.phase_unbalance || ''}
+                      onChange={e => setAlarms(p => ({ ...p, phase_unbalance: e.target.value }))}
+                      className="w-24 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF]" />
+                    <span className="text-[10px] text-slate-500">%</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Sensor Alarm Thresholds */}
+              <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+                <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
+                  <span className="material-icons-outlined text-emerald-400 text-sm">thermostat</span>
+                  Sensor Alarm Thresholds
+                </h3>
+
+                {[1, 2, 3, 4].map(n => (
+                  <div key={n} className={`mb-4 ${n < 4 ? 'pb-4 border-b border-[#233544]/50' : ''}`}>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-2 font-mono">Sensor {n}</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <p className="text-[9px] text-slate-500 mb-1">Temperature Upper / Lower</p>
+                        <div className="flex items-center gap-1.5">
+                          <input type="text" value={alarms[`temp${n}_upper`] || ''}
+                            onChange={e => setAlarms(p => ({ ...p, [`temp${n}_upper`]: e.target.value }))}
+                            className="w-20 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF]" />
+                          <span className="text-slate-600">/</span>
+                          <input type="text" value={alarms[`temp${n}_lower`] || ''}
+                            onChange={e => setAlarms(p => ({ ...p, [`temp${n}_lower`]: e.target.value }))}
+                            className="w-20 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF]" />
+                          <span className="text-[10px] text-slate-500">°C</span>
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-[9px] text-slate-500 mb-1">Humidity Upper / Lower</p>
+                        <div className="flex items-center gap-1.5">
+                          <input type="text" value={alarms[`hum${n}_upper`] || ''}
+                            onChange={e => setAlarms(p => ({ ...p, [`hum${n}_upper`]: e.target.value }))}
+                            className="w-20 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF]" />
+                          <span className="text-slate-600">/</span>
+                          <input type="text" value={alarms[`hum${n}_lower`] || ''}
+                            onChange={e => setAlarms(p => ({ ...p, [`hum${n}_lower`]: e.target.value }))}
+                            className="w-20 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF]" />
+                          <span className="text-[10px] text-slate-500">%RH</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           )}

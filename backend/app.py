@@ -1783,6 +1783,37 @@ def pdu_admin_logs(host: str):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/pdu-admin/<host>/alarm-thresholds", methods=["GET"])
+def pdu_admin_get_alarm_thresholds(host: str):
+    """Read alarm threshold settings from a PDU."""
+    try:
+        port = int(request.args.get("port", 6662))
+        username = request.args.get("username", "admin")
+        password = request.args.get("password", "admin")
+        client = _get_pdu_client(host, port, username, password)
+        thresholds = client.get_alarm_thresholds()
+        return jsonify({"success": True, "thresholds": thresholds})
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/pdu-admin/<host>/alarm-thresholds", methods=["POST"])
+def pdu_admin_set_alarm_thresholds(host: str):
+    """Write alarm threshold settings to a PDU."""
+    try:
+        port = int(request.args.get("port", 6662))
+        username = request.args.get("username", "admin")
+        password = request.args.get("password", "admin")
+        data = request.get_json(force=True) if request.data else {}
+        client = _get_pdu_client(host, port, username, password)
+        ok = client.set_alarm_thresholds(**data)
+        return jsonify({"success": ok})
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 # =============================================================================
 # NETWORK SCAN API - Discover PDUs on the network
 # =============================================================================
