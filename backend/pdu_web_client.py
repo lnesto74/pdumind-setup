@@ -463,82 +463,77 @@ class PDUWebClient:
     # ------------------------------------------------------------------
 
     def get_alarm_thresholds(self) -> Dict[str, Any]:
-        """Read device + sensor alarm thresholds from parameter_cfg_Onceload.cgi."""
-        f = self._get_cgi("parameter_cfg_Onceload.cgi?")
-        result: Dict[str, Any] = {"raw_fields": len(f), "raw": f[:60]}
+        """Read device + sensor alarm thresholds from ts_cfg_Onceload.cgi.
 
-        # The CGI returns semicolon-delimited fields.  Exact layout is
-        # discovered empirically; we parse what we can and return a
-        # structured dict.  Field order (observed on IPDUv1H firmware):
-        #   [0] csrf_or_header
-        #   [1] select_index (Host/Guest)
-        #   [2] beep_alarm  ("0"=OFF, "1"=ON)
-        #   [3] L1 voltage upper, [4] L1 voltage lower
-        #   [5] L1 current upper, [6] L1 current lower
-        #   [7] L2 voltage upper, [8] L2 voltage lower
-        #   [9] L2 current upper, [10] L2 current lower
-        #   [11] L3 voltage upper, [12] L3 voltage lower
-        #   [13] L3 current upper, [14] L3 current lower
-        #   [15] neutral_line
-        #   [16] phase_unbalance
-        #   [17..18] temp1 upper/lower, [19..20] hum1 upper/lower
-        #   [21..22] temp2 upper/lower, [23..24] hum2 upper/lower
-        #   [25..26] temp3 upper/lower, [27..28] hum3 upper/lower
-        #   [29..30] temp4 upper/lower, [31..32] hum4 upper/lower
-        #   [...] csrf token near the end
+        Field order (from parameter_cfg0.html JS):
+          [0] Pagename ("Host PDU Configure")
+          [1] Headname ("")
+          [2] btn1.display   [3] btn2.display   [4] btn3.display
+          [5] BeepAlarm (1=ON, 0=OFF)
+          [6] Utop0 (L1 V upper)  [7] Ubottom0 (L1 V lower)
+          [8] Itop0 (L1 A upper)  [9] Ibottom0 (L1 A lower)
+          [10] Utop1 (L2 V upper) [11] Ubottom1 (L2 V lower)
+          [12] Itop1 (L2 A upper) [13] Ibottom1 (L2 A lower)
+          [14] Utop2 (L3 V upper) [15] Ubottom2 (L3 V lower)
+          [16] Itop2 (L3 A upper) [17] Ibottom2 (L3 A lower)
+          [18] ZeroIrms (neutral line)  [19] PhaseUnbalance
+          [20] Ttop0  [21] Tbottom0  [22] Htop0  [23] Hbottom0
+          [24] Ttop1  [25] Tbottom1  [26] Htop1  [27] Hbottom1
+          [28] Ttop2  [29] Tbottom2  [30] Htop2  [31] Hbottom2
+          [32] Ttop3  [33] Tbottom3  [34] Htop3  [35] Hbottom3
+          [36] I_randnum (rated current)
+          [37] loginname   [38] CSRF token   [39] page index
+        """
+        f = self._get_cgi("ts_cfg_Onceload.cgi?")
+        result: Dict[str, Any] = {"raw_fields": len(f)}
 
         def _g(idx: int) -> str:
             return f[idx].strip() if idx < len(f) else ""
 
-        result["beep_alarm"] = _g(2)
+        result["beep_alarm"] = _g(5)
 
-        result["l1_voltage_upper"] = _g(3)
-        result["l1_voltage_lower"] = _g(4)
-        result["l1_current_upper"] = _g(5)
-        result["l1_current_lower"] = _g(6)
-        result["l2_voltage_upper"] = _g(7)
-        result["l2_voltage_lower"] = _g(8)
-        result["l2_current_upper"] = _g(9)
-        result["l2_current_lower"] = _g(10)
-        result["l3_voltage_upper"] = _g(11)
-        result["l3_voltage_lower"] = _g(12)
-        result["l3_current_upper"] = _g(13)
-        result["l3_current_lower"] = _g(14)
-        result["neutral_line"] = _g(15)
-        result["phase_unbalance"] = _g(16)
+        result["l1_voltage_upper"] = _g(6)
+        result["l1_voltage_lower"] = _g(7)
+        result["l1_current_upper"] = _g(8)
+        result["l1_current_lower"] = _g(9)
+        result["l2_voltage_upper"] = _g(10)
+        result["l2_voltage_lower"] = _g(11)
+        result["l2_current_upper"] = _g(12)
+        result["l2_current_lower"] = _g(13)
+        result["l3_voltage_upper"] = _g(14)
+        result["l3_voltage_lower"] = _g(15)
+        result["l3_current_upper"] = _g(16)
+        result["l3_current_lower"] = _g(17)
+        result["neutral_line"] = _g(18)
+        result["phase_unbalance"] = _g(19)
 
-        result["temp1_upper"] = _g(17)
-        result["temp1_lower"] = _g(18)
-        result["hum1_upper"] = _g(19)
-        result["hum1_lower"] = _g(20)
-        result["temp2_upper"] = _g(21)
-        result["temp2_lower"] = _g(22)
-        result["hum2_upper"] = _g(23)
-        result["hum2_lower"] = _g(24)
-        result["temp3_upper"] = _g(25)
-        result["temp3_lower"] = _g(26)
-        result["hum3_upper"] = _g(27)
-        result["hum3_lower"] = _g(28)
-        result["temp4_upper"] = _g(29)
-        result["temp4_lower"] = _g(30)
-        result["hum4_upper"] = _g(31)
-        result["hum4_lower"] = _g(32)
+        result["temp1_upper"] = _g(20)
+        result["temp1_lower"] = _g(21)
+        result["hum1_upper"] = _g(22)
+        result["hum1_lower"] = _g(23)
+        result["temp2_upper"] = _g(24)
+        result["temp2_lower"] = _g(25)
+        result["hum2_upper"] = _g(26)
+        result["hum2_lower"] = _g(27)
+        result["temp3_upper"] = _g(28)
+        result["temp3_lower"] = _g(29)
+        result["hum3_upper"] = _g(30)
+        result["hum3_lower"] = _g(31)
+        result["temp4_upper"] = _g(32)
+        result["temp4_lower"] = _g(33)
+        result["hum4_upper"] = _g(34)
+        result["hum4_lower"] = _g(35)
 
-        # CSRF token is typically the last meaningful field
-        for i in range(len(f) - 1, max(len(f) - 5, 32), -1):
-            val = f[i].strip() if i < len(f) else ""
-            if len(val) >= 10 and val.isalnum():
-                result["csrf_token"] = val
-                break
-        else:
-            result["csrf_token"] = ""
+        result["rated_current"] = _g(36)
+        result["csrf_token"] = _g(38)
 
         return result
 
     def set_alarm_thresholds(self, **kwargs) -> bool:
         """Write alarm thresholds.  Accepts any subset of the fields
         returned by get_alarm_thresholds(); unspecified fields keep
-        their current values."""
+        their current values.  Posts to Meter_limit.cgi (phase/device)
+        and Sensor_limit.cgi (temp/humidity) separately."""
         with self._lock:
             cur = self.get_alarm_thresholds()
             csrf = cur.get("csrf_token", "")
@@ -546,43 +541,42 @@ class PDUWebClient:
             def _v(key: str) -> str:
                 return str(kwargs[key]) if key in kwargs else str(cur.get(key, ""))
 
-            data = {
-                "switch_netset_csrftoken2": csrf,
+            # Form 1: Meter_limit.cgi (phase voltage/current, neutral, unbalance, beep)
+            meter_data = {
+                "ts_csrftoken1": csrf,
                 "BeepAlarm": _v("beep_alarm"),
-                "L1_Voltage_Upper": _v("l1_voltage_upper"),
-                "L1_Voltage_Lower": _v("l1_voltage_lower"),
-                "L1_Current_Upper": _v("l1_current_upper"),
-                "L1_Current_Lower": _v("l1_current_lower"),
-                "L2_Voltage_Upper": _v("l2_voltage_upper"),
-                "L2_Voltage_Lower": _v("l2_voltage_lower"),
-                "L2_Current_Upper": _v("l2_current_upper"),
-                "L2_Current_Lower": _v("l2_current_lower"),
-                "L3_Voltage_Upper": _v("l3_voltage_upper"),
-                "L3_Voltage_Lower": _v("l3_voltage_lower"),
-                "L3_Current_Upper": _v("l3_current_upper"),
-                "L3_Current_Lower": _v("l3_current_lower"),
-                "Neutral_Line": _v("neutral_line"),
-                "Phase_Unbalance": _v("phase_unbalance"),
-                "Temp1_Upper": _v("temp1_upper"),
-                "Temp1_Lower": _v("temp1_lower"),
-                "Hum1_Upper": _v("hum1_upper"),
-                "Hum1_Lower": _v("hum1_lower"),
-                "Temp2_Upper": _v("temp2_upper"),
-                "Temp2_Lower": _v("temp2_lower"),
-                "Hum2_Upper": _v("hum2_upper"),
-                "Hum2_Lower": _v("hum2_lower"),
-                "Temp3_Upper": _v("temp3_upper"),
-                "Temp3_Lower": _v("temp3_lower"),
-                "Hum3_Upper": _v("hum3_upper"),
-                "Hum3_Lower": _v("hum3_lower"),
-                "Temp4_Upper": _v("temp4_upper"),
-                "Temp4_Lower": _v("temp4_lower"),
-                "Hum4_Upper": _v("hum4_upper"),
-                "Hum4_Lower": _v("hum4_lower"),
+                "Utop0": _v("l1_voltage_upper"),
+                "Ubottom0": _v("l1_voltage_lower"),
+                "Itop0": _v("l1_current_upper"),
+                "Ibottom0": _v("l1_current_lower"),
+                "Utop1": _v("l2_voltage_upper"),
+                "Ubottom1": _v("l2_voltage_lower"),
+                "Itop1": _v("l2_current_upper"),
+                "Ibottom1": _v("l2_current_lower"),
+                "Utop2": _v("l3_voltage_upper"),
+                "Ubottom2": _v("l3_voltage_lower"),
+                "Itop2": _v("l3_current_upper"),
+                "Ibottom2": _v("l3_current_lower"),
+                "ZeroIrms": _v("neutral_line"),
+                "PhaseUnbalance": _v("phase_unbalance"),
             }
+            resp1 = self._post_cgi("Meter_limit.cgi", meter_data)
 
-            resp = self._post_cgi("parameter_cfg_set.cgi", data)
-            return "404" not in resp
+            # Form 2: Sensor_limit.cgi (temperature/humidity for 4 sensors)
+            sensor_data = {
+                "ts_csrftoken2": csrf,
+                "Ttop0": _v("temp1_upper"), "Tbottom0": _v("temp1_lower"),
+                "Htop0": _v("hum1_upper"), "Hbottom0": _v("hum1_lower"),
+                "Ttop1": _v("temp2_upper"), "Tbottom1": _v("temp2_lower"),
+                "Htop1": _v("hum2_upper"), "Hbottom1": _v("hum2_lower"),
+                "Ttop2": _v("temp3_upper"), "Tbottom2": _v("temp3_lower"),
+                "Htop2": _v("hum3_upper"), "Hbottom2": _v("hum3_lower"),
+                "Ttop3": _v("temp4_upper"), "Tbottom3": _v("temp4_lower"),
+                "Htop3": _v("hum4_upper"), "Hbottom3": _v("hum4_lower"),
+            }
+            resp2 = self._post_cgi("Sensor_limit.cgi", sensor_data)
+
+            return "404" not in resp1 and "404" not in resp2
 
     # ------------------------------------------------------------------
     # All settings in one call
