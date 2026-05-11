@@ -57,31 +57,32 @@ class PDUWebClient:
     # ------------------------------------------------------------------
 
     def login(self) -> bool:
-        self._session = requests.Session()
-        sha1_pass = hashlib.sha1(self.password.encode()).hexdigest()
-        nonce = _nonce()
-        hmac_val = hmac.new(
-            sha1_pass.encode(), nonce.encode(), hashlib.sha1
-        ).hexdigest()
+        with self._lock:
+            self._session = requests.Session()
+            sha1_pass = hashlib.sha1(self.password.encode()).hexdigest()
+            nonce = _nonce()
+            hmac_val = hmac.new(
+                sha1_pass.encode(), nonce.encode(), hashlib.sha1
+            ).hexdigest()
 
-        resp = self._session.post(
-            f"{self.base_url}/login.cgi",
-            data={
-                "ip": self.username,
-                "port": hmac_val,
-                "radom": nonce,
-                "login": "Log On",
-            },
-            timeout=self.timeout,
-            allow_redirects=False,
-        )
-        if resp.status_code == 200 and "home0.html" in resp.text:
-            self._logged_in = True
-            self._login_time = _time.time()
-            return True
+            resp = self._session.post(
+                f"{self.base_url}/login.cgi",
+                data={
+                    "ip": self.username,
+                    "port": hmac_val,
+                    "radom": nonce,
+                    "login": "Log On",
+                },
+                timeout=self.timeout,
+                allow_redirects=False,
+            )
+            if resp.status_code == 200 and "home0.html" in resp.text:
+                self._logged_in = True
+                self._login_time = _time.time()
+                return True
 
-        self._logged_in = False
-        return False
+            self._logged_in = False
+            return False
 
     def _ensure_session(self) -> None:
         if not self._logged_in or (_time.time() - self._login_time > self._session_ttl):

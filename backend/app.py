@@ -1838,10 +1838,13 @@ def pdu_admin_connect():
             return jsonify({"error": "host is required"}), 400
 
         client = _get_pdu_client(host, port, username, password)
-        if not client.login():
+        # Use get_all_settings() which internally acquires the lock and
+        # ensures a valid session – avoids racing with the background poller.
+        try:
+            settings = client.get_all_settings()
+        except ConnectionError:
             return jsonify({"error": "Login failed — check credentials"}), 401
 
-        settings = client.get_all_settings()
         return jsonify({"success": True, **settings})
     except requests.exceptions.ConnectionError:
         return jsonify({"error": f"Cannot reach PDU at {host}:{port}"}), 502
