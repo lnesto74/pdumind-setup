@@ -1047,7 +1047,7 @@ const MibDropZone = ({ hallId }) => {
 };
 
 // Main Component
-const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onHallChange, onConfigSaved }) => {
+const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onHallChange, onConfigSaved, alerts: externalAlerts }) => {
   const [config, setConfig] = useState(defaultDataHallConfig);
   const [selectedRack, setSelectedRack] = useState(null);
   const [hoveredRack, setHoveredRack] = useState(null);
@@ -1370,74 +1370,8 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
     };
   }, [layoutResult, storedPdus]);
   
-  // Mock alerts for demonstration - in production, these would come from real PDU monitoring
-  const alerts = useMemo(() => {
-    if (!mergedLayoutResult.success) return [];
-    const racks = mergedLayoutResult.layout.racks;
-    const mockAlerts = [];
-    
-    // Add a critical alert on rack 3 (Row-01/Rack-03)
-    if (racks.length > 2) {
-      const rack3 = racks[2];
-      if (rack3.pdus.length > 0) {
-        mockAlerts.push({
-          id: 'alert-1',
-          severity: 'critical',
-          pduId: rack3.pdus[0].id,
-          rackId: rack3.id,
-          title: 'Over-current Detection',
-          message: 'Current exceeded 15A threshold on PDU-A'
-        });
-      }
-    }
-    
-    // Add a warning alert on rack 8 (Row-01/Rack-08)
-    if (racks.length > 7) {
-      const rack8 = racks[7];
-      if (rack8.pdus.length > 0) {
-        mockAlerts.push({
-          id: 'alert-2',
-          severity: 'warning',
-          pduId: rack8.pdus[0].id,
-          rackId: rack8.id,
-          title: 'Temperature Warning',
-          message: 'Ambient temperature above 35°C'
-        });
-      }
-    }
-    
-    // Add another warning on rack 15 (Row-02/Rack-05)
-    if (racks.length > 14) {
-      const rack15 = racks[14];
-      if (rack15.pdus.length > 0) {
-        mockAlerts.push({
-          id: 'alert-3',
-          severity: 'warning',
-          pduId: rack15.pdus[0].id,
-          rackId: rack15.id,
-          title: 'High Load Warning',
-          message: 'Load approaching 80% capacity'
-        });
-      }
-    }
-    
-    // Add a critical on rack 22
-    if (racks.length > 21) {
-      const rack22 = racks[21];
-      if (rack22.pdus.length > 0) {
-        mockAlerts.push({
-          id: 'alert-4',
-          severity: 'critical',
-          pduId: rack22.pdus[0].id,
-          rackId: rack22.id,
-          title: 'Power Supply Failure',
-          message: 'PDU-B not responding'
-        });
-      }
-    }
-    
-    return mockAlerts;
-  }, [layoutResult]);
+  // Use real alerts from parent (Dashboard2) or empty array
+  const alerts = externalAlerts || [];
   
   // Update config helper
   const updateConfig = useCallback((path, value) => {

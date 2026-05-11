@@ -183,6 +183,7 @@ const Dashboard2 = () => {
   // PDU filter state: 'all', 'live', 'offline'
   const [pduFilter, setPduFilter] = useState('all');
   const [pduLiveStatus, setPduLiveStatus] = useState({}); // { ip: 'online'|'offline' }
+  const [pduAlarms, setPduAlarms] = useState({}); // { ip: { count: N, flags: [...] } }
   
   // Commissioning wizard state
   const [showWizard, setShowWizard] = useState(false);
@@ -282,6 +283,7 @@ const Dashboard2 = () => {
     
     const fetchLiveStatus = async () => {
       const statusMap = {};
+      const alarmMap = {};
       for (const pdu of hallPDUs) {
         if (!pdu.ip) continue;
         try {
@@ -293,11 +295,27 @@ const Dashboard2 = () => {
           } else {
             statusMap[pdu.ip] = 'offline';
           }
+          // Fetch alarm data from live telemetry
+          if (statusMap[pdu.ip] === 'online') {
+            try {
+              const liveRes = await fetch(`${API_BASE}/api/pdus/by-ip/${pdu.ip}/live${rh}`);
+              if (liveRes.ok) {
+                const liveData = await liveRes.json();
+                const flagsEntry = liveData.results?.find(r => r.name === '_alarm_flags');
+                const countEntry = liveData.results?.find(r => r.name === '_alarm_count');
+                const count = parseInt(countEntry?.value || '0', 10);
+                let flags = [];
+                try { flags = JSON.parse(flagsEntry?.value || '[]'); } catch {}
+                alarmMap[pdu.ip] = { count, flags };
+              }
+            } catch {}
+          }
         } catch {
           statusMap[pdu.ip] = 'offline';
         }
       }
       setPduLiveStatus(statusMap);
+      setPduAlarms(alarmMap);
     };
     
     fetchLiveStatus();
@@ -316,6 +334,32 @@ const Dashboard2 = () => {
   
   // Use filtered PDUs for the PDU list
   const generatedPDUs = filteredPDUs;
+
+  // Global alarm computation
+  const globalAlarmCount = useMemo(() => {
+    return Object.values(pduAlarms).reduce((sum, a) => sum + (a.count || 0), 0);
+  }, [pduAlarms]);
+  const alarmedPduCount = useMemo(() => {
+    return Object.values(pduAlarms).filter(a => a.count > 0).length;
+  }, [pduAlarms]);
+
+  // Build alerts array for 3D canvas
+  const rackAlerts = useMemo(() => {
+    const alerts = [];
+    for (const pdu of hallPDUs) {
+      const alarm = pduAlarms[pdu.ip];
+      if (alarm && alarm.count > 0) {
+        alerts.push({
+          pduId: pdu.id,
+          rackId: pdu.rack_id,
+          severity: 'critical',
+          title: `${alarm.count} Alarm${alarm.count > 1 ? 's' : ''}`,
+          message: alarm.flags.map(f => f.param).join(', '),
+        });
+      }
+    }
+    return alerts;
+  }, [hallPDUs, pduAlarms]);
 
   const renamePdu = useCallback(async (pduDbId, newLabel) => {
     if (!pduDbId || !newLabel.trim()) return;
@@ -496,6 +540,21 @@ const Dashboard2 = () => {
 
   return (
     <div className="min-h-screen bg-[#0B1120] text-slate-100">
+      {/* Global Alarm Banner */}
+      {globalAlarmCount > 0 && (
+        <div className="bg-red-500/15 border-b border-red-500/40 px-6 py-2 flex items-center gap-3 animate-pulse">
+          <span className="material-icons-outlined text-red-400 text-xl">warning</span>
+          <span className="text-red-300 text-sm font-mono font-bold">
+            {globalAlarmCount} Active Alarm{globalAlarmCount > 1 ? 's' : ''} on {alarmedPduCount} PDU{alarmedPduCount > 1 ? 's' : ''}
+          </span>
+          <span className="text-red-400/60 text-xs font-mono ml-auto">
+            {Object.entries(pduAlarms).filter(([,a]) => a.count > 0).map(([ip]) => {
+              const pdu = hallPDUs.find(p => p.ip === ip);
+              return pdu?.label || pdu?.ip || ip;
+            }).join(' • ')}
+          </span>
+        </div>
+      )}
       <div className="flex">
         {/* Sidebar */}
         <aside className="w-72 border-r border-[#233544] bg-[#0B1120] min-h-[calc(100vh-4rem)] p-4 overflow-y-auto">
@@ -628,6 +687,7 @@ const Dashboard2 = () => {
                       )}
                       {[
                         { id: 'telemetry', icon: 'analytics', label: 'Telemetry' },
+                        { id: 'warnings', icon: 'warning_amber', label: 'Warnings', alarmCount: pduAlarms[pdu.ip]?.count || 0 },
                         { id: 'outlets', icon: 'power', label: 'Outlets' },
                         { id: 'ledger', icon: 'history_edu', label: 'Activity Ledger', inactive: true },
                         { id: 'specs', icon: 'info', label: 'Specs', inactive: true },
@@ -641,13 +701,21 @@ const Dashboard2 = () => {
                           className={`w-full flex items-center gap-2 px-2 py-1.5 rounded transition-colors text-left text-xs ${
                             item.inactive
                               ? 'text-slate-600 opacity-40 cursor-not-allowed'
+                              : item.alarmCount > 0
+                                ? 'bg-red-500/15 text-red-400 border border-red-500/30'
                               : activeTab === item.id && expandedPdu === pdu.id
                                 ? 'bg-[#00E5FF]/10 text-[#00E5FF]' 
                                 : 'text-slate-500 hover:bg-[#161E2E] hover:text-slate-300'
                           }`}
                         >
-                          <span className="material-icons-outlined text-sm">{item.icon}</span>
+                          <span className={`material-icons-outlined text-sm ${item.alarmCount > 0 ? 'text-red-400' : ''}`}>{item.icon}</span>
                           <span>{item.label}</span>
+                          {item.alarmCount > 0 && (
+                            <span className="ml-auto bg-red-500 text-white text-[9px] font-bold font-mono px-1.5 py-0.5 rounded-full animate-pulse">{item.alarmCount}</span>
+                          )}
+                          {item.id === 'warnings' && !item.alarmCount && (
+                            <span className="ml-auto text-[9px] text-emerald-500 font-mono">Normal</span>
+                          )}
                           {item.inactive && <span className="ml-auto text-[8px] uppercase tracking-wider text-slate-600 font-mono">inactive</span>}
                         </button>
                       ))}
@@ -1159,6 +1227,122 @@ const Dashboard2 = () => {
             </>
           )}
 
+          {/* Warnings View */}
+          {activeTab === 'warnings' && (
+            <>
+              <div className="flex justify-between items-start mb-8">
+                <div>
+                  <h2 className="text-2xl font-bold font-mono uppercase tracking-tight text-white">
+                    <span className="material-icons-outlined align-middle mr-2 text-amber-400">warning_amber</span>
+                    Alarm Status
+                  </h2>
+                  <p className="text-xs text-slate-500 font-mono mt-1">
+                    {activePdu?.label || activePdu?.ip || 'PDU'} — Real-time alarm flags from device
+                  </p>
+                </div>
+              </div>
+
+              {(() => {
+                const alarm = pduAlarms[activePdu?.ip];
+                const flags = alarm?.flags || [];
+                const alarmEntries = activePdu?.ip ? Object.entries(
+                  Object.fromEntries(
+                    (data?.results || [])
+                      .filter(r => r.name.startsWith('alarm_') && !r.name.endsWith('_color') && r.name !== 'alarm_status' && r.name !== 'alarm_color')
+                      .map(r => [r.name, r.value])
+                  )
+                ) : [];
+
+                const PARAM_LABELS = {
+                  alarm_l1_voltage: 'Phase L1 Voltage', alarm_l1_current: 'Phase L1 Current',
+                  alarm_l2_voltage: 'Phase L2 Voltage', alarm_l2_current: 'Phase L2 Current',
+                  alarm_l3_voltage: 'Phase L3 Voltage', alarm_l3_current: 'Phase L3 Current',
+                  alarm_neutral: 'Neutral Line', alarm_phase_unbalance: 'Phase Unbalance',
+                  alarm_temp1: 'Temperature 1', alarm_hum1: 'Humidity 1',
+                  alarm_temp2: 'Temperature 2', alarm_hum2: 'Humidity 2',
+                  alarm_temp3: 'Temperature 3', alarm_hum3: 'Humidity 3',
+                  alarm_temp4: 'Temperature 4', alarm_hum4: 'Humidity 4',
+                  alarm_sensor1: 'IO Sensor 1', alarm_sensor2: 'IO Sensor 2',
+                  alarm_sensor3: 'IO Sensor 3', alarm_sensor4: 'IO Sensor 4',
+                };
+
+                return (
+                  <div className="space-y-4">
+                    {/* Summary */}
+                    <div className={`p-4 rounded-xl border ${flags.length > 0 ? 'bg-red-500/10 border-red-500/30' : 'bg-emerald-500/10 border-emerald-500/30'}`}>
+                      <div className="flex items-center gap-3">
+                        <span className={`material-icons-outlined text-3xl ${flags.length > 0 ? 'text-red-400 animate-pulse' : 'text-emerald-400'}`}>
+                          {flags.length > 0 ? 'error' : 'check_circle'}
+                        </span>
+                        <div>
+                          <p className={`text-lg font-bold font-mono ${flags.length > 0 ? 'text-red-300' : 'text-emerald-300'}`}>
+                            {flags.length > 0 ? `${flags.length} ACTIVE ALARM${flags.length > 1 ? 'S' : ''}` : 'ALL NORMAL'}
+                          </p>
+                          <p className="text-xs text-slate-500 font-mono">
+                            {flags.length > 0 ? flags.map(f => f.param.replace(/_/g, ' ')).join(', ') : 'No alarms detected on this PDU'}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Device Alarms */}
+                    <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+                      <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
+                        <span className="material-icons-outlined text-[#00E5FF] text-sm">electric_bolt</span>
+                        Device Alarms
+                      </h3>
+                      <div className="grid grid-cols-2 gap-2">
+                        {['alarm_l1_voltage', 'alarm_l1_current', 'alarm_l2_voltage', 'alarm_l2_current',
+                          'alarm_l3_voltage', 'alarm_l3_current', 'alarm_neutral', 'alarm_phase_unbalance'
+                        ].map(key => {
+                          const val = alarmEntries.find(([k]) => k === key)?.[1] || '-';
+                          const isNormal = !val || val === '-' || val.toLowerCase() === 'normal';
+                          return (
+                            <div key={key} className={`flex items-center justify-between px-3 py-2 rounded-lg border ${
+                              isNormal ? 'bg-[#161E2E] border-[#233544]' : 'bg-red-500/15 border-red-500/40'
+                            }`}>
+                              <span className="text-xs text-slate-400">{PARAM_LABELS[key] || key}</span>
+                              <span className={`text-xs font-mono font-bold ${isNormal ? 'text-emerald-400' : 'text-red-400'}`}>
+                                {isNormal ? 'Normal' : val}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Sensor Alarms */}
+                    <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+                      <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
+                        <span className="material-icons-outlined text-emerald-400 text-sm">thermostat</span>
+                        Sensor Alarms
+                      </h3>
+                      <div className="grid grid-cols-2 gap-2">
+                        {['alarm_temp1', 'alarm_hum1', 'alarm_temp2', 'alarm_hum2',
+                          'alarm_temp3', 'alarm_hum3', 'alarm_temp4', 'alarm_hum4',
+                          'alarm_sensor1', 'alarm_sensor2', 'alarm_sensor3', 'alarm_sensor4'
+                        ].map(key => {
+                          const val = alarmEntries.find(([k]) => k === key)?.[1] || '-';
+                          const isNormal = !val || val === '-' || val.toLowerCase() === 'normal';
+                          return (
+                            <div key={key} className={`flex items-center justify-between px-3 py-2 rounded-lg border ${
+                              isNormal ? 'bg-[#161E2E] border-[#233544]' : 'bg-red-500/15 border-red-500/40'
+                            }`}>
+                              <span className="text-xs text-slate-400">{PARAM_LABELS[key] || key}</span>
+                              <span className={`text-xs font-mono font-bold ${isNormal ? 'text-emerald-400' : 'text-red-400'}`}>
+                                {isNormal ? 'Normal' : val}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </>
+          )}
+
           {/* Outlets View */}
           {activeTab === 'outlets' && (
             <>
@@ -1201,6 +1385,7 @@ const Dashboard2 = () => {
           {activeTab === 'datahall' && (
             <DataHallDesigner 
               selectedHallId={selectedHallId}
+              alerts={rackAlerts}
               onHallChange={(hallId) => setSelectedHallId(hallId)}
               onConfigSaved={() => {
                 // Refresh PDU list silently (no loading indicator)

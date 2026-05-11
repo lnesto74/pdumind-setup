@@ -364,28 +364,70 @@ class PDUWebClient:
         "frequency", "neutral_current", "neutral_load_pct",
     ]
 
+    # Alarm flag labels in the order they appear in Home_Upload.cgi
+    # after the breakers section (pairs of text + color per parameter).
+    _ALARM_FLAG_LABELS = [
+        "alarm_l1_voltage", "alarm_l1_current",
+        "alarm_l2_voltage", "alarm_l2_current",
+        "alarm_l3_voltage", "alarm_l3_current",
+        "alarm_neutral", "alarm_phase_unbalance",
+        "alarm_temp1", "alarm_hum1",
+        "alarm_temp2", "alarm_hum2",
+        "alarm_temp3", "alarm_hum3",
+        "alarm_temp4", "alarm_hum4",
+        "alarm_sensor1", "alarm_sensor2",
+        "alarm_sensor3", "alarm_sensor4",
+    ]
+
     def get_live_telemetry(self) -> Dict[str, Any]:
         f = self._get_cgi("Home_Upload.cgi?")
         result: Dict[str, Any] = {}
         for i, val in enumerate(f):
             key = self._TELE_LABELS[i] if i < len(self._TELE_LABELS) else f"field_{i}"
             result[key] = val
-        # Parse breaker statuses (fields 42+, pairs of status+color)
+
+        # After the named telemetry fields come:
+        #   - temperature/humidity sensor readings (8 fields)
+        #   - breaker statuses (variable, pairs of status+color)
+        #   - alarm flags (pairs of text+color per parameter)
+        #   - datetime, overall alarm status, overall alarm color (last 3)
+        #
+        # Strategy: work backwards from the known tail to parse alarm flags,
+        # then everything between telemetry labels and alarm flags is breakers.
+
+        # Last 3 fields: datetime, alarm_status, alarm_color
+        if len(f) >= 3:
+            result["datetime"] = f[-3]
+            result["alarm_status"] = f[-2]
+            result["alarm_color"] = f[-1]
+
+        # Alarm flags: 20 parameters x 2 fields (text+color) = 40 fields before tail
+        alarm_flag_count = len(self._ALARM_FLAG_LABELS)
+        alarm_start = len(f) - 3 - (alarm_flag_count * 2)
+        alarm_flags = []
+        if alarm_start > len(self._TELE_LABELS):
+            for ai, label in enumerate(self._ALARM_FLAG_LABELS):
+                fi = alarm_start + (ai * 2)
+                if fi + 1 < len(f):
+                    text = f[fi].strip()
+                    color = f[fi + 1].strip() if fi + 1 < len(f) else ""
+                    result[label] = text
+                    result[f"{label}_color"] = color
+                    if text and text != "-" and text.lower() != "normal":
+                        alarm_flags.append({"param": label.replace("alarm_", ""), "status": text, "color": color})
+        result["alarm_flags"] = alarm_flags
+
+        # Breakers: everything between telemetry labels and alarm flags
         breakers = []
+        breaker_end = alarm_start if alarm_start > len(self._TELE_LABELS) else len(f) - 3
         idx = len(self._TELE_LABELS)
-        while idx + 1 < len(f):
+        while idx + 1 < breaker_end:
             status = f[idx]
             color = f[idx + 1] if idx + 1 < len(f) else ""
             if status and status != "-":
                 breakers.append({"status": status, "color": color})
             idx += 2
         result["breakers"] = breakers
-
-        # Extract the tail fields (datetime, alarm)
-        if len(f) >= 3:
-            result["datetime"] = f[-3] if len(f) >= 3 else ""
-            result["alarm_status"] = f[-2] if len(f) >= 2 else ""
-            result["alarm_color"] = f[-1] if len(f) >= 1 else ""
 
         return result
 

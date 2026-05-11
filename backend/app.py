@@ -595,7 +595,7 @@ def _poll_remote_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str
         tele = client.get_live_telemetry()
 
         # Store ALL raw web admin fields under their original CGI key names
-        _skip = {"csrf", "breakers", "datetime", "alarm_status", "alarm_color",
+        _skip = {"csrf", "breakers", "datetime", "alarm_flags",
                  "l1_color", "l2_color", "l3_color", "name", "firmware"}
         for key, val in tele.items():
             if key in _skip or key.startswith("field_"):
@@ -619,6 +619,18 @@ def _poll_remote_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str
                 "name": f"Output{i}Status", "oid": f"web:breaker_{i}",
                 "value": br.get("status", "0"),
             }
+
+        # Store alarm flags as a JSON-encoded summary for the frontend
+        import json
+        alarm_flags = tele.get("alarm_flags", [])
+        results["_alarm_flags"] = {
+            "name": "_alarm_flags", "oid": "web:alarm_flags",
+            "value": json.dumps(alarm_flags),
+        }
+        results["_alarm_count"] = {
+            "name": "_alarm_count", "oid": "web:alarm_count",
+            "value": str(len(alarm_flags)),
+        }
 
     except Exception as e:
         errors["_remote"] = {"name": "_remote", "error": str(e)}
