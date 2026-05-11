@@ -638,42 +638,282 @@ def _poll_remote_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str
     return ip, results, errors
 
 
+## ---------------------------------------------------------------------------
+## SNMP OID definitions for both MIB families
+## ---------------------------------------------------------------------------
+
+# npdu-n-v2-bu.MIB  (enterprise 23273)  – older / string-valued
+_E23273 = ".1.3.6.1.4.1.23273.3.1.1"
+_NPDU_TELEMETRY_OIDS: List[Tuple[str, str]] = [
+    # Per-phase voltage / current / power / PF / energy
+    ("MasterVoltageP1",  f"{_E23273}.2.1.0"),
+    ("MasterCurrentP1",  f"{_E23273}.2.2.0"),
+    ("MasterPowerP1",    f"{_E23273}.2.3.0"),
+    ("MasterPFP1",       f"{_E23273}.2.4.0"),
+    ("MasterEnergyP1",   f"{_E23273}.2.5.0"),
+    ("MasterVoltageP2",  f"{_E23273}.3.1.0"),
+    ("MasterCurrentP2",  f"{_E23273}.3.2.0"),
+    ("MasterPowerP2",    f"{_E23273}.3.3.0"),
+    ("MasterPFP2",       f"{_E23273}.3.4.0"),
+    ("MasterEnergyP2",   f"{_E23273}.3.5.0"),
+    ("MasterVoltageP3",  f"{_E23273}.4.1.0"),
+    ("MasterCurrentP3",  f"{_E23273}.4.2.0"),
+    ("MasterPowerP3",    f"{_E23273}.4.3.0"),
+    ("MasterPFP3",       f"{_E23273}.4.4.0"),
+    ("MasterEnergyP3",   f"{_E23273}.4.5.0"),
+    # Sensors (masterSerson = masterpdu.11)
+    ("MasterTemperature1", f"{_E23273}.11.1.0"),
+    ("MasterTemperature2", f"{_E23273}.11.2.0"),
+    ("MasterTemperature3", f"{_E23273}.11.3.0"),
+    ("MasterTemperature4", f"{_E23273}.11.4.0"),
+    ("MasterHumidity1",   f"{_E23273}.11.5.0"),
+    ("MasterHumidity2",   f"{_E23273}.11.6.0"),
+    ("MasterHumidity3",   f"{_E23273}.11.7.0"),
+    ("MasterHumidity4",   f"{_E23273}.11.8.0"),
+    # Info
+    ("MasterDeviceName",  f"{_E23273}.1.1.0"),
+    ("MasterDeviceMac",   f"{_E23273}.1.4.0"),
+]
+
+# PDUMIBV07.mib  (enterprise 23280)  – newer / integer-valued
+_E23280 = ".1.3.6.1.4.1.23280"
+_V07_DEVICE_OIDS: List[Tuple[str, str]] = [
+    ("deviceStatusActivePower",        f"{_E23280}.2.1.5.1"),
+    ("deviceStatusReactivePower",      f"{_E23280}.2.1.6.1"),
+    ("deviceStatusApparentPower",      f"{_E23280}.2.1.7.1"),
+    ("deviceStatusPowerFactor",        f"{_E23280}.2.1.8.1"),
+    ("deviceStatusActiveEnergy",       f"{_E23280}.2.1.9.1"),
+    ("deviceStatusReactiveEnergy",     f"{_E23280}.2.1.10.1"),
+    ("deviceStatusFrequency",          f"{_E23280}.2.1.11.1"),
+    ("deviceStatusZeroLineCurrent",    f"{_E23280}.2.1.12.1"),
+    ("deviceStatusThreePhaseUnbalance", f"{_E23280}.2.1.13.1"),
+]
+_V07_PHASE_OIDS: List[Tuple[str, str]] = []
+for _ph in (1, 2, 3):
+    _pfx = f"phase{_ph}"
+    _V07_PHASE_OIDS += [
+        (f"{_pfx}Voltage",        f"{_E23280}.6.1.2.{_ph}"),
+        (f"{_pfx}Current",        f"{_E23280}.6.1.3.{_ph}"),
+        (f"{_pfx}ActivePower",    f"{_E23280}.6.1.4.{_ph}"),
+        (f"{_pfx}ReactivePower",  f"{_E23280}.6.1.5.{_ph}"),
+        (f"{_pfx}ApparentPower",  f"{_E23280}.6.1.6.{_ph}"),
+        (f"{_pfx}PowerFactor",    f"{_E23280}.6.1.7.{_ph}"),
+        (f"{_pfx}ActiveEnergy",   f"{_E23280}.6.1.8.{_ph}"),
+        (f"{_pfx}ReactiveEnergy", f"{_E23280}.6.1.9.{_ph}"),
+        # Alarm limit states (1=normal, 2=upper, 3=lower)
+        (f"{_pfx}VoltageLimitState",  f"{_E23280}.6.1.10.{_ph}"),
+        (f"{_pfx}CurrentLimitState",  f"{_E23280}.6.1.11.{_ph}"),
+    ]
+_V07_SENSOR_OIDS: List[Tuple[str, str]] = []
+for _si in (1, 2, 3, 4):
+    _V07_SENSOR_OIDS += [
+        (f"sensor{_si}Temperature",        f"{_E23280}.12.1.2.{_si}"),
+        (f"sensor{_si}Humidity",           f"{_E23280}.12.1.3.{_si}"),
+        (f"sensor{_si}TempLimitState",     f"{_E23280}.12.1.4.{_si}"),
+        (f"sensor{_si}HumidityLimitState", f"{_E23280}.12.1.5.{_si}"),
+        (f"sensor{_si}IOSensorState",      f"{_E23280}.12.1.6.{_si}"),
+    ]
+
+# Cache: per-IP which enterprise the PDU responds to ("23273", "23280", or None)
+_pdu_mib_family: Dict[str, str] = {}
+
+def _detect_mib_family(ip: str, port: int) -> str:
+    """Probe one OID from each enterprise to figure out which MIB the PDU supports."""
+    cached = _pdu_mib_family.get(ip)
+    if cached:
+        return cached
+    # Try 23273 first (npdu-n-v2)
+    probe_23273 = snmp_get_batch(ip, port, [f"{_E23273}.2.1.0"], retries=1, timeout=2)
+    val = probe_23273.get(f"{_E23273}.2.1.0")
+    if val and not str(val).startswith("Error:") and str(val).strip():
+        _pdu_mib_family[ip] = "23273"
+        print(f"[MIB detect] {ip} → enterprise 23273 (npdu-n-v2)")
+        return "23273"
+    # Try 23280 (PDUMIBV07)
+    probe_23280 = snmp_get_batch(ip, port, [f"{_E23280}.2.1.5.1"], retries=1, timeout=2)
+    val = probe_23280.get(f"{_E23280}.2.1.5.1")
+    if val and not str(val).startswith("Error:") and str(val).strip():
+        _pdu_mib_family[ip] = "23280"
+        print(f"[MIB detect] {ip} → enterprise 23280 (PDUMIBV07)")
+        return "23280"
+    _pdu_mib_family[ip] = "23273"  # default fallback
+    print(f"[MIB detect] {ip} → no response from either probe, defaulting to 23273")
+    return "23273"
+
+
+def _snmp_fetch_oids(ip: str, port: int, oid_list: List[Tuple[str, str]],
+                     results: Dict, errors: Dict, retries: int = 3, timeout: int = 3):
+    """Fetch a list of (name, oid) tuples via SNMP and populate results/errors."""
+    if not oid_list:
+        return
+    mapping = snmp_get_batch(ip, port, [oid for _, oid in oid_list], retries=retries, timeout=timeout)
+    for name, oid in oid_list:
+        value = mapping.get(oid)
+        if value is not None and not str(value).startswith("Error:"):
+            results[name] = {"name": name, "oid": oid, "value": str(value)}
+        else:
+            errors[name] = {"name": name, "oid": oid, "error": "No response"}
+
+
+def _build_snmp_alarm_flags(results: Dict, mib_family: str) -> List[Dict]:
+    """Extract alarm flags from SNMP results.
+    For 23280: limit states 2=upper, 3=lower are alarms.
+    For 23273: no native alarm OIDs exist, but we include sensor IO states if present."""
+    import json
+    alarm_flags = []
+
+    if mib_family == "23280":
+        _LIMIT_MAP = {1: "Normal", 2: "Upper Limit", 3: "Lower Limit"}
+        _IO_MAP = {1: "Normal", 2: "Alarm"}
+        phase_checks = [
+            ("l1_voltage",  "phase1VoltageLimitState"),
+            ("l1_current",  "phase1CurrentLimitState"),
+            ("l2_voltage",  "phase2VoltageLimitState"),
+            ("l2_current",  "phase2CurrentLimitState"),
+            ("l3_voltage",  "phase3VoltageLimitState"),
+            ("l3_current",  "phase3CurrentLimitState"),
+        ]
+        for param, key in phase_checks:
+            entry = results.get(key)
+            if entry:
+                val = int(entry["value"]) if str(entry["value"]).isdigit() else 0
+                if val in (2, 3):
+                    alarm_flags.append({"param": param, "status": _LIMIT_MAP[val], "color": "red"})
+                # Store as alarm_ field for frontend consistency
+                results[f"alarm_{param}"] = {
+                    "name": f"alarm_{param}", "oid": entry["oid"],
+                    "value": _LIMIT_MAP.get(val, "Normal"),
+                }
+
+        for si in (1, 2, 3, 4):
+            for kind, key_suffix in [("temp", "TempLimitState"), ("hum", "HumidityLimitState")]:
+                key = f"sensor{si}{key_suffix}"
+                entry = results.get(key)
+                if entry:
+                    val = int(entry["value"]) if str(entry["value"]).isdigit() else 0
+                    if val in (2, 3):
+                        alarm_flags.append({"param": f"{kind}{si}", "status": _LIMIT_MAP[val], "color": "red"})
+                    results[f"alarm_{kind}{si}"] = {
+                        "name": f"alarm_{kind}{si}", "oid": entry["oid"],
+                        "value": _LIMIT_MAP.get(val, "Normal"),
+                    }
+            io_key = f"sensor{si}IOSensorState"
+            entry = results.get(io_key)
+            if entry:
+                val = int(entry["value"]) if str(entry["value"]).isdigit() else 0
+                if val == 2:
+                    alarm_flags.append({"param": f"sensor{si}", "status": "Alarm", "color": "red"})
+                results[f"alarm_sensor{si}"] = {
+                    "name": f"alarm_sensor{si}", "oid": entry["oid"],
+                    "value": _IO_MAP.get(val, "Normal"),
+                }
+
+    results["_alarm_flags"] = {
+        "name": "_alarm_flags", "oid": "snmp:alarm_flags",
+        "value": json.dumps(alarm_flags),
+    }
+    results["_alarm_count"] = {
+        "name": "_alarm_count", "oid": "snmp:alarm_count",
+        "value": str(len(alarm_flags)),
+    }
+    return alarm_flags
+
+
 def poll_single_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Poll a single PDU and return (ip, results, errors).
-    Uses web admin CGI for remote PDUs, SNMP for local PDUs."""
+    Uses web admin CGI for remote PDUs, SNMP for local PDUs.
+    SNMP auto-detects whether the PDU uses enterprise 23273 (npdu-n-v2)
+    or 23280 (PDUMIBV07) and fetches the full telemetry + alarm set."""
     if pdu.get("web_admin_port"):
         return _poll_remote_pdu(pdu)
 
     ip = pdu["ip_address"]
     port = pdu.get("snmp_port", 161)
-    
-    results = {}
-    errors = {}
-    
-    # Poll device-level OIDs
-    device_oids = [
-        ("TotalCurrent", ".1.3.6.1.4.1.23273.3.1.1.2.1.0"),
-        ("TotalPower", ".1.3.6.1.4.1.23273.3.1.1.2.2.0"),
-        ("TotalEnergy", ".1.3.6.1.4.1.23273.3.1.1.2.5.0"),
-    ]
-    
-    mapping = snmp_get_batch(ip, port, [oid for _, oid in device_oids], retries=3, timeout=3)
-    for name, oid in device_oids:
-        value = mapping.get(oid)
-        if value is not None and not str(value).startswith("Error:"):
-            results[name] = {"name": name, "oid": oid, "value": value}
-        else:
-            errors[name] = {"name": name, "oid": oid, "error": "No response"}
-    
-    # Poll outlets (1-24)
+
+    results: Dict[str, Any] = {}
+    errors: Dict[str, Any] = {}
+
+    mib = _detect_mib_family(ip, port)
+
+    if mib == "23273":
+        # ---- npdu-n-v2 full telemetry ----
+        _snmp_fetch_oids(ip, port, _NPDU_TELEMETRY_OIDS, results, errors)
+        # Convenience aliases for the dashboard (expects TotalCurrent, TotalPower, etc.)
+        _alias_map = {
+            "TotalCurrent": "MasterCurrentP1",
+            "TotalPower":   "MasterPowerP1",
+            "TotalEnergy":  "MasterEnergyP1",
+        }
+        for alias, src in _alias_map.items():
+            if src in results and alias not in results:
+                results[alias] = {"name": alias, "oid": results[src]["oid"], "value": results[src]["value"]}
+        # Also map CGI-compatible keys for consistent frontend display
+        _cgi_compat = {
+            "l1_voltage": "MasterVoltageP1", "l1_current": "MasterCurrentP1",
+            "l1_active_power": "MasterPowerP1", "l1_pf": "MasterPFP1",
+            "l1_active_energy": "MasterEnergyP1",
+            "l2_voltage": "MasterVoltageP2", "l2_current": "MasterCurrentP2",
+            "l2_active_power": "MasterPowerP2", "l2_pf": "MasterPFP2",
+            "l2_active_energy": "MasterEnergyP2",
+            "l3_voltage": "MasterVoltageP3", "l3_current": "MasterCurrentP3",
+            "l3_active_power": "MasterPowerP3", "l3_pf": "MasterPFP3",
+            "l3_active_energy": "MasterEnergyP3",
+            "neutral_current": "MasterCurrentP1",
+            "total_active_power": "MasterPowerP1",
+            "total_active_energy": "MasterEnergyP1",
+        }
+        for cgi_key, src in _cgi_compat.items():
+            if src in results and cgi_key not in results:
+                results[cgi_key] = {"name": cgi_key, "oid": f"snmp:{cgi_key}", "value": results[src]["value"]}
+
+    else:
+        # ---- PDUMIBV07 full telemetry ----
+        _snmp_fetch_oids(ip, port, _V07_DEVICE_OIDS, results, errors)
+        _snmp_fetch_oids(ip, port, _V07_PHASE_OIDS, results, errors)
+        _snmp_fetch_oids(ip, port, _V07_SENSOR_OIDS, results, errors)
+        # Map to dashboard-expected keys
+        _v07_alias = {
+            "TotalCurrent": "deviceStatusZeroLineCurrent",
+            "TotalPower": "deviceStatusActivePower",
+            "TotalEnergy": "deviceStatusActiveEnergy",
+            "MasterVoltageP1": "phase1Voltage",
+            "MasterCurrentP1": "phase1Current",
+            "MasterPowerP1": "phase1ActivePower",
+            "MasterVoltageP2": "phase2Voltage",
+            "MasterVoltageP3": "phase3Voltage",
+        }
+        for alias, src in _v07_alias.items():
+            if src in results and alias not in results:
+                results[alias] = {"name": alias, "oid": results[src]["oid"], "value": results[src]["value"]}
+        # CGI-compatible keys for consistent frontend
+        _v07_cgi = {
+            "l1_voltage": "phase1Voltage", "l1_current": "phase1Current",
+            "l1_active_power": "phase1ActivePower", "l1_pf": "phase1PowerFactor",
+            "l1_active_energy": "phase1ActiveEnergy",
+            "l2_voltage": "phase2Voltage", "l2_current": "phase2Current",
+            "l2_active_power": "phase2ActivePower", "l2_pf": "phase2PowerFactor",
+            "l2_active_energy": "phase2ActiveEnergy",
+            "l3_voltage": "phase3Voltage", "l3_current": "phase3Current",
+            "l3_active_power": "phase3ActivePower", "l3_pf": "phase3PowerFactor",
+            "l3_active_energy": "phase3ActiveEnergy",
+            "frequency": "deviceStatusFrequency",
+            "neutral_current": "deviceStatusZeroLineCurrent",
+            "total_active_power": "deviceStatusActivePower",
+            "total_active_energy": "deviceStatusActiveEnergy",
+        }
+        for cgi_key, src in _v07_cgi.items():
+            if src in results and cgi_key not in results:
+                results[cgi_key] = {"name": cgi_key, "oid": f"snmp:{cgi_key}", "value": results[src]["value"]}
+
+    # ---- Outlets (same OIDs for both MIBs – enterprise 23273 prefix) ----
     for outlet in range(1, 25):
         status_oid = f"{OUTPUT_PREFIXES['Status']}.{outlet}.0"
         current_oid = f"{OUTPUT_PREFIXES['Current']}.{outlet}.0"
         energy_oid = f"{OUTPUT_PREFIXES['Energy']}.{outlet}.0"
         name_oid = f"{OUTPUT_PREFIXES['Name']}.{outlet}.0"
-        
+
         outlet_mapping = snmp_get_batch(ip, port, [status_oid, current_oid, energy_oid, name_oid], retries=2, timeout=2)
-        
+
         for metric, oid in [
             (f"Output{outlet}Status", status_oid),
             (f"Output{outlet}Current", current_oid),
@@ -682,10 +922,13 @@ def poll_single_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str,
         ]:
             value = outlet_mapping.get(oid)
             if value is not None and not str(value).startswith("Error:"):
-                results[metric] = {"name": metric, "oid": oid, "value": value}
+                results[metric] = {"name": metric, "oid": oid, "value": str(value)}
             else:
                 errors[metric] = {"name": metric, "oid": oid, "error": "No response"}
-    
+
+    # ---- Build alarm flags (consistent with HTTP/CGI format) ----
+    _build_snmp_alarm_flags(results, mib)
+
     return ip, results, errors
 
 
