@@ -1,18 +1,26 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { usePDUContext } from '../context/PDUContext';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import api from '../api';
 import DataHallDesigner from './DataHallDesigner/DataHallDesigner';
+import CommissioningWizard from './CommissioningWizard';
+import PDUSettingsPanel from './PDUSettingsPanel';
 
 // API base URL
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5002';
 
 // Outlet Card Component matching reference design
-const OutletCard = ({ number, data }) => {
-  const status = data?.results?.find(r => r.name === `Output${number}Status`)?.value?.replace(/"/g, '');
-  const current = parseFloat(data?.results?.find(r => r.name === `Output${number}Current`)?.value?.replace(/"/g, '') || '0');
-  const energy = parseFloat(data?.results?.find(r => r.name === `Output${number}Energy`)?.value?.replace(/"/g, '') || '0');
+const OutletCard = ({ number, data, pduIp, onToggleComplete, isWebAdmin }) => {
+  const statusItem = data?.results?.find(r => r.name === `OutletStatus${number}` || r.name === `Output${number}Status`);
+  const currentItem = data?.results?.find(r => r.name === `OutletCurrent${number}` || r.name === `Output${number}Current`);
+  const energyItem = data?.results?.find(r => r.name === `OutletEnergy${number}` || r.name === `Output${number}Energy`);
   
-  const isOn = status?.toLowerCase() === 'on';
+  const status = statusItem?.value?.replace(/"/g, '').trim();
+  const current = parseFloat(currentItem?.value?.replace(/"/g, '') || '0');
+  const energy = parseFloat(energyItem?.value?.replace(/"/g, '') || '0') / 10;
+  
+  // Web admin returns "Normal"/"Off"/"-" for breakers; SNMP returns "ON"/"OFF"
+  const statusLower = (status || '').toLowerCase();
+  const isOn = statusLower === 'on' || statusLower === 'normal';
+  const isUninstalled = !status || status === '-';
   const hasLoad = current > 0;
   const isHighLoad = current > 1.2;
   const isIdle = isOn && !hasLoad;
@@ -23,7 +31,22 @@ const OutletCard = ({ number, data }) => {
     const newState = isOn ? 'off' : 'on';
     try {
       setLoading(true);
-      await api.put(`/api/outlet/${number}/status`, { state: newState });
+      await api.put(`/api/outlet/${number}/status`, { state: newState, ip: pduIp });
+      // Trigger backend poll to get fresh data from PDU, then refresh UI
+      if (pduIp) {
+        setTimeout(async () => {
+          try {
+            await fetch(`/api/polling/device/${pduIp}/trigger`, { method: 'POST' });
+            // Wait for poll to complete, then refresh
+            setTimeout(() => {
+              if (onToggleComplete) onToggleComplete();
+            }, 1000);
+          } catch (err) {
+            console.error('Poll trigger failed:', err);
+            if (onToggleComplete) onToggleComplete();
+          }
+        }, 500);
+      }
     } catch (e) {
       console.error(e);
     } finally {
@@ -32,13 +55,16 @@ const OutletCard = ({ number, data }) => {
   };
 
   const getStatusLabel = () => {
+    if (isUninstalled) return { text: 'N/A', color: 'text-slate-600', dot: 'bg-slate-600' };
     if (!isOn) return { text: 'Off', color: 'text-slate-500', dot: 'bg-slate-500' };
     if (isHighLoad) return { text: 'Alert', color: 'text-red-400', dot: 'bg-red-500' };
-    if (isIdle) return { text: 'Idle', color: 'text-amber-400', dot: 'bg-amber-500' };
+    if (isIdle && !isWebAdmin) return { text: 'Idle', color: 'text-amber-400', dot: 'bg-amber-500' };
     return { text: 'Normal', color: 'text-emerald-400', dot: 'bg-emerald-500' };
   };
 
   const statusInfo = getStatusLabel();
+
+  if (isUninstalled) return null;
 
   return (
     <div className={`bg-[#161E2E] rounded-lg border ${isHighLoad ? 'border-red-500/50' : 'border-[#233544]'} p-4 ${!isOn ? 'opacity-60' : ''}`}>
@@ -50,34 +76,48 @@ const OutletCard = ({ number, data }) => {
         </div>
       </div>
       
-      <div className="text-2xl font-bold font-mono text-white mb-4">A{String(number).padStart(2, '0')}</div>
-      
-      <div className="space-y-2 mb-4">
-        <div className="flex justify-between items-baseline">
-          <span className="text-[10px] text-slate-500 uppercase">Current</span>
-          <span className={`text-lg font-mono font-bold ${isHighLoad ? 'text-red-400' : 'text-white'}`}>
-            {current.toFixed(2)}<span className="text-xs text-slate-500 ml-1">A</span>
-          </span>
-        </div>
-        <div className="flex justify-between items-baseline">
-          <span className="text-[10px] text-slate-500 uppercase">Energy</span>
-          <span className="text-sm font-mono text-slate-400">
-            {energy.toFixed(1)}<span className="text-xs text-slate-500 ml-1">kWh</span>
-          </span>
-        </div>
+      <div className="text-2xl font-bold font-mono text-white mb-4">
+        {isWebAdmin ? `B${String(number).padStart(2, '0')}` : `A${String(number).padStart(2, '0')}`}
       </div>
       
-      <button
-        onClick={handleToggle}
-        disabled={loading}
-        className={`w-full py-2.5 text-xs font-bold uppercase tracking-wider rounded transition-all ${
-          isOn 
-            ? 'bg-[#334155] text-slate-300 hover:bg-[#475569] border border-[#475569]' 
-            : 'bg-[#00E5FF]/20 text-[#00E5FF] hover:bg-[#00E5FF]/30 border border-[#00E5FF]/30'
-        } ${loading ? 'opacity-50' : ''}`}
-      >
-        {loading ? '...' : isOn ? 'TURN OFF' : 'TURN ON'}
-      </button>
+      {!isWebAdmin && (
+        <div className="space-y-2 mb-4">
+          <div className="flex justify-between items-baseline">
+            <span className="text-[10px] text-slate-500 uppercase">Current</span>
+            <span className={`text-lg font-mono font-bold ${isHighLoad ? 'text-red-400' : 'text-white'}`}>
+              {current.toFixed(2)}<span className="text-xs text-slate-500 ml-1">A</span>
+            </span>
+          </div>
+          <div className="flex justify-between items-baseline">
+            <span className="text-[10px] text-slate-500 uppercase">Energy</span>
+            <span className="text-sm font-mono text-slate-400">
+              {energy.toFixed(1)}<span className="text-xs text-slate-500 ml-1">kWh</span>
+            </span>
+          </div>
+        </div>
+      )}
+
+      {isWebAdmin && (
+        <div className="mb-4">
+          <span className={`text-xs font-mono ${isOn ? 'text-emerald-400' : 'text-slate-500'}`}>
+            {status || '-'}
+          </span>
+        </div>
+      )}
+      
+      {!isWebAdmin && (
+        <button
+          onClick={handleToggle}
+          disabled={loading}
+          className={`w-full py-2.5 text-xs font-bold uppercase tracking-wider rounded transition-all ${
+            isOn 
+              ? 'bg-[#334155] text-slate-300 hover:bg-[#475569] border border-[#475569]' 
+              : 'bg-[#00E5FF]/20 text-[#00E5FF] hover:bg-[#00E5FF]/30 border border-[#00E5FF]/30'
+          } ${loading ? 'opacity-50' : ''}`}
+        >
+          {loading ? '...' : isOn ? 'TURN OFF' : 'TURN ON'}
+        </button>
+      )}
     </div>
   );
 };
@@ -112,14 +152,45 @@ const Dashboard2 = () => {
   const [data, setData] = useState(null);
   const [activeTab, setActiveTab] = useState('datahall');
   const [expandedPdu, setExpandedPdu] = useState(null);
-  const { activePdu } = usePDUContext();
+  const [selectedPdu, setSelectedPdu] = useState(null);
   
+  // Real-time chart history (last 60 data points = 1 minute at 1s intervals)
+  const [powerHistory, setPowerHistory] = useState([]);
+  const [timeLabels, setTimeLabels] = useState([]);
+  
+  // Chart mode: 'realtime' or 'historical'
+  const [chartMode, setChartMode] = useState('realtime');
+  const [chartPeriod, setChartPeriod] = useState('day'); // day, week, month
+  const [historicalData, setHistoricalData] = useState([]);
+  const [historicalLabels, setHistoricalLabels] = useState([]);
+  const [historicalRawData, setHistoricalRawData] = useState([]); // Full data with voltage, current, energy
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  
+  // Chart tooltip state
+  const [chartTooltip, setChartTooltip] = useState({ visible: false, x: 0, y: 0, data: null });
+  
+  // Use local selectedPdu only — never fall back to the legacy context PDU
+  const activePdu = useMemo(() => selectedPdu, [selectedPdu?.ip, selectedPdu?.port, selectedPdu?.remote_host]);
+
   // Hall management state
   const [halls, setHalls] = useState([]);
   const [selectedHallId, setSelectedHallId] = useState(null);
   const [selectedHall, setSelectedHall] = useState(null);
   const [hallPDUs, setHallPDUs] = useState([]);
   const [hallLoading, setHallLoading] = useState(true);
+  const activePduFull = useMemo(() => hallPDUs.find(p => p.ip === activePdu?.ip) || activePdu, [hallPDUs, activePdu?.ip]);
+
+  // PDU filter state: 'all', 'live', 'offline'
+  const [pduFilter, setPduFilter] = useState('all');
+  const [pduLiveStatus, setPduLiveStatus] = useState({}); // { ip: 'online'|'offline' }
+  
+  // Commissioning wizard state
+  const [showWizard, setShowWizard] = useState(false);
+  
+  // PDU edit/delete state
+  const [editingPduId, setEditingPduId] = useState(null);
+  const [editingPduLabel, setEditingPduLabel] = useState('');
+  const [deletingPduId, setDeletingPduId] = useState(null);
   
   // Fetch all halls
   const fetchHalls = useCallback(async () => {
@@ -144,34 +215,35 @@ const Dashboard2 = () => {
         const data = await response.json();
         setSelectedHall(data.hall);
         
-        // Generate PDUs from config if available
-        if (data.config && data.pdus) {
-          // Use stored PDUs from DB
+        // Only show commissioned PDUs from DB — never generate phantom PDUs from layout
+        if (data.pdus && data.pdus.length > 0) {
           const pdusWithStatus = data.pdus.map((pdu, idx) => ({
-            id: pdu.label || `PDU-${String(idx + 1).padStart(2, '0')}`,
+            id: pdu.id || `pdu-${pdu.ip_address}-${idx}`,
+            label: pdu.label || `PDU-${String(idx + 1).padStart(2, '0')}`,
             ip: pdu.ip_address,
             port: pdu.snmp_port || '161',
             location: pdu.rack_code || 'Unknown',
-            status: 'normal', // Would come from real telemetry
-            dbId: pdu.id
+            status: 'normal',
+            dbId: pdu.id,
+            mac_address: pdu.mac_address || '',
+            remote_host: pdu.remote_host || '',
+            web_admin_port: pdu.web_admin_port,
+            web_admin_user: pdu.web_admin_user,
+            web_admin_pass: pdu.web_admin_pass,
           }));
           setHallPDUs(pdusWithStatus);
-        } else if (data.config) {
-          // Generate from config layout
-          const { generateDataHallLayout } = await import('./DataHallDesigner/dataHallConfig');
-          const layout = generateDataHallLayout(data.config);
-          if (layout.success) {
-            const pdusFromLayout = layout.layout.pdus.map((pdu, idx) => ({
-              id: pdu.id,
-              ip: pdu.ip,
-              port: '161',
-              location: pdu.rackId,
-              status: 'normal'
-            }));
-            setHallPDUs(pdusFromLayout);
+          // Auto-select first PDU if nothing selected yet or selected PDU isn't in this hall
+          if (!silent) {
+            const first = pdusWithStatus[0];
+            if (first) {
+              setSelectedPdu({ ip: first.ip, port: first.port || '161', remote_host: first.remote_host });
+              setExpandedPdu(first.id);
+              setActiveTab('telemetry');
+            }
           }
         } else {
           setHallPDUs([]);
+          setSelectedPdu(null);
         }
       }
     } catch (error) {
@@ -204,45 +276,221 @@ const Dashboard2 = () => {
     }
   }, [selectedHallId, fetchHallState]);
   
-  // Use hallPDUs for the PDU list
-  const generatedPDUs = hallPDUs;
+  // Fetch live status for all PDUs in the hall
+  useEffect(() => {
+    if (hallPDUs.length === 0) return;
+    
+    const fetchLiveStatus = async () => {
+      const statusMap = {};
+      for (const pdu of hallPDUs) {
+        if (!pdu.ip) continue;
+        try {
+          const rh = pdu.remote_host ? `?remote_host=${encodeURIComponent(pdu.remote_host)}` : '';
+          const response = await fetch(`${API_BASE}/api/polling/device/${pdu.ip}${rh}`);
+          if (response.ok) {
+            const data = await response.json();
+            statusMap[pdu.ip] = data.state?.includes('online') ? 'online' : 'offline';
+          } else {
+            statusMap[pdu.ip] = 'offline';
+          }
+        } catch {
+          statusMap[pdu.ip] = 'offline';
+        }
+      }
+      setPduLiveStatus(statusMap);
+    };
+    
+    fetchLiveStatus();
+    const interval = setInterval(fetchLiveStatus, 10000); // Check every 10 seconds
+    return () => clearInterval(interval);
+  }, [hallPDUs]);
+  
+  // Filter PDUs based on selected filter
+  const filteredPDUs = hallPDUs.filter(pdu => {
+    if (pduFilter === 'all') return true;
+    const status = pduLiveStatus[pdu.ip] || 'offline';
+    if (pduFilter === 'live') return status === 'online';
+    if (pduFilter === 'offline') return status === 'offline';
+    return true;
+  });
+  
+  // Use filtered PDUs for the PDU list
+  const generatedPDUs = filteredPDUs;
+
+  const renamePdu = useCallback(async (pduDbId, newLabel) => {
+    if (!pduDbId || !newLabel.trim()) return;
+    try {
+      await fetch(`${API_BASE}/api/pdus/${pduDbId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: newLabel.trim() })
+      });
+      if (selectedHallId) fetchHallState(selectedHallId, true);
+    } catch (e) {
+      console.error('Rename PDU failed:', e);
+    }
+    setEditingPduId(null);
+  }, [selectedHallId, fetchHallState]);
+
+  const deletePdu = useCallback(async (pduDbId) => {
+    if (!pduDbId) return;
+    try {
+      await fetch(`${API_BASE}/api/pdus/${pduDbId}`, { method: 'DELETE' });
+      if (selectedHallId) fetchHallState(selectedHallId, true);
+    } catch (e) {
+      console.error('Delete PDU failed:', e);
+    }
+    setDeletingPduId(null);
+    setExpandedPdu(null);
+  }, [selectedHallId, fetchHallState]);
+
+  const refreshData = useCallback(async () => {
+    if (!activePdu?.ip) return;
+    try {
+      const rh = activePdu.remote_host ? `?remote_host=${encodeURIComponent(activePdu.remote_host)}` : '';
+      const response = await fetch(`/api/pdus/by-ip/${activePdu.ip}/live${rh}`);
+      const result = await response.json();
+      setData(result);
+    } catch (error) {
+      console.error('Error fetching data:', error);
+    }
+  }, [activePdu?.ip, activePdu?.remote_host]);
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const response = await fetch('/api/data');
-        const result = await response.json();
-        setData(result);
-      } catch (error) {
-        console.error('Error fetching data:', error);
-      }
-    };
-
     if (activePdu?.ip) {
-      fetchData();
-      const interval = setInterval(fetchData, 5000);
+      refreshData();
+      const pollMs = activePdu.remote_host ? 10000 : 1000;
+      const interval = setInterval(refreshData, pollMs);
       return () => clearInterval(interval);
     }
-  }, [activePdu]);
+  }, [activePdu?.ip, activePdu?.remote_host, refreshData]);
 
-  // Extract values from data
+  // Extract values from data — strips trailing unit suffixes (V, A, kW, kWh, Hz, etc.)
   const getValue = (name) => {
     const item = data?.results?.find(r => r.name === name);
-    return item?.value?.replace(/"/g, '') || '0';
+    if (!item) return '0';
+    const raw = item.value?.replace(/"/g, '') || '0';
+    return raw;
   };
 
-  const voltage = parseFloat(getValue('VoltageP1')) || 0;
-  const current = parseFloat(getValue('CurrentP1')) || 0;
-  const power = parseFloat(getValue('PowerP1')) || 0;
-  const pf = parseFloat(getValue('PFP1')) || 0;
-  const energy = parseFloat(getValue('EnergyP1')) || 0;
+  const parseNumeric = (raw) => {
+    if (typeof raw === 'number') return raw;
+    const str = String(raw).trim();
+    const match = str.match(/^-?[\d.]+/);
+    return match ? parseFloat(match[0]) : 0;
+  };
+
+  // Try SNMP name first, then web admin CGI field names
+  const getNumericValue = (...names) => {
+    for (const name of names) {
+      const item = data?.results?.find(r => r.name === name);
+      if (item) return parseNumeric(item.value?.replace(/"/g, ''));
+    }
+    return null;
+  };
+
+  // Map to NPDU MIB OID names first, fall back to web admin CGI field names
+  const voltage = getNumericValue('MasterVoltageP1', 'l1_voltage') ?? 0;
+  const current = getNumericValue('MasterCurrentP1', 'l1_current') ?? 0;
+  const power = getNumericValue('MasterPowerP1', 'total_active_power', 'l1_active_power') ?? 0;
+  const pf = getNumericValue('MasterPFP1', 'total_pf', 'l1_pf') ?? 0;
+  const energy = getNumericValue('MasterEnergyP1', 'total_active_energy') ?? 0;
+  const voltageL2 = getNumericValue('MasterVoltageP2', 'l2_voltage') ?? 0;
+  const voltageL3 = getNumericValue('MasterVoltageP3', 'l3_voltage') ?? 0;
+
+  // Update power history for real-time chart (keep last 60 points)
+  const lastDataRef = React.useRef(null);
+  useEffect(() => {
+    if (!data || data === lastDataRef.current) return;
+    lastDataRef.current = data;
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setPowerHistory(prev => {
+      const updated = [...prev, power || 0];
+      return updated.slice(-60);
+    });
+    setTimeLabels(prev => {
+      const updated = [...prev, timeStr];
+      return updated.slice(-60);
+    });
+  }, [data]);
+
+  // Fetch historical data when switching to historical mode or changing period
+  useEffect(() => {
+    if (chartMode === 'historical' && activePdu?.ip) {
+      const fetchHistory = async () => {
+        setLoadingHistory(true);
+        try {
+          const response = await fetch(`/api/pdus/by-ip/${activePdu.ip}/telemetry/chart?period=${chartPeriod}&limit=500`);
+          const result = await response.json();
+          if (result.data && result.data.length > 0) {
+            setHistoricalData(result.data.map(d => d.power || 0));
+            setHistoricalRawData(result.data); // Store full data for tooltip
+            setHistoricalLabels(result.data.map(d => {
+              const date = new Date(d.ts);
+              if (chartPeriod === 'day') {
+                return date.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+              } else {
+                return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit' });
+              }
+            }));
+          } else {
+            setHistoricalData([]);
+            setHistoricalRawData([]);
+            setHistoricalLabels([]);
+          }
+        } catch (err) {
+          console.error('Failed to fetch historical data:', err);
+          setHistoricalData([]);
+          setHistoricalRawData([]);
+          setHistoricalLabels([]);
+        } finally {
+          setLoadingHistory(false);
+        }
+      };
+      fetchHistory();
+    }
+  }, [chartMode, chartPeriod, activePdu?.ip]);
+  
+  // Handle chart mouse move for tooltip
+  const handleChartMouseMove = (e, chartData, rawData) => {
+    const svg = e.currentTarget;
+    const rect = svg.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    // Calculate which data point we're hovering over
+    const chartWidth = rect.width;
+    const dataLength = chartData.length;
+    if (dataLength === 0) return;
+    
+    const index = Math.min(Math.floor((x / chartWidth) * dataLength), dataLength - 1);
+    const dataPoint = rawData ? rawData[index] : null;
+    
+    if (dataPoint) {
+      setChartTooltip({
+        visible: true,
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top,
+        data: dataPoint
+      });
+    }
+  };
+  
+  const handleChartMouseLeave = () => {
+    setChartTooltip({ visible: false, x: 0, y: 0, data: null });
+  };
 
   const outlets = Array.from({ length: 24 }, (_, i) => i + 1);
-  const activeOutlets = outlets.filter(n => getValue(`Output${n}Status`)?.toLowerCase() === 'on').length;
+  const isWebAdminPdu = !!(activePdu?.remote_host || activePdu?.web_admin_port);
+  const activeOutlets = outlets.filter(n => {
+    const status = (getValue(`OutletStatus${n}`) || getValue(`Output${n}Status`) || '').replace(/"/g, '').trim().toLowerCase();
+    return status === 'on' || status === 'normal';
+  }).length;
   const loadedOutlets = outlets.filter(n => {
-    const status = getValue(`Output${n}Status`)?.toLowerCase();
-    const curr = parseFloat(getValue(`Output${n}Current`) || 0);
-    return status === 'on' && curr > 0;
+    const status = (getValue(`OutletStatus${n}`) || getValue(`Output${n}Status`) || '').replace(/"/g, '').trim().toLowerCase();
+    const curr = parseFloat(getValue(`OutletCurrent${n}`) || getValue(`Output${n}Current`) || 0);
+    return (status === 'on' || status === 'normal') && curr > 0;
   }).length;
   const idleOutlets = activeOutlets - loadedOutlets;
 
@@ -300,10 +548,36 @@ const Dashboard2 = () => {
 
           {/* PDU Tree Navigation */}
           <div className="mb-6 flex flex-col" style={{ maxHeight: '40vh' }}>
-            <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest mb-3 font-mono flex items-center justify-between flex-shrink-0">
+            <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest mb-2 font-mono flex items-center justify-between flex-shrink-0">
               <span>PDU Monitoring</span>
-              <span className="text-[#00E5FF]">{generatedPDUs.length}</span>
+              <span className="text-[#00E5FF]">{generatedPDUs.length}/{hallPDUs.length}</span>
             </h3>
+            
+            {/* Live/Offline Filter Toggle */}
+            <div className="flex gap-1 mb-3 flex-shrink-0">
+              {[
+                { id: 'all', label: 'All', count: hallPDUs.length },
+                { id: 'live', label: 'Live', count: hallPDUs.filter(p => pduLiveStatus[p.ip] === 'online').length, color: 'emerald' },
+                { id: 'offline', label: 'Offline', count: hallPDUs.filter(p => pduLiveStatus[p.ip] !== 'online').length, color: 'slate' },
+              ].map(filter => (
+                <button
+                  key={filter.id}
+                  onClick={() => setPduFilter(filter.id)}
+                  className={`flex-1 py-1.5 px-2 text-[10px] font-mono rounded transition-all ${
+                    pduFilter === filter.id
+                      ? filter.color === 'emerald' 
+                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50'
+                        : filter.color === 'slate'
+                        ? 'bg-slate-500/20 text-slate-400 border border-slate-500/50'
+                        : 'bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/50'
+                      : 'bg-[#161E2E] text-slate-500 border border-transparent hover:border-[#233544]'
+                  }`}
+                >
+                  {filter.label} ({filter.count})
+                </button>
+              ))}
+            </div>
+            
             {hallLoading ? (
               <div className="text-center py-4 text-slate-500 text-xs">Loading PDUs...</div>
             ) : generatedPDUs.length === 0 ? (
@@ -317,50 +591,128 @@ const Dashboard2 = () => {
                 <div key={pdu.id} id={`pdu-item-${pdu.id}`}>
                   {/* PDU Header */}
                   <button
-                    onClick={() => setExpandedPdu(expandedPdu === pdu.id ? null : pdu.id)}
-                    className={`w-full flex items-center justify-between px-3 py-2 rounded-lg transition-colors text-left ${
+                    onClick={() => {
+                      const isExpanding = expandedPdu !== pdu.id;
+                      setExpandedPdu(isExpanding ? pdu.id : null);
+                      // Set active PDU for telemetry when expanding
+                      if (isExpanding && pdu.ip) {
+                        setSelectedPdu({ ip: pdu.ip, port: pdu.port || '161', remote_host: pdu.remote_host });
+                        setActiveTab('telemetry'); // Switch to telemetry view
+                      }
+                    }}
+                    className={`w-full flex flex-col px-3 py-2 rounded-lg transition-colors text-left ${
                       expandedPdu === pdu.id 
                         ? 'bg-[#161E2E] text-white' 
                         : 'text-slate-400 hover:bg-[#161E2E]'
                     }`}
                   >
+                    {/* Row 1: Chevron + Label */}
                     <div className="flex items-center gap-2">
                       <span className={`material-icons-outlined text-sm ${expandedPdu === pdu.id ? 'rotate-90' : ''} transition-transform`}>
                         chevron_right
                       </span>
-                      <span className={`w-2 h-2 rounded-full ${
-                        pdu.status === 'critical' ? 'bg-red-500' : 
-                        pdu.status === 'warning' ? 'bg-amber-500' : 'bg-emerald-500'
-                      }`}></span>
-                      <span className="text-sm font-mono">{pdu.id}</span>
+                      <span className="text-sm font-mono">{pdu.label || pdu.id}</span>
                     </div>
-                    <span className="text-[10px] text-slate-500 font-mono">{pdu.ip}</span>
+                    {/* Row 2: Status dot + LIVE + IP */}
+                    <div className="flex items-center gap-2 ml-6 mt-1">
+                      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                        pduLiveStatus[pdu.ip] === 'online' ? 'bg-emerald-500 animate-pulse' : 'bg-slate-500'
+                      }`}></span>
+                      <span className={`text-[8px] uppercase font-bold ${
+                        pduLiveStatus[pdu.ip] === 'online' ? 'text-emerald-400' : 'text-slate-500'
+                      }`}>
+                        {pduLiveStatus[pdu.ip] === 'online' ? 'LIVE' : 'OFF'}
+                      </span>
+                      <span className="text-[10px] text-slate-500 font-mono">{pdu.ip}</span>
+                    </div>
                   </button>
                   
                   {/* PDU Monitoring Options - Expanded */}
                   {expandedPdu === pdu.id && (
                     <div className="ml-6 mt-1 space-y-0.5 border-l border-[#233544] pl-2">
                       <p className="text-[9px] text-slate-600 font-mono px-2 py-1">{pdu.location}</p>
+                      {pdu.mac_address && (
+                        <p className="text-[9px] text-slate-600 font-mono px-2 pb-1">MAC: {pdu.mac_address}</p>
+                      )}
                       {[
                         { id: 'telemetry', icon: 'analytics', label: 'Telemetry' },
                         { id: 'outlets', icon: 'power', label: 'Outlets' },
-                        { id: 'ledger', icon: 'history_edu', label: 'Activity Ledger' },
-                        { id: 'specs', icon: 'info', label: 'Specs' },
-                        { id: 'insights', icon: 'psychology', label: 'AI Insights' },
+                        { id: 'ledger', icon: 'history_edu', label: 'Activity Ledger', inactive: true },
+                        { id: 'specs', icon: 'info', label: 'Specs', inactive: true },
+                        { id: 'insights', icon: 'psychology', label: 'AI Insights', inactive: true },
+                        ...(pdu.web_admin_port ? [{ id: 'pdu-settings', icon: 'settings', label: 'PDU Settings' }] : []),
                       ].map(item => (
                         <button
                           key={item.id}
-                          onClick={() => setActiveTab(item.id)}
+                          onClick={() => !item.inactive && setActiveTab(item.id)}
+                          disabled={item.inactive}
                           className={`w-full flex items-center gap-2 px-2 py-1.5 rounded transition-colors text-left text-xs ${
-                            activeTab === item.id && expandedPdu === pdu.id
-                              ? 'bg-[#00E5FF]/10 text-[#00E5FF]' 
-                              : 'text-slate-500 hover:bg-[#161E2E] hover:text-slate-300'
+                            item.inactive
+                              ? 'text-slate-600 opacity-40 cursor-not-allowed'
+                              : activeTab === item.id && expandedPdu === pdu.id
+                                ? 'bg-[#00E5FF]/10 text-[#00E5FF]' 
+                                : 'text-slate-500 hover:bg-[#161E2E] hover:text-slate-300'
                           }`}
                         >
                           <span className="material-icons-outlined text-sm">{item.icon}</span>
                           <span>{item.label}</span>
+                          {item.inactive && <span className="ml-auto text-[8px] uppercase tracking-wider text-slate-600 font-mono">inactive</span>}
                         </button>
                       ))}
+                      
+                      {/* Edit / Delete actions */}
+                      {pdu.dbId && (
+                        <div className="mt-1 pt-1 border-t border-[#233544]/50">
+                          {/* Inline rename */}
+                          {editingPduId === pdu.dbId ? (
+                            <div className="px-2 py-1">
+                              <input
+                                type="text" value={editingPduLabel}
+                                onChange={e => setEditingPduLabel(e.target.value)}
+                                className="w-full bg-[#0B1120] border border-amber-500/50 rounded px-2 py-1 text-xs text-white font-mono focus:outline-none"
+                                autoFocus
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') renamePdu(pdu.dbId, editingPduLabel);
+                                  if (e.key === 'Escape') setEditingPduId(null);
+                                }}
+                              />
+                              <div className="flex gap-1 mt-1">
+                                <button onClick={() => renamePdu(pdu.dbId, editingPduLabel)}
+                                  className="flex-1 px-1.5 py-0.5 bg-amber-500/20 text-amber-400 text-[10px] rounded hover:bg-amber-500/30">Save</button>
+                                <button onClick={() => setEditingPduId(null)}
+                                  className="px-1.5 py-0.5 bg-slate-500/20 text-slate-400 text-[10px] rounded hover:bg-slate-500/30">Cancel</button>
+                              </div>
+                            </div>
+                          ) : deletingPduId === pdu.dbId ? (
+                            <div className="px-2 py-1">
+                              <p className="text-[10px] text-red-400 mb-1">Delete this PDU permanently?</p>
+                              <div className="flex gap-1">
+                                <button onClick={() => deletePdu(pdu.dbId)}
+                                  className="flex-1 px-1.5 py-0.5 bg-red-500/20 text-red-400 text-[10px] rounded hover:bg-red-500/30 font-bold">Delete</button>
+                                <button onClick={() => setDeletingPduId(null)}
+                                  className="px-1.5 py-0.5 bg-slate-500/20 text-slate-400 text-[10px] rounded hover:bg-slate-500/30">Cancel</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex gap-1 px-2 py-1">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setEditingPduId(pdu.dbId); setEditingPduLabel(pdu.label || ''); }}
+                                className="flex-1 flex items-center justify-center gap-1 px-1.5 py-1 bg-amber-500/10 text-amber-400 text-[10px] rounded hover:bg-amber-500/20 transition-colors"
+                              >
+                                <span className="material-icons-outlined" style={{fontSize:'11px'}}>edit</span>
+                                Rename
+                              </button>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setDeletingPduId(pdu.dbId); }}
+                                className="flex-1 flex items-center justify-center gap-1 px-1.5 py-1 bg-red-500/10 text-red-400 text-[10px] rounded hover:bg-red-500/20 transition-colors"
+                              >
+                                <span className="material-icons-outlined" style={{fontSize:'11px'}}>delete</span>
+                                Delete
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -369,9 +721,11 @@ const Dashboard2 = () => {
             )}
             
             {/* Add PDU Button */}
-            <button className="w-full mt-3 py-2 bg-[#233544] hover:bg-[#2D4A5E] text-slate-400 hover:text-white font-medium text-xs uppercase tracking-wider rounded-lg flex items-center justify-center gap-2 transition-all">
+            <button 
+              onClick={() => setShowWizard(true)}
+              className="w-full mt-3 py-2 bg-[#233544] hover:bg-[#2D4A5E] text-slate-400 hover:text-white font-medium text-xs uppercase tracking-wider rounded-lg flex items-center justify-center gap-2 transition-all">
               <span className="material-icons-outlined text-sm">add</span>
-              Add PDU
+              Commission PDU
             </button>
           </div>
 
@@ -399,6 +753,51 @@ const Dashboard2 = () => {
           {/* Telemetry View */}
           {activeTab === 'telemetry' && (
             <>
+              {/* Active PDU Info Bar */}
+              {activePduFull && (
+                <div className="mb-4 p-3 rounded-xl bg-[#161E2E] border border-[#233544] flex items-center gap-4 flex-wrap">
+                  {/* Label — only show if it differs from the IP */}
+                  {activePduFull.label && activePduFull.label !== activePduFull.ip && (
+                    <div className="flex items-center gap-2">
+                      <span className="material-icons-outlined text-[#00E5FF] text-sm">dns</span>
+                      <span className="text-sm font-bold font-mono text-white">{activePduFull.label}</span>
+                    </div>
+                  )}
+                  {/* IP or Remote host */}
+                  <div className="flex items-center gap-1.5">
+                    {activePduFull.remote_host ? (
+                      <>
+                        <span className="material-icons-outlined text-amber-400 text-xs">cloud</span>
+                        <span className="text-xs font-mono text-amber-300">Remote: {activePduFull.remote_host}:{activePduFull.web_admin_port || 6662}</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="material-icons-outlined text-slate-500 text-xs">lan</span>
+                        <span className="text-xs font-mono text-slate-400">{activePduFull.ip}</span>
+                      </>
+                    )}
+                  </div>
+                  {activePduFull.mac_address && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="material-icons-outlined text-slate-500 text-xs">fingerprint</span>
+                      <span className="text-xs font-mono text-slate-400">{activePduFull.mac_address}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-1.5">
+                    <span className="material-icons-outlined text-slate-500 text-xs">view_in_ar</span>
+                    <span className="text-xs font-mono text-slate-400">Rack: <span className="text-white">{activePduFull.location || 'Unassigned'}</span></span>
+                  </div>
+                  <div className={`ml-auto flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                    pduLiveStatus[activePduFull.ip] === 'online' 
+                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
+                      : 'bg-slate-500/20 text-slate-400 border border-slate-500/30'
+                  }`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${pduLiveStatus[activePduFull.ip] === 'online' ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+                    {pduLiveStatus[activePduFull.ip] === 'online' ? 'ONLINE' : 'OFFLINE'}
+                  </div>
+                </div>
+              )}
+
               {/* Page Header */}
               <div className="flex justify-between items-start mb-8">
                 <div>
@@ -414,15 +813,25 @@ const Dashboard2 = () => {
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
                     Real-time Active
                   </span>
-                  <span className="px-3 py-1 rounded-full bg-[#00E5FF]/10 text-[#00E5FF] text-xs font-medium border border-[#00E5FF]/20 flex items-center gap-1">
-                    <span className="material-icons-outlined text-xs">auto_awesome</span>
-                    AI Forecast Enabled
-                  </span>
                 </div>
               </div>
 
               {/* Metrics Row */}
-              <div className="grid grid-cols-4 gap-4 mb-6">
+              <div className="grid grid-cols-5 gap-4 mb-6">
+                <div className="bg-[#161E2E] p-5 rounded-xl border border-[#233544]">
+                  <p className="text-[10px] text-slate-500 uppercase font-bold font-mono mb-2">Voltage</p>
+                  <div className="flex items-baseline gap-1">
+                    <span className="text-3xl font-bold font-mono text-white">{voltage.toFixed(1)}</span>
+                    <span className="text-slate-500 text-sm">V</span>
+                  </div>
+                </div>
+                <div className="bg-[#161E2E] p-5 rounded-xl border border-[#233544]">
+                  <p className="text-[10px] text-slate-500 uppercase font-bold font-mono mb-2">Current</p>
+                  <div className="flex items-baseline gap-1">
+                    <span className="text-3xl font-bold font-mono text-[#00E5FF]">{current.toFixed(2)}</span>
+                    <span className="text-slate-500 text-sm">A</span>
+                  </div>
+                </div>
                 <div className="bg-[#161E2E] p-5 rounded-xl border border-[#233544]">
                   <p className="text-[10px] text-slate-500 uppercase font-bold font-mono mb-2">Active Power</p>
                   <div className="flex items-baseline gap-1">
@@ -447,9 +856,19 @@ const Dashboard2 = () => {
                   <div>
                     <p className="text-[10px] text-slate-500 uppercase font-bold font-mono mb-2">Phase Status</p>
                     <div className="flex gap-2">
-                      <div className="w-3 h-3 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div>
-                      <div className="w-3 h-3 rounded-full bg-amber-500"></div>
-                      <div className="w-3 h-3 rounded-full bg-amber-500"></div>
+                      {[voltage, voltageL2, voltageL3].map((v, i) => (
+                        <div
+                          key={i}
+                          className={`w-3 h-3 rounded-full ${
+                            v > 200
+                              ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]'
+                              : v > 0
+                              ? 'bg-amber-500'
+                              : 'bg-slate-600'
+                          }`}
+                          title={`L${i + 1}: ${v.toFixed(1)}V`}
+                        />
+                      ))}
                     </div>
                   </div>
                   <span className="material-icons-outlined text-slate-700 text-4xl">view_in_ar</span>
@@ -457,56 +876,235 @@ const Dashboard2 = () => {
               </div>
 
               {/* Charts Row */}
-              <div className="grid grid-cols-3 gap-6 mb-6">
+              <div className="grid grid-cols-1 gap-6 mb-6">
                 {/* Load Trends Chart */}
-                <div className="col-span-2 bg-[#161E2E] rounded-xl border border-[#233544] p-6">
+                <div className="bg-[#161E2E] rounded-xl border border-[#233544] p-6">
                   <div className="flex justify-between items-center mb-6">
                     <h3 className="font-mono font-bold text-[#00E5FF] flex items-center gap-2 uppercase text-sm">
                       <span className="material-icons-outlined text-lg">trending_up</span>
                       Load Trends & Forecasting
                     </h3>
-                    <div className="flex items-center gap-6 text-xs">
+                    <div className="flex items-center gap-4 text-xs">
+                      {/* Mode Toggle */}
+                      <div className="flex items-center bg-[#0d1929] rounded-lg p-0.5">
+                        <button 
+                          onClick={() => setChartMode('realtime')}
+                          className={`px-3 py-1 rounded-md font-mono text-[10px] uppercase transition-all ${
+                            chartMode === 'realtime' 
+                              ? 'bg-[#00E5FF] text-[#0B1120] font-bold' 
+                              : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          Real-time
+                        </button>
+                        <button 
+                          onClick={() => setChartMode('historical')}
+                          className={`px-3 py-1 rounded-md font-mono text-[10px] uppercase transition-all ${
+                            chartMode === 'historical' 
+                              ? 'bg-[#00E5FF] text-[#0B1120] font-bold' 
+                              : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          Historical
+                        </button>
+                      </div>
+                      {/* Period Filter (only show in historical mode) */}
+                      {chartMode === 'historical' && (
+                        <div className="flex items-center gap-1 bg-[#0d1929] rounded-lg p-0.5">
+                          {['day', 'week', 'month'].map(p => (
+                            <button 
+                              key={p}
+                              onClick={() => setChartPeriod(p)}
+                              className={`px-2 py-1 rounded font-mono text-[10px] uppercase transition-all ${
+                                chartPeriod === p 
+                                  ? 'bg-[#1e3a5f] text-[#00E5FF] font-bold' 
+                                  : 'text-slate-500 hover:text-slate-300'
+                              }`}
+                            >
+                              {p}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {/* Legend */}
                       <div className="flex items-center gap-2">
                         <span className="w-3 h-3 rounded-full bg-[#00E5FF]"></span>
                         <span className="text-slate-400">Actual Power</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="w-3 h-3 rounded-full border-2 border-[#00E5FF] border-dashed"></span>
-                        <span className="text-slate-400">AI Forecast</span>
                       </div>
                     </div>
                   </div>
                   
                   {/* Chart Area */}
                   <div className="h-[200px] relative border-l border-b border-[#233544]">
-                    <svg className="w-full h-full" viewBox="0 0 800 200" preserveAspectRatio="none">
+                    {/* Y-axis labels */}
+                    {(() => {
+                      const chartData = chartMode === 'realtime' ? powerHistory : historicalData;
+                      const maxVal = chartData.length > 0 ? Math.max(...chartData) * 1.1 : power * 1.1;
+                      return (
+                        <div className="absolute -left-12 top-0 h-full flex flex-col justify-between text-[9px] font-mono text-slate-500">
+                          <span>{maxVal.toFixed(0)}W</span>
+                          <span>{(maxVal * 0.5).toFixed(0)}W</span>
+                          <span>0W</span>
+                        </div>
+                      );
+                    })()}
+                    <svg 
+                      className="w-full h-full cursor-crosshair" 
+                      viewBox="0 0 800 200" 
+                      preserveAspectRatio="none"
+                      onMouseMove={(e) => handleChartMouseMove(e, chartMode === 'realtime' ? powerHistory : historicalData, chartMode === 'historical' ? historicalRawData : null)}
+                      onMouseLeave={handleChartMouseLeave}
+                    >
                       <defs>
                         <linearGradient id="chartGradient" x1="0%" y1="0%" x2="0%" y2="100%">
                           <stop offset="0%" stopColor="#00E5FF" stopOpacity="0.3"/>
                           <stop offset="100%" stopColor="#00E5FF" stopOpacity="0"/>
+                        </linearGradient>
+                        <linearGradient id="histGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                          <stop offset="0%" stopColor="#10B981" stopOpacity="0.3"/>
+                          <stop offset="100%" stopColor="#10B981" stopOpacity="0"/>
                         </linearGradient>
                       </defs>
                       {/* Grid lines */}
                       <line x1="0" y1="50" x2="800" y2="50" stroke="#233544" strokeWidth="1"/>
                       <line x1="0" y1="100" x2="800" y2="100" stroke="#233544" strokeWidth="1"/>
                       <line x1="0" y1="150" x2="800" y2="150" stroke="#233544" strokeWidth="1"/>
-                      {/* Area fill */}
-                      <path d="M0 180 L50 60 L100 58 L150 62 L200 60 L250 58 L300 62 L350 60 L400 58 L450 62 L500 60 L550 58 L600 60 L600 200 L0 200 Z" fill="url(#chartGradient)"/>
-                      {/* Main line */}
-                      <path d="M0 180 L50 60 L100 58 L150 62 L200 60 L250 58 L300 62 L350 60 L400 58 L450 62 L500 60 L550 58 L600 60" fill="none" stroke="#00E5FF" strokeWidth="2"/>
-                      {/* Forecast line */}
-                      <path d="M600 60 L650 62 L700 58 L750 64 L800 60" fill="none" stroke="#00E5FF" strokeWidth="2" strokeDasharray="8 4" opacity="0.6"/>
+                      
+                      {/* Real-time chart with scrolling effect */}
+                      {chartMode === 'realtime' && powerHistory.length > 1 && (() => {
+                        const maxPower = Math.max(...powerHistory) * 1.1 || 1000;
+                        // Always use 60 slots, data fills from right to left as it accumulates
+                        const totalSlots = 60;
+                        const slotWidth = 800 / (totalSlots - 1);
+                        const startX = (totalSlots - powerHistory.length) * slotWidth;
+                        
+                        const points = powerHistory.map((p, i) => {
+                          const x = startX + (i * slotWidth);
+                          const y = 190 - (p / maxPower) * 180;
+                          return `${x} ${y}`;
+                        }).join(' L');
+                        
+                        const lastX = startX + ((powerHistory.length - 1) * slotWidth);
+                        const lastY = 190 - (powerHistory[powerHistory.length - 1] / maxPower) * 180;
+                        const firstX = startX;
+                        const areaPath = `M${firstX} 190 L${points} L${lastX} 190 Z`;
+                        const linePath = `M${points}`;
+                        
+                        return (
+                          <g style={{ transition: 'transform 0.3s ease-out' }}>
+                            <path d={areaPath} fill="url(#chartGradient)" style={{ transition: 'd 0.3s ease-out' }}/>
+                            <path d={linePath} fill="none" stroke="#00E5FF" strokeWidth="2.5" style={{ transition: 'd 0.3s ease-out' }}/>
+                            {/* Animated glow trail */}
+                            <circle cx={lastX} cy={lastY} r="12" fill="#00E5FF" opacity="0.15">
+                              <animate attributeName="r" values="8;16;8" dur="1.5s" repeatCount="indefinite"/>
+                              <animate attributeName="opacity" values="0.2;0.05;0.2" dur="1.5s" repeatCount="indefinite"/>
+                            </circle>
+                            {/* Pulsing dot */}
+                            <circle cx={lastX} cy={lastY} r="6" fill="#00E5FF" opacity="0.6">
+                              <animate attributeName="r" values="6;10;6" dur="1s" repeatCount="indefinite"/>
+                              <animate attributeName="opacity" values="0.6;0.2;0.6" dur="1s" repeatCount="indefinite"/>
+                            </circle>
+                            <circle cx={lastX} cy={lastY} r="4" fill="#00E5FF"/>
+                            {/* Moving scan line effect */}
+                            <line x1={lastX} y1="10" x2={lastX} y2="190" stroke="#00E5FF" strokeWidth="1" opacity="0.3">
+                              <animate attributeName="opacity" values="0.4;0.1;0.4" dur="1s" repeatCount="indefinite"/>
+                            </line>
+                          </g>
+                        );
+                      })()}
+                      
+                      {/* Historical chart */}
+                      {chartMode === 'historical' && !loadingHistory && historicalData.length > 1 && (() => {
+                        const maxPower = Math.max(...historicalData) * 1.1 || 1000;
+                        const points = historicalData.map((p, i) => {
+                          const x = (i / (historicalData.length - 1)) * 800;
+                          const y = 190 - (p / maxPower) * 180;
+                          return `${x} ${y}`;
+                        }).join(' L');
+                        const areaPath = `M0 190 L${points} L800 190 Z`;
+                        const linePath = `M${points}`;
+                        return (
+                          <>
+                            <path d={areaPath} fill="url(#histGradient)"/>
+                            <path d={linePath} fill="none" stroke="#10B981" strokeWidth="2"/>
+                          </>
+                        );
+                      })()}
+                      
+                      {/* Loading/empty states */}
+                      {chartMode === 'realtime' && powerHistory.length <= 1 && (
+                        <text x="400" y="100" textAnchor="middle" fill="#475569" fontSize="14">Collecting data...</text>
+                      )}
+                      {chartMode === 'historical' && loadingHistory && (
+                        <text x="400" y="100" textAnchor="middle" fill="#475569" fontSize="14">Loading historical data...</text>
+                      )}
+                      {chartMode === 'historical' && !loadingHistory && historicalData.length === 0 && (
+                        <text x="400" y="100" textAnchor="middle" fill="#475569" fontSize="14">No historical data for this period</text>
+                      )}
                     </svg>
+                    
+                    {/* Chart Tooltip */}
+                    {chartTooltip.visible && chartTooltip.data && (
+                      <div 
+                        className="absolute pointer-events-none z-50 bg-slate-900/95 border border-cyan-500/30 rounded-lg px-3 py-2 shadow-lg shadow-cyan-500/10"
+                        style={{
+                          left: Math.min(chartTooltip.x + 10, 280),
+                          top: Math.max(chartTooltip.y - 80, 10),
+                        }}
+                      >
+                        <div className="text-[10px] text-slate-400 mb-1">
+                          {new Date(chartTooltip.data.ts).toLocaleString()}
+                        </div>
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+                          <div className="flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full bg-yellow-400"></span>
+                            <span className="text-slate-400">Voltage:</span>
+                            <span className="text-white font-medium">{chartTooltip.data.voltage?.toFixed(1) || '—'} V</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
+                            <span className="text-slate-400">Current:</span>
+                            <span className="text-white font-medium">{chartTooltip.data.current?.toFixed(2) || '—'} A</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full bg-green-400"></span>
+                            <span className="text-slate-400">Power:</span>
+                            <span className="text-white font-medium">{chartTooltip.data.power?.toFixed(1) || '—'} W</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full bg-purple-400"></span>
+                            <span className="text-slate-400">Energy:</span>
+                            <span className="text-white font-medium">{chartTooltip.data.energy?.toFixed(1) || '—'} kWh</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                   
-                  {/* Time labels */}
-                  <div className="flex justify-between mt-4 text-[10px] font-mono text-slate-500">
-                    <span>05:59</span>
-                    <span>06:02</span>
-                    <span>06:03</span>
-                    <span>06:04</span>
-                    <span>06:05</span>
-                    <span className="text-[#00E5FF] font-bold">Forecast</span>
+                  {/* Dynamic time labels - show relative time window */}
+                  <div className="flex justify-between mt-4 text-[9px] font-mono text-slate-500">
+                    {chartMode === 'realtime' ? (
+                      <>
+                        <span className="opacity-50">-60s</span>
+                        <span className="opacity-60">-45s</span>
+                        <span className="opacity-70">-30s</span>
+                        <span className="opacity-80">-15s</span>
+                        <span className="text-[#00E5FF] font-bold flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-[#00E5FF] animate-pulse"></span>
+                          {timeLabels.length > 0 ? timeLabels[timeLabels.length - 1] : 'Now'}
+                        </span>
+                      </>
+                    ) : chartMode === 'historical' && historicalLabels.length > 0 ? (
+                      <>
+                        <span>{historicalLabels[0] || ''}</span>
+                        <span>{historicalLabels[Math.floor(historicalLabels.length * 0.25)] || ''}</span>
+                        <span>{historicalLabels[Math.floor(historicalLabels.length * 0.5)] || ''}</span>
+                        <span>{historicalLabels[Math.floor(historicalLabels.length * 0.75)] || ''}</span>
+                        <span className="text-[#10B981] font-bold">{historicalLabels[historicalLabels.length - 1] || ''}</span>
+                      </>
+                    ) : (
+                      <span className="text-slate-600">Waiting for data...</span>
+                    )}
                   </div>
                   
                   <div className="mt-4 flex justify-between items-center text-sm border-t border-[#233544] pt-4">
@@ -519,118 +1117,40 @@ const Dashboard2 = () => {
                   </div>
                 </div>
 
-                {/* Environmental */}
-                <div className="bg-[#161E2E] rounded-xl border border-[#233544] p-6">
-                  <h3 className="font-mono font-bold text-[#00E5FF] flex items-center gap-2 uppercase text-sm mb-6">
-                    <span className="material-icons-outlined text-lg">thermostat</span>
-                    Environmental
-                  </h3>
-                  <div className="space-y-6">
-                    <div className="grid grid-cols-2 gap-6">
-                      <div>
-                        <p className="text-[10px] text-slate-500 uppercase font-bold font-mono mb-1">Internal Temp</p>
-                        <div className="flex items-baseline gap-1">
-                          <span className="text-2xl font-bold font-mono text-white">24.5</span>
-                          <span className="text-slate-500">°C</span>
-                        </div>
-                        <div className="w-full bg-[#233544] h-1.5 rounded-full mt-2 overflow-hidden">
-                          <div className="bg-[#00E5FF] h-full rounded-full" style={{ width: '45%' }}></div>
-                        </div>
-                      </div>
-                      <div>
-                        <p className="text-[10px] text-slate-500 uppercase font-bold font-mono mb-1">Exhaust Temp</p>
-                        <div className="flex items-baseline gap-1">
-                          <span className="text-2xl font-bold font-mono text-white">28.2</span>
-                          <span className="text-slate-500">°C</span>
-                        </div>
-                        <div className="w-full bg-[#233544] h-1.5 rounded-full mt-2 overflow-hidden">
-                          <div className="bg-amber-500 h-full rounded-full" style={{ width: '60%' }}></div>
-                        </div>
-                      </div>
-                    </div>
-                    <div>
-                      <p className="text-[10px] text-slate-500 uppercase font-bold font-mono mb-1">Humidity</p>
-                      <div className="flex items-baseline gap-1">
-                        <span className="text-4xl font-bold font-mono text-white">42.0</span>
-                        <span className="text-slate-500 text-lg">%</span>
-                      </div>
-                    </div>
-                    <div className="pt-4 border-t border-[#233544]">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-lg bg-[#233544] flex items-center justify-center text-slate-500">
-                            <span className="material-icons-outlined">door_sliding</span>
-                          </div>
-                          <div>
-                            <p className="text-[10px] text-slate-500 uppercase font-bold font-mono">Cabinet Door</p>
-                            <p className="text-sm font-bold font-mono uppercase text-emerald-400">CLOSED</p>
-                          </div>
-                        </div>
-                        <span className="material-icons-outlined text-emerald-400">lock</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                {/* Environmental — hidden until real sensor data is available from the PDU */}
+                {/* TODO: Show this section when the PDU reports actual temperature/humidity readings */}
               </div>
 
               {/* Bottom Row */}
-              <div className="grid grid-cols-2 gap-6">
-                {/* AI Analysis */}
-                <div className="bg-[#161E2E] rounded-xl border border-[#233544] p-6">
+              <div className="grid grid-cols-1 gap-6">
+                {/* AI Analysis — greyed out until connected to a live analysis engine */}
+                <div className="bg-[#161E2E] rounded-xl border border-[#233544] p-6 opacity-40 pointer-events-none select-none">
                   <div className="flex items-center gap-2 mb-6">
-                    <h3 className="font-mono font-bold text-[#00E5FF] flex items-center gap-2 uppercase text-sm">
+                    <h3 className="font-mono font-bold text-slate-500 flex items-center gap-2 uppercase text-sm">
                       <span className="material-icons-outlined text-lg">insights</span>
                       AI Operational Analysis
                     </h3>
+                    <span className="px-2 py-0.5 rounded bg-slate-600 text-slate-300 text-[10px] font-bold uppercase tracking-wider">Inactive</span>
                   </div>
                   <div className="space-y-3">
                     <div className="p-4 rounded-lg bg-[#0B1120] border border-[#233544] flex gap-4 items-start">
-                      <span className="material-icons-outlined text-[#00E5FF] mt-0.5">lightbulb</span>
+                      <span className="material-icons-outlined text-slate-600 mt-0.5">lightbulb</span>
                       <div>
-                        <p className="text-sm font-medium text-white">Efficiency Opportunity</p>
-                        <p className="text-xs text-slate-500 mt-1">
-                          Optimize power distribution by disabling {idleOutlets} idle outputs detected in the last 24h.
-                        </p>
-                      </div>
-                    </div>
-                    <div className="p-4 rounded-lg bg-amber-500/5 border border-amber-500/20 flex gap-4 items-start">
-                      <span className="material-icons-outlined text-amber-500 mt-0.5">warning</span>
-                      <div>
-                        <p className="text-sm font-medium text-amber-400">Thermal Warning</p>
-                        <p className="text-xs text-slate-500 mt-1">
-                          Check cooling system - abnormal exhaust temp values detected between 02:00-04:00.
+                        <p className="text-sm font-medium text-slate-500">Efficiency Opportunity</p>
+                        <p className="text-xs text-slate-600 mt-1">
+                          AI analysis will appear here when the analysis engine is connected.
                         </p>
                       </div>
                     </div>
                     <div className="p-4 rounded-lg bg-[#0B1120] border border-[#233544] flex gap-4 items-start">
-                      <span className="material-icons-outlined text-slate-500 mt-0.5">search</span>
+                      <span className="material-icons-outlined text-slate-600 mt-0.5">warning</span>
                       <div>
-                        <p className="text-sm font-medium text-white">Anomaly Detected</p>
-                        <p className="text-xs text-slate-500 mt-1">
-                          Unusual idle consumption detected in output 7. Current baseline shifted by +12%.
+                        <p className="text-sm font-medium text-slate-500">Thermal Warning</p>
+                        <p className="text-xs text-slate-600 mt-1">
+                          Requires environmental sensor data to generate thermal insights.
                         </p>
                       </div>
                     </div>
-                  </div>
-                </div>
-
-                {/* PDU Specifications */}
-                <div className="bg-[#161E2E] rounded-xl border border-[#233544] p-6">
-                  <div className="flex items-center justify-between mb-6">
-                    <h3 className="font-mono font-bold text-[#00E5FF] flex items-center gap-2 uppercase text-sm">
-                      <span className="material-icons-outlined text-lg">description</span>
-                      PDU Specifications
-                    </h3>
-                    <button className="text-[10px] px-2 py-1 bg-[#233544] text-slate-400 rounded uppercase font-bold hover:bg-[#2D3748]">
-                      Show JSON
-                    </button>
-                  </div>
-                  <div className="space-y-0">
-                    <SpecRow label="Model Number" value="DPDU-V3-C1308-10A" />
-                    <SpecRow label="Input Voltage" value="220V – 250V, 50/60 Hz" />
-                    <SpecRow label="Max Current" value="10A" />
-                    <SpecRow label="Internal Wiring" value="1.5mm² main line" />
-                    <SpecRow label="Intelligent Control" value="DPDU V3 meter" />
                   </div>
                 </div>
               </div>
@@ -642,20 +1162,26 @@ const Dashboard2 = () => {
             <>
               <div className="flex justify-between items-start mb-8">
                 <div>
-                  <h1 className="text-2xl font-bold font-mono uppercase tracking-tight text-white">OUTPUTS</h1>
-                  <p className="text-slate-500 text-sm mt-1">Managing 24 individual outlets for PDU</p>
+                  <h1 className="text-2xl font-bold font-mono uppercase tracking-tight text-white">
+                    {isWebAdminPdu ? 'BREAKERS' : 'OUTPUTS'}
+                  </h1>
+                  <p className="text-slate-500 text-sm mt-1">
+                    {isWebAdminPdu
+                      ? `${activeOutlets} active breaker${activeOutlets !== 1 ? 's' : ''} detected`
+                      : `Managing 24 individual outlets for PDU`}
+                  </p>
                 </div>
                 <div className="flex gap-2">
                   <button className="px-3 py-1.5 rounded bg-[#00E5FF] text-[#0B1120] text-xs font-bold">All</button>
-                  <button className="px-3 py-1.5 rounded bg-[#233544] text-slate-400 text-xs font-medium">Normal ({loadedOutlets})</button>
-                  <button className="px-3 py-1.5 rounded bg-[#233544] text-slate-400 text-xs font-medium">Idle ({idleOutlets})</button>
+                  <button className="px-3 py-1.5 rounded bg-[#233544] text-emerald-400 text-xs font-medium">Normal ({activeOutlets})</button>
+                  {!isWebAdminPdu && <button className="px-3 py-1.5 rounded bg-[#233544] text-amber-400 text-xs font-medium">Idle ({idleOutlets})</button>}
                   <button className="px-3 py-1.5 rounded bg-[#233544] text-slate-400 text-xs font-medium">Off ({24 - activeOutlets})</button>
                 </div>
               </div>
               
               <div className="grid grid-cols-6 gap-4">
                 {outlets.map(number => (
-                  <OutletCard key={number} number={number} data={data} />
+                  <OutletCard key={number} number={number} data={data} pduIp={activePdu?.ip} onToggleComplete={refreshData} isWebAdmin={isWebAdminPdu} />
                 ))}
               </div>
 
@@ -1021,8 +1547,27 @@ const Dashboard2 = () => {
               </div>
             </>
           )}
+
+          {activeTab === 'pdu-settings' && (
+            <PDUSettingsPanel pdu={(() => {
+              const p = hallPDUs.find(p => expandedPdu && (p.id === expandedPdu || p.dbId === expandedPdu));
+              return p ? { ip: p.ip, remote_host: p.remote_host, web_admin_port: p.web_admin_port, web_admin_user: p.web_admin_user, web_admin_pass: p.web_admin_pass } : null;
+            })()} />
+          )}
         </main>
       </div>
+
+      {/* Commissioning Wizard Modal */}
+      {showWizard && selectedHallId && (
+        <CommissioningWizard
+          hallId={selectedHallId}
+          hallName={selectedHall?.name || 'Data Hall'}
+          onComplete={() => {
+            fetchHallState(selectedHallId);
+          }}
+          onClose={() => setShowWizard(false)}
+        />
+      )}
     </div>
   );
 };

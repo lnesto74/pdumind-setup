@@ -4,14 +4,15 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    ports:
+      - "5002:5002"
     volumes:
       - ./data:/app/data
       - ./backend:/app
-    ports:
-      - "9000:5000"
     environment:
       - PYTHONUNBUFFERED=1
       - DATA_DIR=/app/data
+      - PORT=5002
       - MAX_SNMP_THREADS=12
       - SNMP_BATCH_SIZE=2
       - OUTLET_BASE_TIMEOUT=3
@@ -24,7 +25,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
-
+    environment:
+      - API_PROXY_TARGET=http://backend:5002
     depends_on:
       - backend
 volumes:

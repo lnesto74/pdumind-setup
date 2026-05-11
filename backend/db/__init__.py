@@ -6,6 +6,7 @@ from .persistence import (
     PDURepo,
     TelemetryRepo,
     EventRepo,
+    MibRepo,
 )
 
 __all__ = [
@@ -15,4 +16,5 @@ __all__ = [
     'PDURepo',
     'TelemetryRepo',
     'EventRepo',
+    'MibRepo',
 ]

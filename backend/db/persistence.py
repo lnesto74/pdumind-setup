@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -47,10 +47,28 @@ def init_db() -> None:
         try:
             with open(schema_path, "r") as f:
                 conn.executescript(f.read())
+            # Run migrations for columns added after initial schema
+            _migrate(conn)
             conn.commit()
             print(f"[DB] Initialized database at {DB_PATH}")
         finally:
             conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns that may not exist in older databases."""
+    cur = conn.execute("PRAGMA table_info(pdus)")
+    existing = {row["name"] for row in cur.fetchall()}
+    migrations = [
+        ("remote_host", "TEXT"),
+        ("web_admin_port", "INTEGER"),
+        ("web_admin_user", "TEXT"),
+        ("web_admin_pass", "TEXT"),
+    ]
+    for col, typ in migrations:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE pdus ADD COLUMN {col} {typ}")
+            print(f"[DB] Migrated: added pdus.{col}")
 
 
 # =============================================================================
@@ -99,6 +117,37 @@ class HallRepo:
                 conn.close()
     
     @staticmethod
+    def rename(hall_id: int, name: str) -> bool:
+        """Rename a hall. Returns True if updated."""
+        with _db_lock:
+            conn = _connect()
+            try:
+                conn.execute(
+                    "UPDATE halls SET name = ?, updated_at = ? WHERE id = ?",
+                    (name, _utc_now(), hall_id)
+                )
+                conn.commit()
+                return conn.total_changes > 0
+            finally:
+                conn.close()
+    
+    @staticmethod
+    def delete(hall_id: int) -> bool:
+        """Delete a hall and all its child records (configs, racks, PDUs).
+        Returns True if deleted."""
+        with _db_lock:
+            conn = _connect()
+            try:
+                conn.execute("DELETE FROM hall_configs WHERE hall_id = ?", (hall_id,))
+                conn.execute("DELETE FROM pdus WHERE hall_id = ?", (hall_id,))
+                conn.execute("DELETE FROM racks WHERE hall_id = ?", (hall_id,))
+                conn.execute("DELETE FROM halls WHERE id = ?", (hall_id,))
+                conn.commit()
+                return conn.total_changes > 0
+            finally:
+                conn.close()
+    
+    @staticmethod
     def get_or_create_default() -> int:
         """Get default hall or create one if none exists."""
         halls = HallRepo.get_all()
@@ -108,29 +157,40 @@ class HallRepo:
     
     @staticmethod
     def save_config(hall_id: int, config: Dict[str, Any]) -> int:
-        """Save hall configuration. Creates new version. Returns config_id."""
+        """Save hall configuration. Updates latest version in-place, or creates first.
+        Returns config_id."""
         with _db_lock:
             conn = _connect()
             try:
-                # Get next version number
+                config_json = json.dumps(config)
+                
+                # Try to update the latest existing config
                 cur = conn.execute(
-                    "SELECT COALESCE(MAX(version), 0) + 1 FROM hall_configs WHERE hall_id = ?",
+                    """SELECT id, version FROM hall_configs 
+                       WHERE hall_id = ? ORDER BY version DESC LIMIT 1""",
                     (hall_id,)
                 )
-                version = cur.fetchone()[0]
+                existing = cur.fetchone()
                 
-                cur = conn.execute(
-                    "INSERT INTO hall_configs (hall_id, config_json, version) VALUES (?, ?, ?)",
-                    (hall_id, json.dumps(config), version)
-                )
+                if existing:
+                    conn.execute(
+                        "UPDATE hall_configs SET config_json = ?, created_at = ? WHERE id = ?",
+                        (config_json, _utc_now(), existing["id"])
+                    )
+                    config_id = existing["id"]
+                else:
+                    cur = conn.execute(
+                        "INSERT INTO hall_configs (hall_id, config_json, version) VALUES (?, ?, 1)",
+                        (hall_id, config_json)
+                    )
+                    config_id = cur.lastrowid
                 
-                # Update hall timestamp
                 conn.execute(
                     "UPDATE halls SET updated_at = ? WHERE id = ?",
                     (_utc_now(), hall_id)
                 )
                 conn.commit()
-                return cur.lastrowid
+                return config_id
             finally:
                 conn.close()
     
@@ -291,6 +351,29 @@ class RackRepo:
                 return cur.rowcount
             finally:
                 conn.close()
+    
+    @staticmethod
+    def cleanup_stale(hall_id: int, keep_rack_codes: set) -> int:
+        """Remove racks that are no longer in the layout, but only if they
+        have no commissioned PDUs attached."""
+        with _db_lock:
+            conn = _connect()
+            try:
+                placeholders = ','.join('?' for _ in keep_rack_codes)
+                cur = conn.execute(
+                    f"""DELETE FROM racks 
+                        WHERE hall_id = ? 
+                        AND rack_code NOT IN ({placeholders})
+                        AND id NOT IN (SELECT DISTINCT rack_id FROM pdus WHERE rack_id IS NOT NULL AND is_active = 1)""",
+                    (hall_id, *keep_rack_codes)
+                )
+                conn.commit()
+                deleted = cur.rowcount
+                if deleted > 0:
+                    print(f"[DB] Cleaned up {deleted} stale racks from hall {hall_id}")
+                return deleted
+            finally:
+                conn.close()
 
 
 # =============================================================================
@@ -302,27 +385,31 @@ class PDURepo:
     
     @staticmethod
     def upsert(hall_id: int, ip_address: str, data: Dict[str, Any]) -> int:
-        """Insert or update a PDU by IP address. Returns pdu_id."""
+        """Insert or update a PDU scoped to a specific hall. Returns pdu_id.
+        
+        Scopes lookup to (hall_id, ip_address) so PDUs in different halls
+        with the same IP don't interfere with each other.
+        """
         with _db_lock:
             conn = _connect()
             try:
                 cur = conn.execute(
-                    "SELECT id FROM pdus WHERE ip_address = ?",
-                    (ip_address,)
+                    "SELECT id FROM pdus WHERE hall_id = ? AND ip_address = ?",
+                    (hall_id, ip_address)
                 )
                 existing = cur.fetchone()
                 
                 if existing:
                     conn.execute(
                         """UPDATE pdus SET 
-                           hall_id = ?, rack_id = ?, pdu_model_id = ?,
+                           rack_id = ?, pdu_model_id = ?,
                            mount_position = ?, snmp_port = ?, snmp_version = ?,
                            snmp_community_ref = ?, mac_address = ?, hostname = ?,
                            label = ?, location = ?, metadata_json = ?,
-                           is_active = ?, updated_at = ?
+                           is_active = ?, remote_host = ?, web_admin_port = ?,
+                           web_admin_user = ?, web_admin_pass = ?, updated_at = ?
                            WHERE id = ?""",
                         (
-                            hall_id,
                             data.get("rack_id"),
                             data.get("pdu_model_id"),
                             data.get("mount_position", "A"),
@@ -335,6 +422,10 @@ class PDURepo:
                             data.get("location"),
                             json.dumps(data.get("metadata")) if data.get("metadata") else None,
                             1 if data.get("is_active", True) else 0,
+                            data.get("remote_host"),
+                            data.get("web_admin_port"),
+                            data.get("web_admin_user"),
+                            data.get("web_admin_pass"),
                             _utc_now(),
                             existing["id"]
                         )
@@ -346,8 +437,9 @@ class PDURepo:
                         """INSERT INTO pdus 
                            (hall_id, rack_id, pdu_model_id, mount_position, ip_address,
                             snmp_port, snmp_version, snmp_community_ref, mac_address,
-                            hostname, label, location, metadata_json, is_active)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            hostname, label, location, metadata_json, is_active,
+                            remote_host, web_admin_port, web_admin_user, web_admin_pass)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             hall_id,
                             data.get("rack_id"),
@@ -362,7 +454,11 @@ class PDURepo:
                             data.get("label"),
                             data.get("location"),
                             json.dumps(data.get("metadata")) if data.get("metadata") else None,
-                            1 if data.get("is_active", True) else 0
+                            1 if data.get("is_active", True) else 0,
+                            data.get("remote_host"),
+                            data.get("web_admin_port"),
+                            data.get("web_admin_user"),
+                            data.get("web_admin_pass"),
                         )
                     )
                     conn.commit()
@@ -411,6 +507,66 @@ class PDURepo:
                 cur = conn.execute("SELECT * FROM pdus WHERE id = ?", (pdu_id,))
                 row = cur.fetchone()
                 return dict(row) if row else None
+            finally:
+                conn.close()
+    
+    @staticmethod
+    def rename(pdu_id: int, label: str) -> bool:
+        """Rename a PDU label. Returns True if updated."""
+        with _db_lock:
+            conn = _connect()
+            try:
+                conn.execute(
+                    "UPDATE pdus SET label = ?, updated_at = ? WHERE id = ?",
+                    (label, _utc_now(), pdu_id)
+                )
+                conn.commit()
+                return conn.total_changes > 0
+            finally:
+                conn.close()
+    
+    @staticmethod
+    def delete(pdu_id: int) -> bool:
+        """Soft-delete a PDU (mark inactive). Returns True if updated."""
+        with _db_lock:
+            conn = _connect()
+            try:
+                conn.execute(
+                    "UPDATE pdus SET is_active = 0, updated_at = ? WHERE id = ?",
+                    (_utc_now(), pdu_id)
+                )
+                conn.commit()
+                return conn.total_changes > 0
+            finally:
+                conn.close()
+    
+    @staticmethod
+    def hard_delete(pdu_id: int) -> bool:
+        """Permanently delete a PDU. Returns True if deleted."""
+        with _db_lock:
+            conn = _connect()
+            try:
+                conn.execute("DELETE FROM pdus WHERE id = ?", (pdu_id,))
+                conn.commit()
+                return conn.total_changes > 0
+            finally:
+                conn.close()
+    
+    @staticmethod
+    def get_all_active() -> List[Dict[str, Any]]:
+        """Get all active PDUs across all halls."""
+        with _db_lock:
+            conn = _connect()
+            try:
+                cur = conn.execute(
+                    """SELECT p.*, r.rack_code, h.name as hall_name
+                       FROM pdus p
+                       LEFT JOIN racks r ON p.rack_id = r.id
+                       LEFT JOIN halls h ON p.hall_id = h.id
+                       WHERE p.is_active = 1
+                       ORDER BY h.name, r.row_index, r.position_index, p.mount_position"""
+                )
+                return [dict(row) for row in cur.fetchall()]
             finally:
                 conn.close()
     
@@ -533,6 +689,68 @@ class TelemetryRepo:
                     )
                 )
                 conn.commit()
+            finally:
+                conn.close()
+
+
+# =============================================================================
+# MIB REPOSITORY
+# =============================================================================
+
+class MibRepo:
+    """Repository for MIB files associated with halls."""
+    
+    @staticmethod
+    def add(hall_id: int, filename: str, original_name: str, oid_count: int, oids_json: str) -> int:
+        with _db_lock:
+            conn = _connect()
+            try:
+                cur = conn.execute(
+                    """INSERT INTO hall_mibs (hall_id, filename, original_name, oid_count, oids_json)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (hall_id, filename, original_name, oid_count, oids_json)
+                )
+                conn.commit()
+                return cur.lastrowid
+            finally:
+                conn.close()
+    
+    @staticmethod
+    def get_by_hall(hall_id: int) -> list:
+        with _db_lock:
+            conn = _connect()
+            try:
+                cur = conn.execute(
+                    "SELECT * FROM hall_mibs WHERE hall_id = ? ORDER BY created_at DESC",
+                    (hall_id,)
+                )
+                rows = [dict(r) for r in cur.fetchall()]
+                for r in rows:
+                    if r.get("oids_json"):
+                        r["oids"] = json.loads(r["oids_json"])
+                return rows
+            finally:
+                conn.close()
+    
+    @staticmethod
+    def delete(mib_id: int) -> bool:
+        with _db_lock:
+            conn = _connect()
+            try:
+                conn.execute("DELETE FROM hall_mibs WHERE id = ?", (mib_id,))
+                conn.commit()
+                return conn.total_changes > 0
+            finally:
+                conn.close()
+    
+    @staticmethod
+    def get(mib_id: int):
+        with _db_lock:
+            conn = _connect()
+            try:
+                cur = conn.execute("SELECT * FROM hall_mibs WHERE id = ?", (mib_id,))
+                row = cur.fetchone()
+                return dict(row) if row else None
             finally:
                 conn.close()
 
@@ -678,16 +896,22 @@ class EventRepo:
 def save_hall_state(hall_id: int, config: Dict[str, Any], 
                     racks: List[Dict[str, Any]], pdus: List[Dict[str, Any]]) -> None:
     """Save complete hall state in a transaction."""
-    # Save config
     HallRepo.save_config(hall_id, config)
     
-    # Upsert racks
+    # Upsert racks and track which rack_codes are in the new layout
     rack_id_map = {}
+    new_rack_codes = set()
     for rack in racks:
         rack_id = RackRepo.upsert(hall_id, rack["rack_code"], rack)
         rack_id_map[rack["rack_code"]] = rack_id
+        new_rack_codes.add(rack["rack_code"])
     
-    # Upsert PDUs with rack references
+    # Remove stale racks that no longer exist in the layout
+    # (only remove racks that have no commissioned PDUs attached)
+    if new_rack_codes:
+        RackRepo.cleanup_stale(hall_id, new_rack_codes)
+    
+    # Upsert PDUs with rack references (only if pdus provided)
     for pdu in pdus:
         rack_code = pdu.get("rack_code")
         pdu_data = {**pdu}
@@ -696,9 +920,58 @@ def save_hall_state(hall_id: int, config: Dict[str, Any],
         PDURepo.upsert(hall_id, pdu["ip_address"], pdu_data)
 
 
+# Track last write time per PDU to rate-limit storage (1 write per minute)
+_last_telemetry_write: Dict[str, datetime] = {}
+_last_cleanup_time: Optional[datetime] = None
+TELEMETRY_WRITE_INTERVAL_SECONDS = 60  # Only write every 60 seconds per PDU
+TELEMETRY_RETENTION_HOURS = 24  # Keep telemetry for 24 hours
+CLEANUP_INTERVAL_HOURS = 1  # Run cleanup every hour
+
+
+def cleanup_old_telemetry() -> int:
+    """Delete telemetry records older than TELEMETRY_RETENTION_HOURS. Returns count deleted."""
+    global _last_cleanup_time
+    
+    now = datetime.now(timezone.utc)
+    
+    # Only run cleanup once per hour
+    if _last_cleanup_time and (now - _last_cleanup_time).total_seconds() < CLEANUP_INTERVAL_HOURS * 3600:
+        return 0
+    
+    cutoff = now - timedelta(hours=TELEMETRY_RETENTION_HOURS)
+    cutoff_str = cutoff.isoformat()
+    
+    with _db_lock:
+        conn = _connect()
+        try:
+            cur = conn.execute(
+                "DELETE FROM telemetry WHERE ts_utc < ?",
+                (cutoff_str,)
+            )
+            deleted = cur.rowcount
+            conn.commit()
+            _last_cleanup_time = now
+            if deleted > 0:
+                print(f"[DB] Cleaned up {deleted} old telemetry records (older than {TELEMETRY_RETENTION_HOURS}h)")
+            return deleted
+        except Exception as e:
+            print(f"[DB] Cleanup error: {e}")
+            return 0
+        finally:
+            conn.close()
+
+
 def store_poll_snapshot(ip_address: str, results: Dict[str, Any], 
                         duration_ms: int = None) -> None:
-    """Store a complete poll snapshot. Creates PDU if needed."""
+    """Store a complete poll snapshot. Rate-limited to 1 write per minute per PDU."""
+    global _last_telemetry_write
+    
+    # Rate limiting - only write every TELEMETRY_WRITE_INTERVAL_SECONDS
+    now = datetime.now(timezone.utc)
+    last_write = _last_telemetry_write.get(ip_address)
+    if last_write and (now - last_write).total_seconds() < TELEMETRY_WRITE_INTERVAL_SECONDS:
+        return  # Skip this write, too soon
+    
     # Get or create PDU
     pdu = PDURepo.get_by_ip(ip_address)
     if not pdu:
@@ -725,3 +998,8 @@ def store_poll_snapshot(ip_address: str, results: Dict[str, Any],
     
     # Insert raw telemetry
     TelemetryRepo.insert_raw(pdu_id, payload, duration_ms, status)
+    _last_telemetry_write[ip_address] = now
+    
+    # Cleanup old telemetry (older than 24 hours) - run occasionally
+    if pdu_id == 1 or len(_last_telemetry_write) == 1:  # Only run cleanup once
+        cleanup_old_telemetry()

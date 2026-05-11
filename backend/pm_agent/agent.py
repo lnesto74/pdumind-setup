@@ -33,6 +33,10 @@ SYSTEM_PROMPT = (
     "   - Show relevant tables EXACTLY as returned by tools\n"
 )
 
+# Clear proxy env vars that cause issues with newer OpenAI client
+for proxy_var in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']:
+    os.environ.pop(proxy_var, None)
+
 # Choose LLM implementation based on API key availability
 if os.getenv("OPENAI_API_KEY"):
     llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.0)

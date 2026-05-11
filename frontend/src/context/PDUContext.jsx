@@ -6,11 +6,15 @@ export function PDUProvider({ children }) {
   // Load saved list from localStorage
   const [pduList, setPduList] = useState(() => {
     const saved = localStorage.getItem('pduList');
-    if (saved) return JSON.parse(saved);
-    // Default PDU if none saved
-    const defaultList = [{ ip: '192.168.10.106', port: '161' }];
-    localStorage.setItem('pduList', JSON.stringify(defaultList));
-    return defaultList;
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      const cleaned = parsed.filter(p => p.ip !== '192.168.10.106');
+      if (cleaned.length !== parsed.length) {
+        localStorage.setItem('pduList', JSON.stringify(cleaned));
+      }
+      return cleaned;
+    }
+    return [];
   });
 
   // Index of active PDU in list

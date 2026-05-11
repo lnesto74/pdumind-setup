@@ -10,7 +10,11 @@ export default {
         'app-bg': '#0f172a',
         'card-bg': '#1e293b',
         'highlight': '#0ea5e9',
-      }
+      },
+      fontFamily: {
+        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+        mono: ['JetBrains Mono', 'Menlo', 'Monaco', 'monospace'],
+      },
     },
   },
   plugins: [],

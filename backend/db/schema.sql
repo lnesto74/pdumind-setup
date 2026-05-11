@@ -73,9 +73,13 @@ CREATE TABLE IF NOT EXISTS pdus (
     location        TEXT,
     metadata_json   TEXT,
     is_active       INTEGER DEFAULT 1,
+    remote_host     TEXT,
+    web_admin_port  INTEGER,
+    web_admin_user  TEXT,
+    web_admin_pass  TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(ip_address)
+    UNIQUE(hall_id, ip_address)
 );
 CREATE INDEX IF NOT EXISTS idx_pdus_hall ON pdus(hall_id);
 CREATE INDEX IF NOT EXISTS idx_pdus_rack ON pdus(rack_id);
@@ -89,6 +93,21 @@ CREATE TABLE IF NOT EXISTS ip_pools (
     description     TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- =============================================================================
+-- MIB FILES
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS hall_mibs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    hall_id         INTEGER NOT NULL REFERENCES halls(id) ON DELETE CASCADE,
+    filename        TEXT NOT NULL,
+    original_name   TEXT NOT NULL,
+    oid_count       INTEGER DEFAULT 0,
+    oids_json       TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_hall_mibs_hall ON hall_mibs(hall_id);
 
 -- =============================================================================
 -- TELEMETRY TABLES
