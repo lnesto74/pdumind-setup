@@ -13,7 +13,7 @@ param(
     [string]$Branch = "master"
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 $ProgressPreference = "SilentlyContinue"
 
 function Write-Step { param([string]$msg) Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -150,14 +150,21 @@ Write-Step "Setting up PDUMind in $InstallDir..."
 if (Test-Path "$InstallDir\.git") {
     Write-Warn "Existing installation found. Pulling latest changes..."
     Push-Location $InstallDir
-    git pull origin $Branch 2>&1 | Out-Null
+    $env:GIT_REDIRECT_STDERR = '2>&1'
+    & git pull origin $Branch 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor Gray }
     Pop-Location
     Write-Ok "Repository updated"
 } else {
     if (Test-Path $InstallDir) {
         Remove-Item $InstallDir -Recurse -Force
     }
-    git clone --branch $Branch $RepoUrl $InstallDir 2>&1
+    $env:GIT_REDIRECT_STDERR = '2>&1'
+    & git clone --branch $Branch $RepoUrl $InstallDir 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor Gray }
+    if (-not (Test-Path "$InstallDir\.git")) {
+        Write-Err "Clone failed. Check your internet connection and try again."
+        Read-Host "Press Enter to exit"
+        exit 1
+    }
     Write-Ok "Repository cloned"
 }
 
@@ -173,18 +180,20 @@ Write-Ok "Data directories ready"
 Write-Step "Building and starting PDUMind (first build takes 3-5 minutes)..."
 Push-Location $InstallDir
 
-docker compose build 2>&1
+& docker compose build 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor Gray }
 if ($LASTEXITCODE -ne 0) {
     Write-Err "Docker build failed. Check the output above for errors."
     Pop-Location
+    Read-Host "Press Enter to exit"
     exit 1
 }
 Write-Ok "Build complete"
 
-docker compose up -d 2>&1
+& docker compose up -d 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor Gray }
 if ($LASTEXITCODE -ne 0) {
     Write-Err "Failed to start containers."
     Pop-Location
+    Read-Host "Press Enter to exit"
     exit 1
 }
 
