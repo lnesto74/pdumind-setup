@@ -9,7 +9,7 @@
 
 param(
     [string]$InstallDir = "$env:USERPROFILE\PDUMind",
-    [string]$RepoUrl = "https://github.com/lnesto/PDUMind.git",
+    [string]$RepoUrl = "https://github.com/lnesto74/pdumind-setup.git",
     [string]$Branch = "master"
 )
 
