@@ -494,14 +494,6 @@ const Dashboard2 = () => {
   }).length;
   const idleOutlets = activeOutlets - loadedOutlets;
 
-  if (!activePdu) {
-    return (
-      <div className="min-h-screen bg-[#0B1120] flex items-center justify-center">
-        <p className="text-slate-400 font-mono">Please add a PDU using the sidebar</p>
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-screen bg-[#0B1120] text-slate-100">
       <div className="flex">
@@ -750,8 +742,18 @@ const Dashboard2 = () => {
 
         {/* Main Content */}
         <main className="flex-1 p-8 overflow-y-auto">
+          {/* No PDU selected placeholder */}
+          {!activePdu && activeTab === 'telemetry' && (
+            <div className="flex items-center justify-center h-[60vh]">
+              <div className="text-center">
+                <span className="material-icons-outlined text-5xl text-slate-700 mb-4 block">electrical_services</span>
+                <p className="text-slate-400 font-mono text-lg mb-2">No PDU selected</p>
+                <p className="text-slate-600 font-mono text-sm">Use the Data Hall Designer to commission PDUs,<br/>or select one from the sidebar.</p>
+              </div>
+            </div>
+          )}
           {/* Telemetry View */}
-          {activeTab === 'telemetry' && (
+          {activeTab === 'telemetry' && activePdu && (
             <>
               {/* Active PDU Info Bar */}
               {activePduFull && (
