@@ -205,6 +205,22 @@ while ($attempts -lt 15) {
     Start-Sleep -Seconds 3
 }
 
+# ── 10. Create Desktop shortcut ─────────────────────────────────────────
+Write-Step "Creating Desktop shortcut..."
+try {
+    $desktopPath = [Environment]::GetFolderPath("Desktop")
+    $shortcutPath = Join-Path $desktopPath "PDUMind.lnk"
+    $ws = New-Object -ComObject WScript.Shell
+    $shortcut = $ws.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = Join-Path $InstallDir "PDUMind.bat"
+    $shortcut.WorkingDirectory = $InstallDir
+    $shortcut.Description = "Launch PDUMind (auto-updates from GitHub)"
+    $shortcut.Save()
+    Write-Ok "Shortcut created on Desktop"
+} catch {
+    Write-Warn "Could not create Desktop shortcut. You can run PDUMind.bat from $InstallDir"
+}
+
 Write-Host ""
 Write-Host "  =====================================" -ForegroundColor Green
 Write-Host "   PDUMind is ready!" -ForegroundColor White
@@ -214,9 +230,8 @@ Write-Host "  Frontend:  http://localhost:3000" -ForegroundColor Cyan
 Write-Host "  Backend:   http://localhost:5002" -ForegroundColor Cyan
 Write-Host "  Install:   $InstallDir" -ForegroundColor Gray
 Write-Host ""
-Write-Host "  To stop:   docker compose down" -ForegroundColor Gray
-Write-Host "  To start:  docker compose up -d" -ForegroundColor Gray
-Write-Host "  (run from $InstallDir)" -ForegroundColor Gray
+Write-Host "  To launch: Double-click 'PDUMind' on your Desktop" -ForegroundColor Gray
+Write-Host "  To stop:   docker compose down  (from $InstallDir)" -ForegroundColor Gray
 Write-Host ""
 
 Start-Process "http://localhost:3000"
