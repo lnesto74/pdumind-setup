@@ -93,6 +93,11 @@ try {
 # ── 3. Build if needed ──────────────────────────────────────────────────
 if ($needsBuild) {
     Write-Step "Rebuilding containers (this may take a few minutes)..."
+    $commitHash  = (git rev-parse --short HEAD 2>$null).Trim()
+    $commitCount = (git rev-list --count HEAD 2>$null).Trim()
+    $pkgVersion  = (Get-Content "$PSScriptRoot\frontend\package.json" | ConvertFrom-Json).version
+    $env:BUILD_VERSION = "$pkgVersion-b$commitCount.$commitHash"
+    Write-Host "  Version: $env:BUILD_VERSION" -ForegroundColor DarkGray
     docker compose build 2>&1
     if ($LASTEXITCODE -eq 0) {
         Write-Ok "Build complete"

@@ -3,6 +3,9 @@ FROM node:18-alpine
 
 WORKDIR /app
 
+ARG BUILD_VERSION=dev
+RUN echo "${BUILD_VERSION}" > BUILD_VERSION
+
 COPY package.json package-lock.json* ./
 RUN npm install --frozen-lockfile || true
 
