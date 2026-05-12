@@ -208,3 +208,30 @@ CREATE TABLE IF NOT EXISTS outlet_state_changes (
     new_state       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_state_changes ON outlet_state_changes(outlet_id, ts_utc DESC);
+
+-- =============================================================================
+-- USERS / AUTH TABLES
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS users (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    username        TEXT NOT NULL UNIQUE,
+    password_hash   TEXT NOT NULL,
+    display_name    TEXT,
+    must_change_pw  INTEGER DEFAULT 0,
+    is_active       INTEGER DEFAULT 1,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS access_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    username        TEXT NOT NULL,
+    action          TEXT NOT NULL,
+    ip_address      TEXT,
+    user_agent      TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_access_log_created ON access_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_access_log_user ON access_log(username, created_at DESC);

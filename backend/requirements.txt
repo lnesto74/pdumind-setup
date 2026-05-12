@@ -1,5 +1,7 @@
 Flask==3.0.2
 flask-cors==4.0.0
+PyJWT==2.8.0
+bcrypt==4.1.2
 pysnmp==4.4.12
 pysmi==0.3.4
 pyasn1==0.4.8

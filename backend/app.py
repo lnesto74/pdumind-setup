@@ -59,6 +59,9 @@ from polling import (
     DeviceState
 )
 
+# Import auth module
+from auth import register_auth_routes, ensure_default_admin
+
 def snmp_walk(ip: str, port: int, base_oid: str, timeout: int = OUTLET_BASE_TIMEOUT) -> dict[str, str]:
     """Walk an OID tree and return {full_oid: value} mapping. Uses numeric OIDs and prints
     value only for easier parsing while keeping the OID on each line ("-On -Ov").
@@ -409,6 +412,8 @@ POLL_STOP: bool = False
 
 init_db()
 init_persistence_db()  # Initialize new persistence layer
+register_auth_routes(app)
+ensure_default_admin()
 
 @app.route("/api/outlet/<int:outlet>/status", methods=["PUT"])
 def set_outlet_status(outlet: int):
