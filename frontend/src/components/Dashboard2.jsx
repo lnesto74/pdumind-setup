@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import api from '../api';
 import DataHallDesigner from './DataHallDesigner/DataHallDesigner';
 import CommissioningWizard from './CommissioningWizard';
@@ -69,7 +69,7 @@ const OutletCard = ({ number, data, pduIp, onToggleComplete, isWebAdmin }) => {
   return (
     <div className={`bg-[#161E2E] rounded-lg border ${isHighLoad ? 'border-red-500/50' : 'border-[#233544]'} p-4 ${!isOn ? 'opacity-60' : ''}`}>
       <div className="flex items-center justify-between mb-3">
-        <span className="text-[10px] text-slate-500 uppercase tracking-wider font-mono">OUTLET</span>
+        <span className="text-[10px] text-slate-500 uppercase tracking-wider">OUTLET</span>
         <div className="flex items-center gap-2">
           <span className={`text-[10px] ${statusInfo.color}`}>{statusInfo.text}</span>
           <span className={`w-2 h-2 rounded-full ${statusInfo.dot}`}></span>
@@ -125,7 +125,7 @@ const OutletCard = ({ number, data, pduIp, onToggleComplete, isWebAdmin }) => {
 // Specs Table Row
 const SpecRow = ({ label, value }) => (
   <div className="flex justify-between py-3 border-b border-[#233544]">
-    <span className="text-xs text-slate-500 font-mono">{label}</span>
+    <span className="text-xs text-slate-500">{label}</span>
     <span className="text-xs font-mono text-slate-300">{value}</span>
   </div>
 );
@@ -184,6 +184,7 @@ const Dashboard2 = () => {
   const [pduFilter, setPduFilter] = useState('all');
   const [pduLiveStatus, setPduLiveStatus] = useState({}); // { ip: 'online'|'offline' }
   const [pduAlarms, setPduAlarms] = useState({}); // { ip: { count: N, flags: [...] } }
+  const [ledgerExpandedPdu, setLedgerExpandedPdu] = useState(null); // IP of expanded PDU in ledger
   
   // Commissioning wizard state
   const [showWizard, setShowWizard] = useState(false);
@@ -306,7 +307,10 @@ const Dashboard2 = () => {
                 const count = parseInt(countEntry?.value || '0', 10);
                 let flags = [];
                 try { flags = JSON.parse(flagsEntry?.value || '[]'); } catch {}
-                alarmMap[pdu.ip] = { count, flags };
+                const alarmEntries = (liveData.results || [])
+                  .filter(r => r.name.startsWith('alarm_') && !r.name.endsWith('_color') && r.name !== 'alarm_status' && r.name !== 'alarm_color')
+                  .map(r => ({ key: r.name, value: r.value?.replace?.(/"/g, '').trim() || r.value }));
+                alarmMap[pdu.ip] = { count, flags, entries: alarmEntries, ts: new Date().toISOString() };
               }
             } catch {}
           }
@@ -388,20 +392,38 @@ const Dashboard2 = () => {
     setExpandedPdu(null);
   }, [selectedHallId, fetchHallState]);
 
+  const lastGoodDataRef = useRef(null);
   const refreshData = useCallback(async () => {
     if (!activePdu?.ip) return;
     try {
       const rh = activePdu.remote_host ? `?remote_host=${encodeURIComponent(activePdu.remote_host)}` : '';
       const response = await fetch(`/api/pdus/by-ip/${activePdu.ip}/live${rh}`);
       const result = await response.json();
-      setData(result);
+      const hasResults = result?.results?.length > 0;
+      if (hasResults) {
+        // Check if the new data contains any real telemetry values (not all zeros)
+        const hasRealValues = result.results.some(r => {
+          if (r.name?.startsWith('_') || r.name?.startsWith('Output')) return false;
+          const v = parseFloat(r.value);
+          return !isNaN(v) && v !== 0;
+        });
+        if (hasRealValues) {
+          lastGoodDataRef.current = result;
+        }
+        setData(result);
+      } else if (lastGoodDataRef.current) {
+        // Empty poll — keep showing last known good data
+        setData(lastGoodDataRef.current);
+      }
     } catch (error) {
       console.error('Error fetching data:', error);
+      // Network error — keep showing last good data
     }
   }, [activePdu?.ip, activePdu?.remote_host]);
 
   useEffect(() => {
     if (activePdu?.ip) {
+      lastGoodDataRef.current = null;
       refreshData();
       const pollMs = activePdu.remote_host ? 10000 : 1000;
       const interval = setInterval(refreshData, pollMs);
@@ -412,7 +434,7 @@ const Dashboard2 = () => {
   // Extract values from data — strips trailing unit suffixes (V, A, kW, kWh, Hz, etc.)
   const getValue = (name) => {
     const item = data?.results?.find(r => r.name === name);
-    if (!item) return '0';
+    if (!item) return null;
     const raw = item.value?.replace(/"/g, '') || '0';
     return raw;
   };
@@ -544,7 +566,7 @@ const Dashboard2 = () => {
       {globalAlarmCount > 0 && (
         <div className="bg-red-500/15 border-b border-red-500/40 px-6 py-2 flex items-center gap-3 animate-pulse">
           <span className="material-icons-outlined text-red-400 text-xl">warning</span>
-          <span className="text-red-300 text-sm font-mono font-bold">
+          <span className="text-red-300 text-sm font-bold">
             {globalAlarmCount} Active Alarm{globalAlarmCount > 1 ? 's' : ''} on {alarmedPduCount} PDU{alarmedPduCount > 1 ? 's' : ''}
           </span>
           <span className="text-red-400/60 text-xs font-mono ml-auto">
@@ -560,7 +582,7 @@ const Dashboard2 = () => {
         <aside className="w-72 border-r border-[#233544] bg-[#0B1120] min-h-[calc(100vh-4rem)] p-4 overflow-y-auto">
           {/* Data Hall Designer - Top Section */}
           <div className="mb-6">
-            <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest mb-3 font-mono">
+            <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest mb-3">
               Infrastructure
             </h3>
             <button
@@ -574,24 +596,42 @@ const Dashboard2 = () => {
               <span className="material-icons-outlined text-lg">view_in_ar</span>
               <span className="text-sm font-medium">Data Hall Designer</span>
             </button>
+            <button
+              onClick={() => { setActiveTab('ledger'); setExpandedPdu(null); }}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors text-left mt-1 ${
+                activeTab === 'ledger'
+                  ? 'bg-[#00E5FF]/10 text-[#00E5FF] border-l-2 border-[#00E5FF]'
+                  : globalAlarmCount > 0
+                    ? 'bg-red-500/10 text-red-400 border-l-2 border-red-500 hover:bg-red-500/15'
+                    : 'text-slate-400 hover:bg-[#161E2E] hover:text-[#00E5FF]'
+              }`}
+            >
+              <span className={`material-icons-outlined text-lg ${globalAlarmCount > 0 && activeTab !== 'ledger' ? 'animate-pulse' : ''}`}>
+                {globalAlarmCount > 0 ? 'warning_amber' : 'history_edu'}
+              </span>
+              <span className="text-sm font-medium">Alarm Ledger</span>
+              {globalAlarmCount > 0 && (
+                <span className="ml-auto px-1.5 py-0.5 rounded bg-red-500 text-white text-[10px] font-mono font-bold">{globalAlarmCount}</span>
+              )}
+            </button>
           </div>
 
           {/* Hall Selector */}
           <div className="mb-6">
-            <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest mb-3 font-mono">
+            <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest mb-3">
               Data Hall
             </h3>
             <select
               value={selectedHallId || ''}
               onChange={(e) => setSelectedHallId(parseInt(e.target.value))}
-              className="w-full bg-[#161E2E] border border-[#233544] rounded-lg px-3 py-2 text-sm text-slate-300 font-mono focus:outline-none focus:border-[#00E5FF]"
+              className="w-full bg-[#161E2E] border border-[#233544] rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-[#00E5FF]"
             >
               {halls.map(hall => (
                 <option key={hall.id} value={hall.id}>{hall.name}</option>
               ))}
             </select>
             {selectedHall && (
-              <p className="text-[9px] text-slate-600 font-mono mt-1 px-1">
+              <p className="text-[9px] text-slate-600 mt-1 px-1">
                 ID: {selectedHall.id} • {new Date(selectedHall.created_at).toLocaleDateString()}
               </p>
             )}
@@ -599,7 +639,7 @@ const Dashboard2 = () => {
 
           {/* PDU Tree Navigation */}
           <div className="mb-6 flex flex-col" style={{ maxHeight: '40vh' }}>
-            <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest mb-2 font-mono flex items-center justify-between flex-shrink-0">
+            <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest mb-2 flex items-center justify-between flex-shrink-0">
               <span>PDU Monitoring</span>
               <span className="text-[#00E5FF]">{generatedPDUs.length}/{hallPDUs.length}</span>
             </h3>
@@ -614,7 +654,7 @@ const Dashboard2 = () => {
                 <button
                   key={filter.id}
                   onClick={() => setPduFilter(filter.id)}
-                  className={`flex-1 py-1.5 px-2 text-[10px] font-mono rounded transition-all ${
+                  className={`flex-1 py-1.5 px-2 text-[10px] rounded transition-all ${
                     pduFilter === filter.id
                       ? filter.color === 'emerald' 
                         ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50'
@@ -662,7 +702,7 @@ const Dashboard2 = () => {
                       <span className={`material-icons-outlined text-sm ${expandedPdu === pdu.id ? 'rotate-90' : ''} transition-transform`}>
                         chevron_right
                       </span>
-                      <span className="text-sm font-mono">{pdu.label || pdu.id}</span>
+                      <span className="text-sm font-medium">{pdu.label || pdu.id}</span>
                     </div>
                     {/* Row 2: Status dot + LIVE + IP */}
                     <div className="flex items-center gap-2 ml-6 mt-1">
@@ -681,15 +721,14 @@ const Dashboard2 = () => {
                   {/* PDU Monitoring Options - Expanded */}
                   {expandedPdu === pdu.id && (
                     <div className="ml-6 mt-1 space-y-0.5 border-l border-[#233544] pl-2">
-                      <p className="text-[9px] text-slate-600 font-mono px-2 py-1">{pdu.location}</p>
+                      <p className="text-[9px] text-slate-600 px-2 py-1">{pdu.location}</p>
                       {pdu.mac_address && (
-                        <p className="text-[9px] text-slate-600 font-mono px-2 pb-1">MAC: {pdu.mac_address}</p>
+                        <p className="text-[9px] text-slate-600 px-2 pb-1">MAC: <span className="font-mono">{pdu.mac_address}</span></p>
                       )}
                       {[
                         { id: 'telemetry', icon: 'analytics', label: 'Telemetry' },
                         { id: 'warnings', icon: 'warning_amber', label: 'Warnings', alarmCount: pduAlarms[pdu.ip]?.count || 0 },
                         { id: 'outlets', icon: 'power', label: 'Outlets' },
-                        { id: 'ledger', icon: 'history_edu', label: 'Activity Ledger', inactive: true },
                         { id: 'specs', icon: 'info', label: 'Specs', inactive: true },
                         { id: 'insights', icon: 'psychology', label: 'AI Insights', inactive: true },
                         ...(pdu.web_admin_port ? [{ id: 'pdu-settings', icon: 'settings', label: 'PDU Settings' }] : []),
@@ -714,9 +753,9 @@ const Dashboard2 = () => {
                             <span className="ml-auto bg-red-500 text-white text-[9px] font-bold font-mono px-1.5 py-0.5 rounded-full animate-pulse">{item.alarmCount}</span>
                           )}
                           {item.id === 'warnings' && !item.alarmCount && (
-                            <span className="ml-auto text-[9px] text-emerald-500 font-mono">Normal</span>
+                            <span className="ml-auto text-[9px] text-emerald-500">Normal</span>
                           )}
-                          {item.inactive && <span className="ml-auto text-[8px] uppercase tracking-wider text-slate-600 font-mono">inactive</span>}
+                          {item.inactive && <span className="ml-auto text-[8px] uppercase tracking-wider text-slate-600">inactive</span>}
                         </button>
                       ))}
                       
@@ -815,8 +854,8 @@ const Dashboard2 = () => {
             <div className="flex items-center justify-center h-[60vh]">
               <div className="text-center">
                 <span className="material-icons-outlined text-5xl text-slate-700 mb-4 block">electrical_services</span>
-                <p className="text-slate-400 font-mono text-lg mb-2">No PDU selected</p>
-                <p className="text-slate-600 font-mono text-sm">Use the Data Hall Designer to commission PDUs,<br/>or select one from the sidebar.</p>
+                <p className="text-slate-400 text-lg mb-2">No PDU selected</p>
+                <p className="text-slate-600 text-sm">Use the Data Hall Designer to commission PDUs,<br/>or select one from the sidebar.</p>
               </div>
             </div>
           )}
@@ -830,7 +869,7 @@ const Dashboard2 = () => {
                   {activePduFull.label && activePduFull.label !== activePduFull.ip && (
                     <div className="flex items-center gap-2">
                       <span className="material-icons-outlined text-[#00E5FF] text-sm">dns</span>
-                      <span className="text-sm font-bold font-mono text-white">{activePduFull.label}</span>
+                      <span className="text-sm font-bold text-white">{activePduFull.label}</span>
                     </div>
                   )}
                   {/* IP or Remote host */}
@@ -855,7 +894,7 @@ const Dashboard2 = () => {
                   )}
                   <div className="flex items-center gap-1.5">
                     <span className="material-icons-outlined text-slate-500 text-xs">view_in_ar</span>
-                    <span className="text-xs font-mono text-slate-400">Rack: <span className="text-white">{activePduFull.location || 'Unassigned'}</span></span>
+                    <span className="text-xs text-slate-400">Rack: <span className="text-white font-mono">{activePduFull.location || 'Unassigned'}</span></span>
                   </div>
                   <div className={`ml-auto flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold ${
                     pduLiveStatus[activePduFull.ip] === 'online' 
@@ -871,7 +910,7 @@ const Dashboard2 = () => {
               {/* Page Header */}
               <div className="flex justify-between items-start mb-8">
                 <div>
-                  <h1 className="text-2xl font-bold font-mono uppercase tracking-tight text-[#00E5FF]">
+                  <h1 className="text-2xl font-bold uppercase tracking-tight text-[#00E5FF]">
                     Telemetry & Predictive Analysis
                   </h1>
                   <p className="text-slate-500 text-sm mt-1">
@@ -889,34 +928,34 @@ const Dashboard2 = () => {
               {/* Metrics Row */}
               <div className="grid grid-cols-5 gap-4 mb-6">
                 <div className="bg-[#161E2E] p-5 rounded-xl border border-[#233544]">
-                  <p className="text-[10px] text-slate-500 uppercase font-bold font-mono mb-2">Voltage</p>
+                  <p className="text-[10px] text-slate-500 uppercase font-bold mb-2">Voltage</p>
                   <div className="flex items-baseline gap-1">
                     <span className="text-3xl font-bold font-mono text-white">{voltage.toFixed(1)}</span>
                     <span className="text-slate-500 text-sm">V</span>
                   </div>
                 </div>
                 <div className="bg-[#161E2E] p-5 rounded-xl border border-[#233544]">
-                  <p className="text-[10px] text-slate-500 uppercase font-bold font-mono mb-2">Current</p>
+                  <p className="text-[10px] text-slate-500 uppercase font-bold mb-2">Current</p>
                   <div className="flex items-baseline gap-1">
                     <span className="text-3xl font-bold font-mono text-[#00E5FF]">{current.toFixed(2)}</span>
                     <span className="text-slate-500 text-sm">A</span>
                   </div>
                 </div>
                 <div className="bg-[#161E2E] p-5 rounded-xl border border-[#233544]">
-                  <p className="text-[10px] text-slate-500 uppercase font-bold font-mono mb-2">Active Power</p>
+                  <p className="text-[10px] text-slate-500 uppercase font-bold mb-2">Active Power</p>
                   <div className="flex items-baseline gap-1">
                     <span className="text-3xl font-bold font-mono text-white">{power.toFixed(1)}</span>
                     <span className="text-slate-500 text-sm">W</span>
                   </div>
                 </div>
                 <div className="bg-[#161E2E] p-5 rounded-xl border border-[#233544]">
-                  <p className="text-[10px] text-slate-500 uppercase font-bold font-mono mb-2">Power Factor</p>
+                  <p className="text-[10px] text-slate-500 uppercase font-bold mb-2">Power Factor</p>
                   <div className="flex items-baseline gap-1">
                     <span className="text-3xl font-bold font-mono text-white">{pf.toFixed(2)}</span>
                   </div>
                 </div>
                 <div className="bg-[#161E2E] p-5 rounded-xl border border-[#233544]">
-                  <p className="text-[10px] text-slate-500 uppercase font-bold font-mono mb-2">Total Energy</p>
+                  <p className="text-[10px] text-slate-500 uppercase font-bold mb-2">Total Energy</p>
                   <div className="flex items-baseline gap-1">
                     <span className="text-3xl font-bold font-mono text-white">{energy.toFixed(1)}</span>
                     <span className="text-slate-500 text-sm">kWh</span>
@@ -924,7 +963,7 @@ const Dashboard2 = () => {
                 </div>
                 <div className="bg-[#161E2E] p-5 rounded-xl border border-[#233544] flex items-center justify-between">
                   <div>
-                    <p className="text-[10px] text-slate-500 uppercase font-bold font-mono mb-2">Phase Status</p>
+                    <p className="text-[10px] text-slate-500 uppercase font-bold mb-2">Phase Status</p>
                     <div className="flex gap-2">
                       {[voltage, voltageL2, voltageL3].map((v, i) => (
                         <div
@@ -950,7 +989,7 @@ const Dashboard2 = () => {
                 {/* Load Trends Chart */}
                 <div className="bg-[#161E2E] rounded-xl border border-[#233544] p-6">
                   <div className="flex justify-between items-center mb-6">
-                    <h3 className="font-mono font-bold text-[#00E5FF] flex items-center gap-2 uppercase text-sm">
+                    <h3 className="font-bold text-[#00E5FF] flex items-center gap-2 uppercase text-sm">
                       <span className="material-icons-outlined text-lg">trending_up</span>
                       Load Trends & Forecasting
                     </h3>
@@ -959,7 +998,7 @@ const Dashboard2 = () => {
                       <div className="flex items-center bg-[#0d1929] rounded-lg p-0.5">
                         <button 
                           onClick={() => setChartMode('realtime')}
-                          className={`px-3 py-1 rounded-md font-mono text-[10px] uppercase transition-all ${
+                          className={`px-3 py-1 rounded-md text-[10px] uppercase transition-all ${
                             chartMode === 'realtime' 
                               ? 'bg-[#00E5FF] text-[#0B1120] font-bold' 
                               : 'text-slate-400 hover:text-white'
@@ -969,7 +1008,7 @@ const Dashboard2 = () => {
                         </button>
                         <button 
                           onClick={() => setChartMode('historical')}
-                          className={`px-3 py-1 rounded-md font-mono text-[10px] uppercase transition-all ${
+                          className={`px-3 py-1 rounded-md text-[10px] uppercase transition-all ${
                             chartMode === 'historical' 
                               ? 'bg-[#00E5FF] text-[#0B1120] font-bold' 
                               : 'text-slate-400 hover:text-white'
@@ -985,7 +1024,7 @@ const Dashboard2 = () => {
                             <button 
                               key={p}
                               onClick={() => setChartPeriod(p)}
-                              className={`px-2 py-1 rounded font-mono text-[10px] uppercase transition-all ${
+                              className={`px-2 py-1 rounded text-[10px] uppercase transition-all ${
                                 chartPeriod === p 
                                   ? 'bg-[#1e3a5f] text-[#00E5FF] font-bold' 
                                   : 'text-slate-500 hover:text-slate-300'
@@ -1181,7 +1220,7 @@ const Dashboard2 = () => {
                     <div className="text-slate-500">
                       Peak Demand Today: <span className="font-bold text-white font-mono ml-2">{Math.round(power * 1.03)} W</span>
                     </div>
-                    <button className="text-[#00E5FF] hover:underline flex items-center gap-1 font-mono text-xs uppercase">
+                    <button className="text-[#00E5FF] hover:underline flex items-center gap-1 text-xs uppercase">
                       Download Report <span className="material-icons-outlined text-sm">download</span>
                     </button>
                   </div>
@@ -1196,7 +1235,7 @@ const Dashboard2 = () => {
                 {/* AI Analysis — greyed out until connected to a live analysis engine */}
                 <div className="bg-[#161E2E] rounded-xl border border-[#233544] p-6 opacity-40 pointer-events-none select-none">
                   <div className="flex items-center gap-2 mb-6">
-                    <h3 className="font-mono font-bold text-slate-500 flex items-center gap-2 uppercase text-sm">
+                    <h3 className="font-bold text-slate-500 flex items-center gap-2 uppercase text-sm">
                       <span className="material-icons-outlined text-lg">insights</span>
                       AI Operational Analysis
                     </h3>
@@ -1232,11 +1271,11 @@ const Dashboard2 = () => {
             <>
               <div className="flex justify-between items-start mb-8">
                 <div>
-                  <h2 className="text-2xl font-bold font-mono uppercase tracking-tight text-white">
+                  <h2 className="text-2xl font-bold uppercase tracking-tight text-white">
                     <span className="material-icons-outlined align-middle mr-2 text-amber-400">warning_amber</span>
                     Alarm Status
                   </h2>
-                  <p className="text-xs text-slate-500 font-mono mt-1">
+                  <p className="text-xs text-slate-500 mt-1">
                     {activePdu?.label || activePdu?.ip || 'PDU'} — Real-time alarm flags from device
                   </p>
                 </div>
@@ -1278,7 +1317,7 @@ const Dashboard2 = () => {
                           <p className={`text-lg font-bold font-mono ${flags.length > 0 ? 'text-red-300' : 'text-emerald-300'}`}>
                             {flags.length > 0 ? `${flags.length} ACTIVE ALARM${flags.length > 1 ? 'S' : ''}` : 'ALL NORMAL'}
                           </p>
-                          <p className="text-xs text-slate-500 font-mono">
+                          <p className="text-xs text-slate-500">
                             {flags.length > 0 ? flags.map(f => f.param.replace(/_/g, ' ')).join(', ') : 'No alarms detected on this PDU'}
                           </p>
                         </div>
@@ -1348,7 +1387,7 @@ const Dashboard2 = () => {
             <>
               <div className="flex justify-between items-start mb-8">
                 <div>
-                  <h1 className="text-2xl font-bold font-mono uppercase tracking-tight text-white">
+                  <h1 className="text-2xl font-bold uppercase tracking-tight text-white">
                     {isWebAdminPdu ? 'BREAKERS' : 'OUTPUTS'}
                   </h1>
                   <p className="text-slate-500 text-sm mt-1">
@@ -1372,7 +1411,7 @@ const Dashboard2 = () => {
               </div>
 
               <div className="mt-6 flex items-center gap-4">
-                <span className="text-[10px] text-slate-500 uppercase font-mono">Total Power</span>
+                <span className="text-[10px] text-slate-500 uppercase">Total Power</span>
                 <div className="flex-1 bg-[#233544] h-2 rounded-full overflow-hidden">
                   <div className="bg-[#00E5FF] h-full rounded-full transition-all" style={{ width: `${Math.min((power / 2400) * 100, 100)}%` }}></div>
                 </div>
@@ -1411,189 +1450,277 @@ const Dashboard2 = () => {
             />
           )}
 
-          {/* Activity Ledger View */}
+          {/* Global Alarm Ledger View */}
           {activeTab === 'ledger' && (
             <>
-              <div className="flex justify-between items-start mb-8">
-                <div>
-                  <h1 className="text-2xl font-bold font-mono uppercase tracking-tight text-white">
-                    Alerts & Incident Response
-                  </h1>
-                  <p className="text-slate-500 text-sm mt-1">
-                    Real-time monitoring and anomaly detection for power infrastructure.
-                  </p>
-                </div>
-                <div className="flex items-center gap-4">
-                  <span className="text-xs text-slate-500 uppercase tracking-wider">
-                    <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 mr-2"></span>
-                    System Health: Nominal
-                  </span>
-                  <button className="text-[#00E5FF] text-xs font-mono uppercase flex items-center gap-1 hover:underline">
-                    <span className="material-icons-outlined text-sm">history</span>
-                    View History
-                  </button>
-                </div>
-              </div>
+              {(() => {
+                const PARAM_LABELS = {
+                  alarm_l1_voltage: 'Phase L1 Voltage', alarm_l1_current: 'Phase L1 Current',
+                  alarm_l2_voltage: 'Phase L2 Voltage', alarm_l2_current: 'Phase L2 Current',
+                  alarm_l3_voltage: 'Phase L3 Voltage', alarm_l3_current: 'Phase L3 Current',
+                  alarm_neutral: 'Neutral Line', alarm_phase_unbalance: 'Phase Unbalance',
+                  alarm_temp1: 'Temperature Sensor 1', alarm_hum1: 'Humidity Sensor 1',
+                  alarm_temp2: 'Temperature Sensor 2', alarm_hum2: 'Humidity Sensor 2',
+                  alarm_temp3: 'Temperature Sensor 3', alarm_hum3: 'Humidity Sensor 3',
+                  alarm_temp4: 'Temperature Sensor 4', alarm_hum4: 'Humidity Sensor 4',
+                  alarm_sensor1: 'IO Sensor 1', alarm_sensor2: 'IO Sensor 2',
+                  alarm_sensor3: 'IO Sensor 3', alarm_sensor4: 'IO Sensor 4',
+                };
+                const CATEGORY_MAP = {
+                  alarm_l1_voltage: 'Voltage', alarm_l2_voltage: 'Voltage', alarm_l3_voltage: 'Voltage',
+                  alarm_l1_current: 'Current', alarm_l2_current: 'Current', alarm_l3_current: 'Current',
+                  alarm_neutral: 'Current', alarm_phase_unbalance: 'Power Quality',
+                  alarm_temp1: 'Temperature', alarm_temp2: 'Temperature', alarm_temp3: 'Temperature', alarm_temp4: 'Temperature',
+                  alarm_hum1: 'Humidity', alarm_hum2: 'Humidity', alarm_hum3: 'Humidity', alarm_hum4: 'Humidity',
+                  alarm_sensor1: 'IO Sensor', alarm_sensor2: 'IO Sensor', alarm_sensor3: 'IO Sensor', alarm_sensor4: 'IO Sensor',
+                };
+                const CATEGORY_ICONS = {
+                  Voltage: 'electric_bolt', Current: 'bolt', 'Power Quality': 'tune',
+                  Temperature: 'thermostat', Humidity: 'water_drop', 'IO Sensor': 'sensors',
+                };
+                const CATEGORY_COLORS = {
+                  Voltage: 'text-amber-400', Current: 'text-red-400', 'Power Quality': 'text-purple-400',
+                  Temperature: 'text-orange-400', Humidity: 'text-blue-400', 'IO Sensor': 'text-cyan-400',
+                };
 
-              {/* Alert Cards */}
-              <div className="space-y-4">
-                {/* Critical Alert */}
-                <div className="bg-[#161E2E] rounded-xl border-l-4 border-l-red-500 border border-[#233544] p-5">
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-start gap-4">
-                      <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center">
-                        <span className="material-icons-outlined text-red-500">error</span>
-                      </div>
+                const allEntries = [];
+                for (const pdu of hallPDUs) {
+                  const alarmData = pduAlarms[pdu.ip];
+                  if (!alarmData) continue;
+                  const entries = alarmData.entries || [];
+                  for (const entry of entries) {
+                    const isNormal = !entry.value || entry.value === '-' || entry.value.toLowerCase() === 'normal';
+                    allEntries.push({
+                      key: entry.key,
+                      value: entry.value,
+                      isNormal,
+                      label: PARAM_LABELS[entry.key] || entry.key.replace(/alarm_/g, '').replace(/_/g, ' '),
+                      category: CATEGORY_MAP[entry.key] || 'Other',
+                      pduLabel: pdu.label,
+                      pduIp: pdu.ip,
+                      pduMac: pdu.mac_address || '-',
+                      rack: pdu.location || '-',
+                      ts: alarmData.ts,
+                      status: pduLiveStatus[pdu.ip] || 'offline',
+                    });
+                  }
+                }
+
+                const activeAlarms = allEntries.filter(e => !e.isNormal);
+                const normalEntries = allEntries.filter(e => e.isNormal);
+                const categoryCounts = {};
+                for (const a of activeAlarms) {
+                  categoryCounts[a.category] = (categoryCounts[a.category] || 0) + 1;
+                }
+
+                return (
+                  <>
+                    <div className="flex justify-between items-start mb-6">
                       <div>
-                        <div className="flex items-center gap-3 mb-1">
-                          <span className="text-[10px] bg-red-500 text-white px-2 py-0.5 rounded font-bold uppercase">Critical</span>
-                          <span className="text-sm font-semibold text-white">Over-current Detection: Phase L2</span>
-                          <span className="text-xs text-slate-500 font-mono">PDU: {activePdu?.ip}:{activePdu?.port}</span>
-                        </div>
-                        <p className="text-xs text-slate-400 mt-1">
-                          Current reached 16.4A on phase L2, exceeding the safety threshold of 15.0A. High risk of circuit breaker tripping.
+                        <h2 className="text-2xl font-bold uppercase tracking-tight text-white">
+                          <span className="material-icons-outlined align-middle mr-2 text-amber-400">history_edu</span>
+                          Global Alarm Ledger
+                        </h2>
+                        <p className="text-xs text-slate-500 mt-1">
+                          Aggregated alarm status across all {hallPDUs.length} PDUs in {selectedHall?.name || 'data hall'}
                         </p>
                       </div>
+                      <div className="flex items-center gap-3">
+                        <span className={`text-xs uppercase tracking-wider flex items-center gap-1.5 ${activeAlarms.length > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+                          <span className={`inline-block w-2 h-2 rounded-full ${activeAlarms.length > 0 ? 'bg-red-500 animate-pulse' : 'bg-emerald-500'}`}></span>
+                          {activeAlarms.length > 0 ? `${activeAlarms.length} Active` : 'All Clear'}
+                        </span>
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <p className="text-[10px] text-slate-500 uppercase mb-1">Duration</p>
-                      <p className="text-lg font-mono font-bold text-red-400">00:04:12</p>
-                    </div>
-                    <button className="ml-6 px-4 py-2 bg-[#00E5FF] text-[#0B1120] text-xs font-bold rounded uppercase hover:bg-[#00E5FF]/80">
-                      Resolve →
-                    </button>
-                  </div>
-                </div>
 
-                {/* Warning Alert */}
-                <div className="bg-[#161E2E] rounded-xl border-l-4 border-l-amber-500 border border-[#233544] p-5">
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-start gap-4">
-                      <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center">
-                        <span className="material-icons-outlined text-amber-500">warning</span>
+                    {/* Summary Cards */}
+                    <div className="grid grid-cols-4 gap-3 mb-6">
+                      <div className={`p-4 rounded-xl border ${activeAlarms.length > 0 ? 'bg-red-500/10 border-red-500/30' : 'bg-emerald-500/10 border-emerald-500/30'}`}>
+                        <p className="text-[10px] text-slate-500 uppercase mb-1">Active Alarms</p>
+                        <p className={`text-2xl font-mono font-bold ${activeAlarms.length > 0 ? 'text-red-400' : 'text-emerald-400'}`}>{activeAlarms.length}</p>
                       </div>
-                      <div>
-                        <div className="flex items-center gap-3 mb-1">
-                          <span className="text-[10px] bg-amber-500 text-white px-2 py-0.5 rounded font-bold uppercase">Warning</span>
-                          <span className="text-sm font-semibold text-white">Temperature Threshold Exceeded</span>
-                          <span className="text-xs text-slate-500 font-mono">PDU: {activePdu?.ip}:{activePdu?.port}</span>
-                        </div>
-                        <p className="text-xs text-slate-400 mt-1">
-                          External sensor #1 reported 42.5°C. Cooling systems should be inspected at Rack 12B.
-                        </p>
+                      <div className="p-4 rounded-xl bg-[#161E2E] border border-[#233544]">
+                        <p className="text-[10px] text-slate-500 uppercase mb-1">PDUs Monitored</p>
+                        <p className="text-2xl font-mono font-bold text-[#00E5FF]">{hallPDUs.length}</p>
+                      </div>
+                      <div className="p-4 rounded-xl bg-[#161E2E] border border-[#233544]">
+                        <p className="text-[10px] text-slate-500 uppercase mb-1">Parameters Checked</p>
+                        <p className="text-2xl font-mono font-bold text-slate-300">{allEntries.length}</p>
+                      </div>
+                      <div className="p-4 rounded-xl bg-[#161E2E] border border-[#233544]">
+                        <p className="text-[10px] text-slate-500 uppercase mb-1">All Normal</p>
+                        <p className="text-2xl font-mono font-bold text-emerald-400">{normalEntries.length}</p>
                       </div>
                     </div>
-                    <div className="text-right">
-                      <p className="text-[10px] text-slate-500 uppercase mb-1">Duration</p>
-                      <p className="text-lg font-mono font-bold text-amber-400">00:22:45</p>
-                    </div>
-                    <button className="ml-6 px-4 py-2 bg-[#233544] text-slate-300 text-xs font-bold rounded uppercase hover:bg-[#2D3748]">
-                      Acknowledge
-                    </button>
-                  </div>
-                </div>
 
-                {/* Info Alert */}
-                <div className="bg-[#161E2E] rounded-xl border-l-4 border-l-[#00E5FF] border border-[#233544] p-5">
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-start gap-4">
-                      <div className="w-10 h-10 rounded-full bg-[#00E5FF]/20 flex items-center justify-center">
-                        <span className="material-icons-outlined text-[#00E5FF]">info</span>
+                    {/* Category Breakdown */}
+                    {Object.keys(categoryCounts).length > 0 && (
+                      <div className="flex flex-wrap gap-2 mb-6">
+                        {Object.entries(categoryCounts).map(([cat, count]) => (
+                          <span key={cat} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/30 text-xs">
+                            <span className={`material-icons-outlined text-sm ${CATEGORY_COLORS[cat] || 'text-red-400'}`}>{CATEGORY_ICONS[cat] || 'error'}</span>
+                            <span className="text-slate-300">{cat}</span>
+                            <span className="font-mono font-bold text-red-400">{count}</span>
+                          </span>
+                        ))}
                       </div>
-                      <div>
-                        <div className="flex items-center gap-3 mb-1">
-                          <span className="text-[10px] bg-[#00E5FF] text-[#0B1120] px-2 py-0.5 rounded font-bold uppercase">Info</span>
-                          <span className="text-sm font-semibold text-white">Unusual Idle Consumption Detected</span>
-                          <span className="text-xs text-slate-500 font-mono">Outlet: PDU-04-OUT-18</span>
-                        </div>
-                        <p className="text-xs text-slate-400 mt-1">
-                          Outlet 18 is showing a baseline consumption of 0.8A while marked as 'IDLE' in the scheduling system.
-                        </p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-[10px] text-slate-500 uppercase mb-1">Duration</p>
-                      <p className="text-lg font-mono font-bold text-[#00E5FF]">01:45:00</p>
-                    </div>
-                    <button className="ml-6 px-4 py-2 bg-[#233544] text-slate-300 text-xs font-bold rounded uppercase hover:bg-[#2D3748]">
-                      Dismiss
-                    </button>
-                  </div>
-                </div>
+                    )}
 
-                {/* Another Warning */}
-                <div className="bg-[#161E2E] rounded-xl border-l-4 border-l-amber-500 border border-[#233544] p-5">
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-start gap-4">
-                      <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center">
-                        <span className="material-icons-outlined text-amber-500">bolt</span>
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-3 mb-1">
-                          <span className="text-[10px] bg-amber-500 text-white px-2 py-0.5 rounded font-bold uppercase">Warning</span>
-                          <span className="text-sm font-semibold text-white">Voltage Fluctuation Observed</span>
-                          <span className="text-xs text-slate-500 font-mono">PDU: 10.0.4.155</span>
+                    {/* Active Alarms Table */}
+                    {activeAlarms.length > 0 ? (
+                      <div className="mb-8">
+                        <h3 className="text-sm font-bold text-red-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+                          <span className="material-icons-outlined text-sm">error</span>
+                          Active Alarms
+                        </h3>
+                        <div className="bg-[#161E2E] rounded-xl border border-red-500/30 overflow-hidden">
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="border-b border-[#233544] text-[10px] text-slate-500 uppercase">
+                                <th className="text-left px-4 py-3">Category</th>
+                                <th className="text-left px-4 py-3">Parameter</th>
+                                <th className="text-left px-4 py-3">Status</th>
+                                <th className="text-left px-4 py-3">PDU</th>
+                                <th className="text-left px-4 py-3">IP / MAC</th>
+                                <th className="text-left px-4 py-3">Rack</th>
+                                <th className="text-left px-4 py-3">Timestamp</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {activeAlarms.map((alarm, idx) => (
+                                <tr key={`${alarm.pduIp}-${alarm.key}-${idx}`} className="border-b border-[#233544]/50 hover:bg-red-500/5 transition-colors">
+                                  <td className="px-4 py-3">
+                                    <span className="flex items-center gap-1.5">
+                                      <span className={`material-icons-outlined text-sm ${CATEGORY_COLORS[alarm.category] || 'text-red-400'}`}>{CATEGORY_ICONS[alarm.category] || 'error'}</span>
+                                      <span className="text-slate-400">{alarm.category}</span>
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-3 text-white font-medium">{alarm.label}</td>
+                                  <td className="px-4 py-3">
+                                    <span className="px-2 py-0.5 rounded bg-red-500/20 text-red-400 font-mono font-bold text-[10px]">{alarm.value}</span>
+                                  </td>
+                                  <td className="px-4 py-3 text-slate-300">{alarm.pduLabel}</td>
+                                  <td className="px-4 py-3">
+                                    <span className="font-mono text-slate-400">{alarm.pduIp}</span>
+                                    <br/>
+                                    <span className="font-mono text-slate-600 text-[10px]">{alarm.pduMac}</span>
+                                  </td>
+                                  <td className="px-4 py-3 font-mono text-slate-400">{alarm.rack}</td>
+                                  <td className="px-4 py-3 font-mono text-slate-500">{alarm.ts ? new Date(alarm.ts).toLocaleString() : '-'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
                         </div>
-                        <p className="text-xs text-slate-400 mt-1">
-                          Phase L1 voltage dipped to 208V. Monitoring for stability before escalation.
+                      </div>
+                    ) : (
+                      <div className="mb-8 p-8 rounded-xl bg-emerald-500/5 border border-emerald-500/20 text-center">
+                        <span className="material-icons-outlined text-5xl text-emerald-400 mb-3 block">verified</span>
+                        <p className="text-lg font-bold text-emerald-300">All Systems Normal</p>
+                        <p className="text-xs text-slate-500 mt-2">
+                          No active alarms across {hallPDUs.length} monitored PDU{hallPDUs.length !== 1 ? 's' : ''} in {selectedHall?.name || 'this data hall'}.
+                          <br/>All {allEntries.length} parameters are within normal thresholds.
                         </p>
                       </div>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-[10px] text-slate-500 uppercase mb-1">Duration</p>
-                      <p className="text-lg font-mono font-bold text-amber-400">03:12:11</p>
-                    </div>
-                    <button className="ml-6 px-4 py-2 bg-[#233544] text-slate-300 text-xs font-bold rounded uppercase hover:bg-[#2D3748]">
-                      Acknowledge
-                    </button>
-                  </div>
-                </div>
-              </div>
+                    )}
 
-              {/* Predictive Analysis Section */}
-              <div className="mt-8">
-                <h2 className="text-sm font-mono font-bold text-red-400 uppercase tracking-wider mb-4">
-                  Predictive Analysis & Insights
-                </h2>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-[#161E2E] rounded-xl border border-[#233544] p-5">
-                    <div className="flex items-start gap-4">
-                      <div className="w-10 h-10 rounded-full bg-[#00E5FF]/20 flex items-center justify-center">
-                        <span className="material-icons-outlined text-[#00E5FF]">auto_awesome</span>
+                    {/* Full Parameter Status — Grouped by PDU with Accordions */}
+                    {allEntries.length > 0 && (() => {
+                      const grouped = {};
+                      for (const entry of allEntries) {
+                        const k = entry.pduIp;
+                        if (!grouped[k]) grouped[k] = { pdu: entry, entries: [] };
+                        grouped[k].entries.push(entry);
+                      }
+                      return (
+                        <div>
+                          <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+                            <span className="material-icons-outlined text-sm text-slate-500">checklist</span>
+                            Full Parameter Status ({allEntries.length})
+                          </h3>
+                          <div className="space-y-2">
+                            {Object.entries(grouped).map(([ip, group]) => {
+                              const pduAlarmCount = group.entries.filter(e => !e.isNormal).length;
+                              return (
+                                <div key={ip} className="rounded-xl border border-[#233544] overflow-hidden">
+                                  <button
+                                    onClick={() => setLedgerExpandedPdu(prev => prev === ip ? null : ip)}
+                                    className="w-full flex items-center justify-between px-4 py-3 bg-[#161E2E] hover:bg-[#1a2535] transition-colors cursor-pointer"
+                                  >
+                                    <div className="flex items-center gap-3">
+                                      <span className={`w-2 h-2 rounded-full ${pduAlarmCount > 0 ? 'bg-red-500 animate-pulse' : 'bg-emerald-500'}`}></span>
+                                      <span className="text-sm font-medium text-white">{group.pdu.pduLabel}</span>
+                                      <span className="text-[10px] font-mono text-slate-500">{ip}</span>
+                                      {group.pdu.pduMac && group.pdu.pduMac !== '-' && (
+                                        <span className="text-[10px] font-mono text-slate-600">{group.pdu.pduMac}</span>
+                                      )}
+                                      <span className="text-[10px] text-slate-600">Rack: <span className="font-mono">{group.pdu.rack}</span></span>
+                                    </div>
+                                    <div className="flex items-center gap-3">
+                                      {pduAlarmCount > 0 && (
+                                        <span className="px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 text-[10px] font-mono font-bold">{pduAlarmCount} alarm{pduAlarmCount > 1 ? 's' : ''}</span>
+                                      )}
+                                      <span className="text-[10px] text-slate-500">{group.entries.length} params</span>
+                                      <span className={`material-icons-outlined text-sm text-slate-500 transition-transform duration-200 ${ledgerExpandedPdu === ip ? 'rotate-180' : ''}`}>expand_more</span>
+                                    </div>
+                                  </button>
+                                  {ledgerExpandedPdu === ip && (
+                                    <div className="bg-[#0B1120]">
+                                      <table className="w-full text-xs">
+                                        <thead>
+                                          <tr className="border-b border-[#233544] text-[10px] text-slate-500 uppercase">
+                                            <th className="text-left px-4 py-2">Category</th>
+                                            <th className="text-left px-4 py-2">Parameter</th>
+                                            <th className="text-left px-4 py-2">Status</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {group.entries.map((entry, idx) => (
+                                            <tr key={`${entry.key}-${idx}`} className={`border-b border-[#233544]/30 ${!entry.isNormal ? 'bg-red-500/5' : ''}`}>
+                                              <td className="px-4 py-2">
+                                                <span className="flex items-center gap-1.5">
+                                                  <span className={`material-icons-outlined text-sm ${!entry.isNormal ? (CATEGORY_COLORS[entry.category] || 'text-red-400') : 'text-slate-600'}`}>{CATEGORY_ICONS[entry.category] || 'check'}</span>
+                                                  <span className="text-slate-500">{entry.category}</span>
+                                                </span>
+                                              </td>
+                                              <td className="px-4 py-2 text-slate-300">{entry.label}</td>
+                                              <td className="px-4 py-2">
+                                                <span className={`px-2 py-0.5 rounded font-mono font-bold text-[10px] ${entry.isNormal ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
+                                                  {entry.value || '-'}
+                                                </span>
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {allEntries.length === 0 && hallPDUs.length === 0 && (
+                      <div className="p-8 rounded-xl bg-[#161E2E] border border-[#233544] text-center">
+                        <span className="material-icons-outlined text-5xl text-slate-600 mb-3 block">playlist_remove</span>
+                        <p className="text-lg font-bold text-slate-400">No PDUs Configured</p>
+                        <p className="text-xs text-slate-600 mt-2">Commission PDUs to see alarm data in this ledger.</p>
                       </div>
-                      <div className="flex-1">
-                        <h4 className="text-sm font-semibold text-white mb-1">Efficiency Opportunity</h4>
-                        <p className="text-xs text-slate-500 mb-1">Found {idleOutlets} outlets with sustained low load.</p>
-                        <p className="text-xs text-slate-400 mt-2">
-                          PDUMind Assistant suggests consolidating workloads from Rack 05 to Rack 02 to disable idle equipment and reduce thermal waste.
-                        </p>
-                        <button className="mt-3 text-[#00E5FF] text-xs font-mono uppercase flex items-center gap-1 hover:underline">
-                          Generate Consolidation Plan
-                          <span className="material-icons-outlined text-xs">open_in_new</span>
-                        </button>
+                    )}
+
+                    {allEntries.length === 0 && hallPDUs.length > 0 && (
+                      <div className="p-8 rounded-xl bg-[#161E2E] border border-[#233544] text-center">
+                        <span className="material-icons-outlined text-5xl text-slate-600 mb-3 block animate-spin" style={{animationDuration: '3s'}}>sync</span>
+                        <p className="text-lg font-bold text-slate-400">Collecting Data...</p>
+                        <p className="text-xs text-slate-600 mt-2">Waiting for alarm data from {hallPDUs.length} PDU{hallPDUs.length !== 1 ? 's' : ''}. This updates every 10 seconds.</p>
                       </div>
-                    </div>
-                  </div>
-                  <div className="bg-[#161E2E] rounded-xl border border-amber-500/30 p-5">
-                    <div className="flex items-start gap-4">
-                      <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center">
-                        <span className="material-icons-outlined text-amber-500">warning</span>
-                      </div>
-                      <div className="flex-1">
-                        <h4 className="text-sm font-semibold text-white mb-1">Forecast: Capacity Limit</h4>
-                        <p className="text-xs text-slate-500 mb-1">Projected breach in 14 days.</p>
-                        <p className="text-xs text-slate-400 mt-2">
-                          Based on current growth rate, "Main-Switch-A" will exceed 80% capacity threshold by end of month.
-                        </p>
-                        <button className="mt-3 text-amber-400 text-xs font-mono uppercase flex items-center gap-1 hover:underline">
-                          View Capacity Forecast
-                          <span className="material-icons-outlined text-xs">open_in_new</span>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+                    )}
+                  </>
+                );
+              })()}
             </>
           )}
 
@@ -1602,7 +1729,7 @@ const Dashboard2 = () => {
             <>
               <div className="flex justify-between items-start mb-8">
                 <div>
-                  <h1 className="text-2xl font-bold font-mono uppercase tracking-tight text-[#00E5FF]">
+                  <h1 className="text-2xl font-bold uppercase tracking-tight text-[#00E5FF]">
                     <span className="material-icons-outlined align-middle mr-2">info</span>
                     PDU Design Specs
                   </h1>
@@ -1638,11 +1765,11 @@ const Dashboard2 = () => {
                   {/* Load Trends Mini */}
                   <div className="bg-[#161E2E] rounded-xl border border-[#233544] p-6">
                     <div className="flex items-center justify-between mb-4">
-                      <h3 className="font-mono font-bold text-[#00E5FF] flex items-center gap-2 uppercase text-sm">
+                      <h3 className="font-bold text-[#00E5FF] flex items-center gap-2 uppercase text-sm">
                         <span className="material-icons-outlined">trending_up</span>
                         Load Trends
                       </h3>
-                      <div className="flex gap-4 text-[10px] font-mono">
+                      <div className="flex gap-4 text-[10px]">
                         <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-[#00E5FF]"></span> Actual</div>
                         <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-blue-400/50"></span> Forecast</div>
                       </div>
@@ -1654,13 +1781,13 @@ const Dashboard2 = () => {
                       </svg>
                     </div>
                     <div className="flex justify-end mt-2">
-                      <span className="text-xs font-mono text-slate-500">Peak Demand: <strong className="text-white">{Math.round(power * 1.03)} W</strong></span>
+                      <span className="text-xs text-slate-500">Peak Demand: <strong className="text-white font-mono">{Math.round(power * 1.03)} W</strong></span>
                     </div>
                   </div>
 
                   {/* Environmental Mini */}
                   <div className="bg-[#161E2E] rounded-xl border border-[#233544] p-6">
-                    <h3 className="font-mono font-bold text-[#00E5FF] flex items-center gap-2 uppercase text-sm mb-6">
+                    <h3 className="font-bold text-[#00E5FF] flex items-center gap-2 uppercase text-sm mb-6">
                       <span className="material-icons-outlined">thermostat</span>
                       Environmental
                     </h3>
@@ -1696,7 +1823,7 @@ const Dashboard2 = () => {
               <div className="flex justify-between items-start mb-8">
                 <div>
                   <div className="flex items-center gap-2 mb-1">
-                    <h1 className="text-2xl font-bold font-mono uppercase tracking-tight text-[#00E5FF]">
+                    <h1 className="text-2xl font-bold uppercase tracking-tight text-[#00E5FF]">
                       <span className="material-icons-outlined align-middle mr-2">psychology</span>
                       Analysis & Insights
                     </h1>

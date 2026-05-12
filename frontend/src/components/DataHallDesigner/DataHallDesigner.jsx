@@ -541,6 +541,26 @@ const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showLabels, 
   );
 };
 
+// Collapsible accordion section for the Parameters panel
+const AccordionSection = ({ id, title, icon, children }) => {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mb-1 border border-[#233544] rounded-lg overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="sticky top-0 z-10 w-full flex items-center justify-between px-3 py-2.5 bg-[#161E2E] hover:bg-[#1a2535] transition-colors cursor-pointer"
+      >
+        <span className="flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+          {icon && <span className="material-icons-outlined text-sm text-slate-500">{icon}</span>}
+          {title}
+        </span>
+        <span className={`material-icons-outlined text-sm text-slate-500 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}>expand_more</span>
+      </button>
+      {open && <div className="px-3 pb-3 pt-1 bg-[#0B1120]">{children}</div>}
+    </div>
+  );
+};
+
 // Parameter Input Component with custom spinner
 const ParamInput = ({ label, value, onChange, min, max, step = 1, unit, disabled }) => {
   const increment = () => {
@@ -554,7 +574,7 @@ const ParamInput = ({ label, value, onChange, min, max, step = 1, unit, disabled
   
   return (
     <div className="flex items-center justify-between py-2 border-b border-[#233544]">
-      <label className="text-xs text-slate-400 font-mono">{label}</label>
+      <label className="text-xs text-slate-400">{label}</label>
       <div className="flex items-center gap-2">
         <div className="flex items-center bg-[#0B1120] border border-[#233544] rounded overflow-hidden focus-within:border-[#00E5FF]">
           <input
@@ -595,7 +615,7 @@ const ParamInput = ({ label, value, onChange, min, max, step = 1, unit, disabled
 // Parameter Select Component
 const ParamSelect = ({ label, value, onChange, options }) => (
   <div className="flex items-center justify-between py-2 border-b border-[#233544]">
-    <label className="text-xs text-slate-400 font-mono">{label}</label>
+    <label className="text-xs text-slate-400">{label}</label>
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
@@ -1392,12 +1412,15 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
   return (
     <div className="flex h-[calc(100vh-8rem)] bg-[#0B1120] relative">
       {/* Left Panel - Parameters (Collapsible) */}
-      <div className={`${panelCollapsed ? 'w-0' : 'w-80'} border-r ${panelCollapsed ? 'border-transparent' : 'border-[#233544]'} bg-[#0B1120] transition-all duration-300 flex-shrink-0 relative overflow-hidden`}>
-        <div className={`${panelCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100'} transition-opacity duration-200 p-4 overflow-y-auto h-full w-80`}>
-          <h2 className="text-lg font-bold font-mono text-[#00E5FF] mb-6 flex items-center gap-2">
-            <span className="material-icons-outlined">tune</span>
-            Parameters
-          </h2>
+      <div className={`${panelCollapsed ? 'w-0' : 'w-80'} border-r ${panelCollapsed ? 'border-transparent' : 'border-[#233544]'} bg-[#0B1120] transition-all duration-300 flex-shrink-0 relative overflow-hidden flex flex-col`}>
+        <div className={`${panelCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100'} transition-opacity duration-200 w-80 flex flex-col h-full`}>
+          <div className="sticky top-0 z-20 bg-[#0B1120] px-4 pt-4 pb-2 border-b border-[#233544]">
+            <h2 className="text-lg font-bold text-[#00E5FF] flex items-center gap-2">
+              <span className="material-icons-outlined">tune</span>
+              Parameters
+            </h2>
+          </div>
+          <div className="flex-1 overflow-y-auto px-4 pb-4 pt-3">
         
         {/* Hall Manager */}
         <div className="mb-6 p-3 bg-[#161E2E] border border-[#233544] rounded-lg">
@@ -1587,173 +1610,60 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
           </div>
         )}
         
-        {/* Hall Dimensions */}
-        <div className="mb-6">
-          <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-3">
-            Data Hall Dimensions
-          </h3>
-          <ParamInput
-            label="Length"
-            value={config.hall.length}
-            onChange={(v) => updateConfig('hall.length', v)}
-            min={5} max={100} step={1}
-            unit="m"
-          />
-          <ParamInput
-            label="Width"
-            value={config.hall.width}
-            onChange={(v) => updateConfig('hall.width', v)}
-            min={5} max={50} step={1}
-            unit="m"
-          />
-          <ParamInput
-            label="Height"
-            value={config.hall.height}
-            onChange={(v) => updateConfig('hall.height', v)}
-            min={2.5} max={10} step={0.1}
-            unit="m"
-          />
-          <ParamInput
-            label="Floor Tile Size"
-            value={config.hall.floorTileSize}
-            onChange={(v) => updateConfig('hall.floorTileSize', v)}
-            min={0.3} max={1} step={0.1}
-            unit="m"
-          />
-        </div>
-        
-        {/* Layout */}
-        <div className="mb-6">
-          <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-3">
-            Layout Configuration
-          </h3>
-          <ParamInput
-            label="Number of Rows"
-            value={config.layout.numberOfRows}
-            onChange={(v) => updateConfig('layout.numberOfRows', v)}
-            min={1} max={20} step={1}
-          />
-          <ParamInput
-            label="Racks per Row"
-            value={config.layout.racksPerRow}
-            onChange={(v) => updateConfig('layout.racksPerRow', v)}
-            min={1} max={30} step={1}
-          />
-          <ParamSelect
-            label="Row Orientation"
-            value={config.layout.rowOrientation}
-            onChange={(v) => updateConfig('layout.rowOrientation', v)}
-            options={[
-              { value: 'lengthwise', label: 'Lengthwise' },
-              { value: 'widthwise', label: 'Widthwise' }
-            ]}
-          />
-          <ParamInput
-            label="Aisle Width"
-            value={config.layout.aisleWidth}
-            onChange={(v) => updateConfig('layout.aisleWidth', v)}
-            min={0.6} max={3} step={0.1}
-            unit="m"
-          />
-          <ParamInput
-            label="Wall Clearance"
-            value={config.layout.wallClearance}
-            onChange={(v) => updateConfig('layout.wallClearance', v)}
-            min={0.5} max={5} step={0.1}
-            unit="m"
-          />
-        </div>
-        
-        {/* Rack Specs */}
-        <div className="mb-6">
-          <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-3">
-            Rack Specifications
-          </h3>
-          <ParamInput
-            label="Width"
-            value={config.rack.width}
-            onChange={(v) => updateConfig('rack.width', v)}
-            min={400} max={800} step={50}
-            unit="mm"
-          />
-          <ParamInput
-            label="Depth"
-            value={config.rack.depth}
-            onChange={(v) => updateConfig('rack.depth', v)}
-            min={600} max={1200} step={50}
-            unit="mm"
-          />
-          <ParamInput
-            label="Height"
-            value={config.rack.heightU}
-            onChange={(v) => updateConfig('rack.heightU', v)}
-            min={12} max={52} step={1}
-            unit="U"
-          />
-        </div>
-        
-        {/* PDU Config */}
-        <div className="mb-6">
-          <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-3">
-            PDU Configuration
-          </h3>
-          <ParamInput
-            label="PDUs per Rack"
-            value={config.pdu.pdusPerRack}
-            onChange={(v) => updateConfig('pdu.pdusPerRack', v)}
-            min={0} max={4} step={1}
-          />
-          <ParamSelect
-            label="Mounting"
-            value={config.pdu.mounting}
-            onChange={(v) => updateConfig('pdu.mounting', v)}
-            options={[
-              { value: 'A/B', label: 'A / B' },
-              { value: 'Left/Right', label: 'Left / Right' }
-            ]}
-          />
-        </div>
-        
-        {/* IP Planning */}
-        <div className="mb-6">
-          <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-3">
-            IP Planning
-          </h3>
-          <div className="flex items-center justify-between py-2 border-b border-[#233544]">
-            <label className="text-xs text-slate-400 font-mono">Subnet</label>
-            <input
-              type="text"
-              value={config.ipPlanning.subnet}
-              onChange={(e) => updateConfig('ipPlanning.subnet', e.target.value)}
-              className="w-32 bg-[#0B1120] border border-[#233544] rounded px-2 py-1 text-sm font-mono text-white text-right focus:border-[#00E5FF] focus:outline-none"
-            />
-          </div>
-          <ParamSelect
-            label="Assignment"
-            value={config.ipPlanning.assignmentStrategy}
-            onChange={(v) => updateConfig('ipPlanning.assignmentStrategy', v)}
-            options={[
-              { value: 'sequential', label: 'Sequential' },
-              { value: 'perRowBlock', label: 'Per Row Block' }
-            ]}
-          />
-        </div>
-        
-        {/* View Options */}
-        <div className="mb-6">
-          <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-3">
-            View Options
-          </h3>
-          <div className="flex items-center justify-between py-2 border-b border-[#233544]">
-            <label className="text-xs text-slate-400 font-mono">Show Rack Labels</label>
-            <button
-              onClick={() => setShowLabels(!showLabels)}
-              className={`w-12 h-6 rounded-full transition-all ${showLabels ? 'bg-[#00E5FF]' : 'bg-[#233544]'} relative`}
-            >
-              <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${showLabels ? 'right-1' : 'left-1'}`}></span>
-            </button>
-          </div>
-        </div>
+        {/* Accordion Sections */}
+        {[
+          { id: 'dimensions', title: 'Data Hall Dimensions', icon: 'straighten', content: (
+            <>
+              <ParamInput label="Length" value={config.hall.length} onChange={(v) => updateConfig('hall.length', v)} min={5} max={100} step={1} unit="m" />
+              <ParamInput label="Width" value={config.hall.width} onChange={(v) => updateConfig('hall.width', v)} min={5} max={50} step={1} unit="m" />
+              <ParamInput label="Height" value={config.hall.height} onChange={(v) => updateConfig('hall.height', v)} min={2.5} max={10} step={0.1} unit="m" />
+              <ParamInput label="Floor Tile Size" value={config.hall.floorTileSize} onChange={(v) => updateConfig('hall.floorTileSize', v)} min={0.3} max={1} step={0.1} unit="m" />
+            </>
+          )},
+          { id: 'layout', title: 'Layout Configuration', icon: 'grid_view', content: (
+            <>
+              <ParamInput label="Number of Rows" value={config.layout.numberOfRows} onChange={(v) => updateConfig('layout.numberOfRows', v)} min={1} max={20} step={1} />
+              <ParamInput label="Racks per Row" value={config.layout.racksPerRow} onChange={(v) => updateConfig('layout.racksPerRow', v)} min={1} max={30} step={1} />
+              <ParamSelect label="Row Orientation" value={config.layout.rowOrientation} onChange={(v) => updateConfig('layout.rowOrientation', v)} options={[{ value: 'lengthwise', label: 'Lengthwise' }, { value: 'widthwise', label: 'Widthwise' }]} />
+              <ParamInput label="Aisle Width" value={config.layout.aisleWidth} onChange={(v) => updateConfig('layout.aisleWidth', v)} min={0.6} max={3} step={0.1} unit="m" />
+              <ParamInput label="Wall Clearance" value={config.layout.wallClearance} onChange={(v) => updateConfig('layout.wallClearance', v)} min={0.5} max={5} step={0.1} unit="m" />
+            </>
+          )},
+          { id: 'rack', title: 'Rack Specifications', icon: 'dns', content: (
+            <>
+              <ParamInput label="Width" value={config.rack.width} onChange={(v) => updateConfig('rack.width', v)} min={400} max={800} step={50} unit="mm" />
+              <ParamInput label="Depth" value={config.rack.depth} onChange={(v) => updateConfig('rack.depth', v)} min={600} max={1200} step={50} unit="mm" />
+              <ParamInput label="Height" value={config.rack.heightU} onChange={(v) => updateConfig('rack.heightU', v)} min={12} max={52} step={1} unit="U" />
+            </>
+          )},
+          { id: 'pdu', title: 'PDU Configuration', icon: 'electrical_services', content: (
+            <>
+              <ParamInput label="PDUs per Rack" value={config.pdu.pdusPerRack} onChange={(v) => updateConfig('pdu.pdusPerRack', v)} min={0} max={4} step={1} />
+              <ParamSelect label="Mounting" value={config.pdu.mounting} onChange={(v) => updateConfig('pdu.mounting', v)} options={[{ value: 'A/B', label: 'A / B' }, { value: 'Left/Right', label: 'Left / Right' }]} />
+            </>
+          )},
+          { id: 'ip', title: 'IP Planning', icon: 'lan', content: (
+            <>
+              <div className="flex items-center justify-between py-2 border-b border-[#233544]">
+                <label className="text-xs text-slate-400">Subnet</label>
+                <input type="text" value={config.ipPlanning.subnet} onChange={(e) => updateConfig('ipPlanning.subnet', e.target.value)} className="w-32 bg-[#0B1120] border border-[#233544] rounded px-2 py-1 text-sm font-mono text-white text-right focus:border-[#00E5FF] focus:outline-none" />
+              </div>
+              <ParamSelect label="Assignment" value={config.ipPlanning.assignmentStrategy} onChange={(v) => updateConfig('ipPlanning.assignmentStrategy', v)} options={[{ value: 'sequential', label: 'Sequential' }, { value: 'perRowBlock', label: 'Per Row Block' }]} />
+            </>
+          )},
+          { id: 'view', title: 'View Options', icon: 'visibility', content: (
+            <div className="flex items-center justify-between py-2 border-b border-[#233544]">
+              <label className="text-xs text-slate-400">Show Rack Labels</label>
+              <button onClick={() => setShowLabels(!showLabels)} className={`w-12 h-6 rounded-full transition-all ${showLabels ? 'bg-[#00E5FF]' : 'bg-[#233544]'} relative`}>
+                <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${showLabels ? 'right-1' : 'left-1'}`}></span>
+              </button>
+            </div>
+          )},
+        ].map(section => (
+          <AccordionSection key={section.id} id={section.id} title={section.title} icon={section.icon}>
+            {section.content}
+          </AccordionSection>
+        ))}
         
         {/* Stats */}
         {layout && (
@@ -1916,6 +1826,7 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
           <MibDropZone hallId={hallId} />
         </div>
         </div>
+        </div>
       </div>
       
       {/* Collapse Toggle Button */}
@@ -2004,24 +1915,23 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
           </div>
         </div>
         
-        {/* View Controls Legend */}
-        <div className="absolute bottom-4 left-4 z-20 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-3 py-2 text-[10px] font-mono text-slate-400">
-          <span className="mr-4">🖱️ Orbit: Drag</span>
-          <span className="mr-4">⚙️ Pan: Right-drag</span>
+        {/* View Controls Legend + Lighting Toggle */}
+        <div className="absolute bottom-4 left-4 z-20 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-3 py-2 text-[10px] font-mono text-slate-400 flex items-center gap-3">
+          <span>🖱️ Orbit: Drag</span>
+          <span>⚙️ Pan: Right-drag</span>
           <span>🔍 Zoom: Scroll</span>
+          <span className="w-px h-4 bg-[#233544]"></span>
+          <button
+            onClick={() => setShowLightingPanel(!showLightingPanel)}
+            className={`flex items-center gap-1 px-2 py-1 rounded transition-all ${showLightingPanel ? 'bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/40' : 'hover:text-[#00E5FF]'}`}
+          >
+            💡 Lighting
+          </button>
         </div>
-        
-        {/* Lighting Controls Toggle */}
-        <button
-          onClick={() => setShowLightingPanel(!showLightingPanel)}
-          className="absolute bottom-4 right-4 z-20 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-3 py-2 text-[10px] font-mono text-slate-400 hover:border-[#00E5FF] hover:text-[#00E5FF] transition-all"
-        >
-          💡 Lighting
-        </button>
         
         {/* Lighting Controls Panel */}
         {showLightingPanel && (
-          <div className="absolute bottom-14 right-4 z-30 bg-[#161E2E] border border-[#00E5FF]/50 rounded-lg p-4 w-80 shadow-xl max-h-[70vh] overflow-y-auto">
+          <div className="absolute bottom-14 left-4 z-30 bg-[#161E2E] border border-[#00E5FF]/50 rounded-lg p-4 w-80 shadow-xl max-h-[70vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-xs font-bold text-[#00E5FF] uppercase tracking-wider">Lighting Tuner</h3>
               <button onClick={() => setShowLightingPanel(false)} className="text-slate-500 hover:text-white text-lg">×</button>
@@ -2133,7 +2043,7 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
             
             {/* Current Values Display */}
             <div className="mt-3 pt-3 border-t border-[#233544]">
-              <p className="text-[8px] text-slate-500 font-mono leading-relaxed">
+              <p className="text-[8px] text-slate-500 leading-relaxed">
                 Intensity: A:{lighting.ambient} M:{lighting.main} F:{lighting.fill} T:{lighting.top}<br/>
                 MainPos: ({lighting.mainPos.x},{lighting.mainPos.y},{lighting.mainPos.z})<br/>
                 FillPos: ({lighting.fillPos.x},{lighting.fillPos.y},{lighting.fillPos.z})<br/>

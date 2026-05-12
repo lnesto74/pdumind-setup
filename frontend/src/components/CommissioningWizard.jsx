@@ -419,7 +419,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
               <span className="material-icons-outlined text-[#00E5FF]">bolt</span>
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white font-mono">Commission PDU</h2>
+              <h2 className="text-lg font-bold text-white">Commission PDU</h2>
               <p className="text-xs text-slate-500">{hallName || 'Data Hall'}</p>
             </div>
           </div>
@@ -445,7 +445,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                       <span className="material-icons-outlined text-sm">{s.icon}</span>
                     )}
                   </div>
-                  <span className={`text-xs font-mono uppercase tracking-wider hidden sm:inline ${
+                  <span className={`text-xs uppercase tracking-wider hidden sm:inline ${
                     i <= step ? 'text-slate-300' : 'text-slate-600'
                   }`}>{s.label}</span>
                 </div>
@@ -490,7 +490,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   <button
                     key={m.id}
                     onClick={() => { setScanMode(m.id); setError(null); setDetectedDevice(null); setSubnetDevices([]); setRemoteSettings(null); setIsRemoteMode(false); }}
-                    className={`flex-1 py-2 px-3 text-xs font-mono uppercase rounded-md flex items-center justify-center gap-1.5 transition-all ${
+                    className={`flex-1 py-2 px-3 text-xs uppercase rounded-md flex items-center justify-center gap-1.5 transition-all ${
                       scanMode === m.id
                         ? 'bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/40'
                         : 'text-slate-500 hover:text-slate-300 border border-transparent'
@@ -519,7 +519,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                       placeholder="Community"
                     />
                     <button onClick={scanFactory} disabled={loading}
-                      className="px-5 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 hover:bg-[#00E5FF]/30 disabled:opacity-50 text-[#00E5FF] rounded-lg flex items-center gap-2 transition-all font-mono text-sm">
+                      className="px-5 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 hover:bg-[#00E5FF]/30 disabled:opacity-50 text-[#00E5FF] rounded-lg flex items-center gap-2 transition-all text-sm">
                       {loading ? <span className="material-icons-outlined text-sm animate-spin">sync</span> :
                         <span className="material-icons-outlined text-sm">wifi_find</span>}
                       Detect
@@ -547,7 +547,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     placeholder="Community"
                   />
                   <button onClick={scanManual} disabled={loading}
-                    className="px-5 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 hover:bg-[#00E5FF]/30 disabled:opacity-50 text-[#00E5FF] rounded-lg flex items-center gap-2 transition-all font-mono text-sm">
+                    className="px-5 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 hover:bg-[#00E5FF]/30 disabled:opacity-50 text-[#00E5FF] rounded-lg flex items-center gap-2 transition-all text-sm">
                     {loading ? <span className="material-icons-outlined text-sm animate-spin">sync</span> :
                       <span className="material-icons-outlined text-sm">search</span>}
                     Scan
@@ -572,7 +572,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                       placeholder="Community"
                     />
                     <button onClick={scanSubnet} disabled={loading}
-                      className="px-5 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 hover:bg-[#00E5FF]/30 disabled:opacity-50 text-[#00E5FF] rounded-lg flex items-center gap-2 transition-all font-mono text-sm">
+                      className="px-5 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 hover:bg-[#00E5FF]/30 disabled:opacity-50 text-[#00E5FF] rounded-lg flex items-center gap-2 transition-all text-sm">
                       {loading ? <span className="material-icons-outlined text-sm animate-spin">sync</span> :
                         <span className="material-icons-outlined text-sm">radar</span>}
                       Scan
@@ -612,7 +612,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     />
                   </div>
                   <button onClick={connectRemotePdu} disabled={loading}
-                    className="w-full px-5 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 hover:bg-[#00E5FF]/30 disabled:opacity-50 text-[#00E5FF] rounded-lg flex items-center justify-center gap-2 transition-all font-mono text-sm">
+                    className="w-full px-5 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 hover:bg-[#00E5FF]/30 disabled:opacity-50 text-[#00E5FF] rounded-lg flex items-center justify-center gap-2 transition-all text-sm">
                     {loading ? <span className="material-icons-outlined text-sm animate-spin">sync</span> :
                       <span className="material-icons-outlined text-sm">cloud_sync</span>}
                     Connect via Web Admin
@@ -711,7 +711,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         <span className="material-icons-outlined text-sm">lan</span> Network (IPv4)
                       </p>
                       <button onClick={applyNetworkSettings} disabled={loading || rebootStatus === 'rebooting'}
-                        className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[10px] font-mono hover:bg-emerald-500/30 disabled:opacity-50 transition-all">
+                        className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[10px] hover:bg-emerald-500/30 disabled:opacity-50 transition-all">
                         {loading ? 'Applying...' : rebootStatus === 'rebooting' ? 'Rebooting...' : 'Apply & Reboot PDU'}
                       </button>
                     </div>
@@ -813,7 +813,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         <span className="material-icons-outlined text-sm">vpn_key</span> SNMP
                       </p>
                       <button onClick={applySnmpSettings} disabled={loading}
-                        className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[10px] font-mono hover:bg-emerald-500/30 disabled:opacity-50 transition-all">
+                        className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[10px] hover:bg-emerald-500/30 disabled:opacity-50 transition-all">
                         {loading ? 'Applying...' : 'Apply to PDU'}
                       </button>
                     </div>
@@ -861,7 +861,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         <span className="material-icons-outlined text-sm">schedule</span> Time & SNTP
                       </p>
                       <button onClick={applyTimeSettings} disabled={loading}
-                        className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[10px] font-mono hover:bg-emerald-500/30 disabled:opacity-50 transition-all">
+                        className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[10px] hover:bg-emerald-500/30 disabled:opacity-50 transition-all">
                         {loading ? 'Applying...' : 'Apply to PDU'}
                       </button>
                     </div>
@@ -1103,7 +1103,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
               <div className="w-20 h-20 rounded-full bg-emerald-500/20 flex items-center justify-center mb-4">
                 <span className="material-icons-outlined text-emerald-400 text-4xl">check_circle</span>
               </div>
-              <h3 className="text-xl font-bold text-white mb-2 font-mono">PDU Commissioned</h3>
+              <h3 className="text-xl font-bold text-white mb-2">PDU Commissioned</h3>
               <p className="text-sm text-slate-400 mb-1">
                 <span className="text-[#00E5FF] font-mono">{finalIp}</span> has been added to <span className="text-white">{hallName || `Hall #${hallId}`}</span>
               </p>
@@ -1151,7 +1151,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   setIpConflict(false);
                   setRebootStatus(null);
                 }}
-                  className="px-4 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 hover:bg-[#00E5FF]/30 text-[#00E5FF] rounded-lg flex items-center gap-2 transition-all text-sm font-mono">
+                  className="px-4 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 hover:bg-[#00E5FF]/30 text-[#00E5FF] rounded-lg flex items-center gap-2 transition-all text-sm">
                   <span className="material-icons-outlined text-sm">add</span>
                   Commission Another
                 </button>

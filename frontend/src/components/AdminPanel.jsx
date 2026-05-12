@@ -107,7 +107,7 @@ export default function AdminPanel({ onClose }) {
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-mono transition-colors ${
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs transition-colors ${
                 tab === t.id ? 'bg-[#00E5FF]/10 text-[#00E5FF] border border-[#00E5FF]/30' : 'text-slate-500 hover:text-slate-300 border border-transparent'
               }`}
             >
@@ -122,10 +122,10 @@ export default function AdminPanel({ onClose }) {
           {tab === 'users' && (
             <div className="space-y-3">
               <div className="flex justify-between items-center mb-4">
-                <span className="text-xs text-slate-500 font-mono">{users.length} user{users.length !== 1 ? 's' : ''}</span>
+                <span className="text-xs text-slate-500">{users.length} user{users.length !== 1 ? 's' : ''}</span>
                 <button
                   onClick={() => setShowAddUser(!showAddUser)}
-                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-mono bg-[#00E5FF]/10 text-[#00E5FF] border border-[#00E5FF]/30 hover:bg-[#00E5FF]/20 transition-colors"
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs bg-[#00E5FF]/10 text-[#00E5FF] border border-[#00E5FF]/30 hover:bg-[#00E5FF]/20 transition-colors"
                 >
                   <span className="material-icons-outlined text-sm">person_add</span>
                   Add User
@@ -134,25 +134,25 @@ export default function AdminPanel({ onClose }) {
 
               {showAddUser && (
                 <form onSubmit={handleAddUser} className="p-4 rounded-xl bg-[#0B1120] border border-[#233544] mb-4">
-                  {error && <p className="text-red-400 text-xs font-mono mb-2">{error}</p>}
+                  {error && <p className="text-red-400 text-xs mb-2">{error}</p>}
                   <div className="grid grid-cols-3 gap-3">
                     <input
                       type="text" placeholder="Username" value={newUser.username}
                       onChange={e => setNewUser({ ...newUser, username: e.target.value })}
-                      className="px-3 py-2 rounded-lg bg-[#0f172a] border border-[#233544] text-white text-xs font-mono focus:border-[#00E5FF] focus:outline-none"
+                      className="px-3 py-2 rounded-lg bg-[#0f172a] border border-[#233544] text-white text-xs focus:border-[#00E5FF] focus:outline-none"
                     />
                     <input
                       type="password" placeholder="Password" value={newUser.password}
                       onChange={e => setNewUser({ ...newUser, password: e.target.value })}
-                      className="px-3 py-2 rounded-lg bg-[#0f172a] border border-[#233544] text-white text-xs font-mono focus:border-[#00E5FF] focus:outline-none"
+                      className="px-3 py-2 rounded-lg bg-[#0f172a] border border-[#233544] text-white text-xs focus:border-[#00E5FF] focus:outline-none"
                     />
                     <input
                       type="text" placeholder="Display Name" value={newUser.display_name}
                       onChange={e => setNewUser({ ...newUser, display_name: e.target.value })}
-                      className="px-3 py-2 rounded-lg bg-[#0f172a] border border-[#233544] text-white text-xs font-mono focus:border-[#00E5FF] focus:outline-none"
+                      className="px-3 py-2 rounded-lg bg-[#0f172a] border border-[#233544] text-white text-xs focus:border-[#00E5FF] focus:outline-none"
                     />
                   </div>
-                  <button type="submit" className="mt-3 px-4 py-1.5 rounded-lg bg-[#00E5FF] text-[#0B1120] font-bold text-xs font-mono">
+                  <button type="submit" className="mt-3 px-4 py-1.5 rounded-lg bg-[#00E5FF] text-[#0B1120] font-bold text-xs">
                     Create
                   </button>
                 </form>
@@ -165,13 +165,13 @@ export default function AdminPanel({ onClose }) {
                       <span className="material-icons-outlined text-slate-400 text-sm">person</span>
                     </div>
                     <div>
-                      <p className="text-sm text-white font-mono">{u.display_name || u.username}</p>
-                      <p className="text-[10px] text-slate-500 font-mono">@{u.username} &middot; {u.created_at?.split('T')[0] || u.created_at?.split(' ')[0]}</p>
+                      <p className="text-sm text-white">{u.display_name || u.username}</p>
+                      <p className="text-[10px] text-slate-500">@{u.username} &middot; {u.created_at?.split('T')[0] || u.created_at?.split(' ')[0]}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
                     {!u.is_active && (
-                      <span className="text-[9px] text-red-400 font-mono px-2 py-0.5 rounded bg-red-500/15 border border-red-500/30">disabled</span>
+                      <span className="text-[9px] text-red-400 px-2 py-0.5 rounded bg-red-500/15 border border-red-500/30">disabled</span>
                     )}
                     <button
                       onClick={() => handleDeleteUser(u.id, u.username)}
@@ -189,8 +189,8 @@ export default function AdminPanel({ onClose }) {
           {tab === 'logs' && (
             <div className="space-y-1">
               <div className="flex justify-between items-center mb-4">
-                <span className="text-xs text-slate-500 font-mono">Last {logs.length} entries</span>
-                <button onClick={fetchLogs} className="text-xs text-slate-500 hover:text-[#00E5FF] font-mono transition-colors">
+                <span className="text-xs text-slate-500">Last {logs.length} entries</span>
+                <button onClick={fetchLogs} className="text-xs text-slate-500 hover:text-[#00E5FF] transition-colors">
                   <span className="material-icons-outlined text-sm align-middle mr-1">refresh</span>Refresh
                 </button>
               </div>

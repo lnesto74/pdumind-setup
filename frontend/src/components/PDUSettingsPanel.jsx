@@ -264,7 +264,7 @@ const PDUSettingsPanel = ({ pdu }) => {
       <div className="flex justify-between items-start mb-6">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <h1 className="text-2xl font-bold font-mono uppercase tracking-tight text-[#00E5FF]">
+            <h1 className="text-2xl font-bold uppercase tracking-tight text-[#00E5FF]">
               <span className="material-icons-outlined align-middle mr-2">settings</span>
               PDU Settings
             </h1>
@@ -284,7 +284,7 @@ const PDUSettingsPanel = ({ pdu }) => {
       <div className="flex gap-1 mb-6 bg-[#0a1222] rounded-lg p-1">
         {TABS.map(t => (
           <button key={t.id} onClick={() => setTab(t.id)}
-            className={`flex-1 py-2 px-3 text-xs font-mono uppercase rounded-md flex items-center justify-center gap-1.5 transition-all ${
+            className={`flex-1 py-2 px-3 text-xs uppercase rounded-md flex items-center justify-center gap-1.5 transition-all ${
               tab === t.id
                 ? 'bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/40'
                 : 'text-slate-500 hover:text-slate-300 border border-transparent'
@@ -326,7 +326,7 @@ const PDUSettingsPanel = ({ pdu }) => {
                     IPv4 Configuration
                   </h3>
                   <button onClick={saveNetwork} disabled={saving || rebootStatus === 'rebooting'}
-                    className="px-4 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded-lg text-xs font-mono hover:bg-emerald-500/30 disabled:opacity-50 transition-all flex items-center gap-1.5">
+                    className="px-4 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded-lg text-xs hover:bg-emerald-500/30 disabled:opacity-50 transition-all flex items-center gap-1.5">
                     {saving ? <span className="material-icons-outlined text-sm animate-spin">sync</span> : <span className="material-icons-outlined text-sm">save</span>}
                     {rebootStatus === 'rebooting' ? 'Rebooting...' : 'Apply & Reboot'}
                   </button>
@@ -405,7 +405,7 @@ const PDUSettingsPanel = ({ pdu }) => {
                     SNMP Configuration
                   </h3>
                   <button onClick={saveSnmp} disabled={saving}
-                    className="px-4 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded-lg text-xs font-mono hover:bg-emerald-500/30 disabled:opacity-50 transition-all flex items-center gap-1.5">
+                    className="px-4 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded-lg text-xs hover:bg-emerald-500/30 disabled:opacity-50 transition-all flex items-center gap-1.5">
                     {saving ? <span className="material-icons-outlined text-sm animate-spin">sync</span> : <span className="material-icons-outlined text-sm">save</span>}
                     Apply to PDU
                   </button>
@@ -470,7 +470,7 @@ const PDUSettingsPanel = ({ pdu }) => {
                   Time & SNTP Settings
                 </h3>
                 <button onClick={saveTime} disabled={saving}
-                  className="px-4 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded-lg text-xs font-mono hover:bg-emerald-500/30 disabled:opacity-50 transition-all flex items-center gap-1.5">
+                  className="px-4 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded-lg text-xs hover:bg-emerald-500/30 disabled:opacity-50 transition-all flex items-center gap-1.5">
                   {saving ? <span className="material-icons-outlined text-sm animate-spin">sync</span> : <span className="material-icons-outlined text-sm">save</span>}
                   Apply to PDU
                 </button>
@@ -518,7 +518,7 @@ const PDUSettingsPanel = ({ pdu }) => {
                     Device Alarm Thresholds
                   </h3>
                   <button onClick={saveAlarms} disabled={saving}
-                    className="px-4 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded-lg text-xs font-mono hover:bg-emerald-500/30 disabled:opacity-50 transition-all flex items-center gap-1.5">
+                    className="px-4 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded-lg text-xs hover:bg-emerald-500/30 disabled:opacity-50 transition-all flex items-center gap-1.5">
                     {saving ? <span className="material-icons-outlined text-sm animate-spin">sync</span> : <span className="material-icons-outlined text-sm">save</span>}
                     Apply to PDU
                   </button>
@@ -591,7 +591,7 @@ const PDUSettingsPanel = ({ pdu }) => {
 
                 {[1, 2, 3, 4].map(n => (
                   <div key={n} className={`mb-4 ${n < 4 ? 'pb-4 border-b border-[#233544]/50' : ''}`}>
-                    <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-2 font-mono">Sensor {n}</p>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-2">Sensor {n}</p>
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <p className="text-[9px] text-slate-500 mb-1">Temperature Upper / Lower</p>

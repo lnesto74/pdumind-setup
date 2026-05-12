@@ -58,6 +58,10 @@ class PDUWebClient:
 
     def login(self) -> bool:
         with self._lock:
+            try:
+                self._session.close()
+            except Exception:
+                pass
             self._session = requests.Session()
             sha1_pass = hashlib.sha1(self.password.encode()).hexdigest()
             nonce = _nonce()

@@ -10,7 +10,7 @@ import { PowerHistoryProvider } from './context/PowerHistoryContext';
 import { SimulationProvider } from './context/SimulationContext';
 import './styles/Dashboard2.css';
 
-const APP_VERSION = 'v1.0.0';
+const APP_VERSION = `v${__APP_VERSION__}`;
 const API_BASE = '';
 
 export default function App() {
@@ -63,7 +63,7 @@ export default function App() {
   if (!authChecked) {
     return (
       <div className="min-h-screen bg-[#0B1120] flex items-center justify-center">
-        <div className="animate-pulse text-slate-500 font-mono text-sm">Loading...</div>
+        <div className="animate-pulse text-slate-500 text-sm">Loading...</div>
       </div>
     );
   }
@@ -88,18 +88,18 @@ export default function App() {
                     <div className="flex items-center gap-3">
                       <button
                         onClick={() => setShowAdmin(true)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-mono text-slate-400 hover:text-[#00E5FF] hover:bg-[#00E5FF]/10 transition-colors border border-transparent hover:border-[#00E5FF]/30"
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-[#00E5FF] hover:bg-[#00E5FF]/10 transition-colors border border-transparent hover:border-[#00E5FF]/30"
                         title="Administration"
                       >
                         <span className="material-icons-outlined text-sm">admin_panel_settings</span>
                       </button>
                       <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#161E2E] border border-[#233544]">
                         <span className="material-icons-outlined text-slate-500 text-sm">person</span>
-                        <span className="text-xs text-slate-400 font-mono">{user.display_name || user.username}</span>
+                        <span className="text-xs text-slate-400">{user.display_name || user.username}</span>
                       </div>
                       <button
                         onClick={handleLogout}
-                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-mono text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-colors border border-transparent hover:border-red-500/30"
+                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-colors border border-transparent hover:border-red-500/30"
                         title="Logout"
                       >
                         <span className="material-icons-outlined text-sm">logout</span>

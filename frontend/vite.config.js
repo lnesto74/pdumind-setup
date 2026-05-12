@@ -1,10 +1,14 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { readFileSync } from 'fs';
 
-// https://vitejs.dev/config/
+const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'));
+
 export default defineConfig(({ command }) => ({
-  // command is either 'serve' (dev) or 'build' (prod)
   plugins: [react()],
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
   server: {
     port: 3000,
     proxy: {

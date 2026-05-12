@@ -924,21 +924,21 @@ def save_hall_state(hall_id: int, config: Dict[str, Any],
 _last_telemetry_write: Dict[str, datetime] = {}
 _last_cleanup_time: Optional[datetime] = None
 TELEMETRY_WRITE_INTERVAL_SECONDS = 60  # Only write every 60 seconds per PDU
-TELEMETRY_RETENTION_HOURS = 24  # Keep telemetry for 24 hours
-CLEANUP_INTERVAL_HOURS = 1  # Run cleanup every hour
+TELEMETRY_RETENTION_DAYS = 30  # Keep telemetry for 30 days
+CLEANUP_INTERVAL_HOURS = 6  # Run cleanup every 6 hours
 
 
 def cleanup_old_telemetry() -> int:
-    """Delete telemetry records older than TELEMETRY_RETENTION_HOURS. Returns count deleted."""
+    """Delete telemetry records older than TELEMETRY_RETENTION_DAYS. Returns count deleted.
+    Runs a VACUUM after large deletions to reclaim disk space."""
     global _last_cleanup_time
     
     now = datetime.now(timezone.utc)
     
-    # Only run cleanup once per hour
     if _last_cleanup_time and (now - _last_cleanup_time).total_seconds() < CLEANUP_INTERVAL_HOURS * 3600:
         return 0
     
-    cutoff = now - timedelta(hours=TELEMETRY_RETENTION_HOURS)
+    cutoff = now - timedelta(days=TELEMETRY_RETENTION_DAYS)
     cutoff_str = cutoff.isoformat()
     
     with _db_lock:
@@ -952,7 +952,10 @@ def cleanup_old_telemetry() -> int:
             conn.commit()
             _last_cleanup_time = now
             if deleted > 0:
-                print(f"[DB] Cleaned up {deleted} old telemetry records (older than {TELEMETRY_RETENTION_HOURS}h)")
+                print(f"[DB] Cleaned up {deleted} old telemetry records (older than {TELEMETRY_RETENTION_DAYS}d)")
+            if deleted > 1000:
+                conn.execute("VACUUM")
+                print("[DB] VACUUM completed — disk space reclaimed")
             return deleted
         except Exception as e:
             print(f"[DB] Cleanup error: {e}")

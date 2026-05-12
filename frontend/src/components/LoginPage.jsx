@@ -81,7 +81,7 @@ export default function LoginPage({ onLogin, version }) {
         {/* Logo */}
         <div className="text-center mb-10">
           <img src="/logo/pdumind-logo-2.png" alt="PDUMind" className="h-12 mx-auto mb-6" />
-          <p className="text-slate-500 text-xs font-mono tracking-widest uppercase">Power Distribution Intelligence</p>
+          <p className="text-slate-500 text-xs tracking-widest uppercase">Power Distribution Intelligence</p>
         </div>
 
         {!showChangePw ? (
@@ -94,7 +94,7 @@ export default function LoginPage({ onLogin, version }) {
               </h2>
 
               {error && (
-                <div className="mb-4 px-3 py-2 rounded-lg bg-red-500/15 border border-red-500/30 text-red-400 text-xs font-mono flex items-center gap-2">
+                <div className="mb-4 px-3 py-2 rounded-lg bg-red-500/15 border border-red-500/30 text-red-400 text-xs flex items-center gap-2">
                   <span className="material-icons-outlined text-sm">error</span>
                   {error}
                 </div>
@@ -102,24 +102,24 @@ export default function LoginPage({ onLogin, version }) {
 
               <div className="space-y-4">
                 <div>
-                  <label className="block text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-1.5">Username</label>
+                  <label className="block text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">Username</label>
                   <input
                     type="text"
                     value={username}
                     onChange={e => setUsername(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-lg bg-[#0B1120] border border-[#233544] text-white text-sm font-mono focus:border-[#00E5FF] focus:outline-none transition-colors"
+                    className="w-full px-3 py-2.5 rounded-lg bg-[#0B1120] border border-[#233544] text-white text-sm focus:border-[#00E5FF] focus:outline-none transition-colors"
                     placeholder="admin"
                     autoFocus
                     required
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-1.5">Password</label>
+                  <label className="block text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">Password</label>
                   <input
                     type="password"
                     value={password}
                     onChange={e => setPassword(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-lg bg-[#0B1120] border border-[#233544] text-white text-sm font-mono focus:border-[#00E5FF] focus:outline-none transition-colors"
+                    className="w-full px-3 py-2.5 rounded-lg bg-[#0B1120] border border-[#233544] text-white text-sm focus:border-[#00E5FF] focus:outline-none transition-colors"
                     placeholder="••••••"
                     required
                   />
@@ -129,7 +129,7 @@ export default function LoginPage({ onLogin, version }) {
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full mt-5 py-2.5 rounded-lg bg-[#00E5FF] text-[#0B1120] font-bold text-sm font-mono uppercase tracking-wider hover:bg-[#00d4eb] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full mt-5 py-2.5 rounded-lg bg-[#00E5FF] text-[#0B1120] font-bold text-sm uppercase tracking-wider hover:bg-[#00d4eb] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {loading ? 'Signing in...' : 'Sign In'}
               </button>
@@ -143,12 +143,12 @@ export default function LoginPage({ onLogin, version }) {
                 <span className="material-icons-outlined text-amber-400 text-lg">vpn_key</span>
                 Change Password
               </h2>
-              <p className="text-xs text-slate-500 font-mono mb-5">
+              <p className="text-xs text-slate-500 mb-5">
                 You must set a new password before continuing.
               </p>
 
               {changePwError && (
-                <div className="mb-4 px-3 py-2 rounded-lg bg-red-500/15 border border-red-500/30 text-red-400 text-xs font-mono flex items-center gap-2">
+                <div className="mb-4 px-3 py-2 rounded-lg bg-red-500/15 border border-red-500/30 text-red-400 text-xs flex items-center gap-2">
                   <span className="material-icons-outlined text-sm">error</span>
                   {changePwError}
                 </div>
@@ -156,24 +156,24 @@ export default function LoginPage({ onLogin, version }) {
 
               <div className="space-y-4">
                 <div>
-                  <label className="block text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-1.5">New Password</label>
+                  <label className="block text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">New Password</label>
                   <input
                     type="password"
                     value={newPassword}
                     onChange={e => setNewPassword(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-lg bg-[#0B1120] border border-[#233544] text-white text-sm font-mono focus:border-[#00E5FF] focus:outline-none transition-colors"
+                    className="w-full px-3 py-2.5 rounded-lg bg-[#0B1120] border border-[#233544] text-white text-sm focus:border-[#00E5FF] focus:outline-none transition-colors"
                     placeholder="••••••"
                     autoFocus
                     required
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] text-slate-500 uppercase tracking-wider font-mono mb-1.5">Confirm Password</label>
+                  <label className="block text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">Confirm Password</label>
                   <input
                     type="password"
                     value={confirmPassword}
                     onChange={e => setConfirmPassword(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-lg bg-[#0B1120] border border-[#233544] text-white text-sm font-mono focus:border-[#00E5FF] focus:outline-none transition-colors"
+                    className="w-full px-3 py-2.5 rounded-lg bg-[#0B1120] border border-[#233544] text-white text-sm focus:border-[#00E5FF] focus:outline-none transition-colors"
                     placeholder="••••••"
                     required
                   />
@@ -182,7 +182,7 @@ export default function LoginPage({ onLogin, version }) {
 
               <button
                 type="submit"
-                className="w-full mt-5 py-2.5 rounded-lg bg-[#00E5FF] text-[#0B1120] font-bold text-sm font-mono uppercase tracking-wider hover:bg-[#00d4eb] transition-colors"
+                className="w-full mt-5 py-2.5 rounded-lg bg-[#00E5FF] text-[#0B1120] font-bold text-sm uppercase tracking-wider hover:bg-[#00d4eb] transition-colors"
               >
                 Set Password & Continue
               </button>

@@ -3,6 +3,7 @@ from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 import json
 import time
+import requests as _requests_lib
 from typing import List, Tuple, Dict, Any
 from threading import Thread, Lock
 # Parallelization helpers
@@ -372,10 +373,9 @@ def set_outlet_status_via_http(ip: str, outlet: int, state: str) -> tuple[bool, 
         # b=2 for ON, b=1 for OFF
         value = "2" if state.lower() == "on" else "1"  # b=2 for ON, b=1 for OFF
         
-        import requests
         url = f"http://{ip}:80/setcontrol?a={outlet}&b={value}"
         print(f"[DEBUG] Sending request to: {url}")
-        response = requests.get(url, timeout=5)
+        response = _requests_lib.get(url, timeout=5)
         print(f"[DEBUG] Response status: {response.status_code}, text: {response.text}")
         
         if response.status_code == 200 and response.text.strip() == "OK":
@@ -585,7 +585,10 @@ MULTI_PDU_STOP = False
 
 
 def _poll_remote_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """Poll a remote PDU via its web admin CGI panel."""
+    """Poll a remote PDU via its web admin CGI panel.
+    Uses non-blocking lock acquisition: if the client is busy (e.g. settings
+    panel open), skip this cycle and return cached results instead of blocking
+    the entire poller thread."""
     ip = pdu["ip_address"]
     host = pdu.get("remote_host") or ip
     web_port = pdu.get("web_admin_port", 6662)
@@ -595,11 +598,19 @@ def _poll_remote_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str
     results = {}
     errors = {}
 
+    client = _get_pdu_client(host, web_port, web_user, web_pass)
+
+    # Non-blocking: if another thread holds the lock (settings panel, etc.),
+    # return cached results rather than blocking for 10-60+ seconds.
+    if not client._lock.acquire(blocking=False):
+        print(f"[poll_remote] {ip} skipped — client busy (settings/admin)")
+        with MULTI_PDU_LOCK:
+            cached = MULTI_PDU_RESULTS.get(ip, {})
+        return ip, cached, {}
+
     try:
-        client = _get_pdu_client(host, web_port, web_user, web_pass)
         tele = client.get_live_telemetry()
 
-        # Store ALL raw web admin fields under their original CGI key names
         _skip = {"csrf", "breakers", "datetime", "alarm_flags",
                  "l1_color", "l2_color", "l3_color", "name", "firmware"}
         for key, val in tele.items():
@@ -607,7 +618,6 @@ def _poll_remote_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str
                 continue
             results[key] = {"name": key, "oid": f"web:{key}", "value": str(val)}
 
-        # Also store SNMP-compatible aliases so the main dashboard can find them
         _aliases = {
             "MasterVoltageP1": "l1_voltage", "MasterCurrentP1": "l1_current",
             "MasterPowerP1": "l1_active_power",
@@ -625,7 +635,6 @@ def _poll_remote_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str
                 "value": br.get("status", "0"),
             }
 
-        # Store alarm flags as a JSON-encoded summary for the frontend
         import json
         alarm_flags = tele.get("alarm_flags", [])
         results["_alarm_flags"] = {
@@ -639,6 +648,12 @@ def _poll_remote_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str
 
     except Exception as e:
         errors["_remote"] = {"name": "_remote", "error": str(e)}
+        # Return cached results on error so the frontend never sees zeros
+        with MULTI_PDU_LOCK:
+            results = MULTI_PDU_RESULTS.get(ip, {})
+        print(f"[poll_remote] {ip} error, returning cached data: {e}")
+    finally:
+        client._lock.release()
 
     return ip, results, errors
 
@@ -938,7 +953,9 @@ def poll_single_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str,
 
 
 _REMOTE_PDU_POLL_INTERVAL = 30  # seconds between web admin polls (avoid session churn)
+_REMOTE_PDU_ERROR_BACKOFF = 90  # wait longer after a failure before retrying
 _remote_pdu_last_poll: Dict[str, float] = {}
+_remote_pdu_last_error: Dict[str, float] = {}  # track last failure time per IP
 
 def multi_pdu_poller():
     """Background polling thread that polls ALL active PDUs from database.
@@ -962,13 +979,14 @@ def multi_pdu_poller():
             cycle_start = time.time()
             now = time.time()
 
-            # Rate-limit remote PDUs to _REMOTE_PDU_POLL_INTERVAL
             pdus_to_poll = []
             for pdu in pdus:
                 ip = pdu.get("ip_address", "")
                 if pdu.get("web_admin_port"):
                     last = _remote_pdu_last_poll.get(ip, 0)
-                    if now - last < _REMOTE_PDU_POLL_INTERVAL:
+                    last_err = _remote_pdu_last_error.get(ip, 0)
+                    interval = _REMOTE_PDU_ERROR_BACKOFF if last_err > last else _REMOTE_PDU_POLL_INTERVAL
+                    if now - max(last, last_err) < interval:
                         continue
                 pdus_to_poll.append(pdu)
 
@@ -985,12 +1003,23 @@ def multi_pdu_poller():
                     try:
                         ip, results, errors = future.result()
                         with MULTI_PDU_LOCK:
-                            MULTI_PDU_RESULTS[ip] = results
-                            MULTI_PDU_ERRORS[ip] = errors
+                            if results:
+                                MULTI_PDU_RESULTS[ip] = results
+                                MULTI_PDU_ERRORS[ip] = errors
+                            else:
+                                # Poll returned empty — keep previous good cache,
+                                # only update errors so the frontend knows.
+                                MULTI_PDU_ERRORS[ip] = errors
+                                if ip not in MULTI_PDU_RESULTS:
+                                    MULTI_PDU_RESULTS[ip] = {}
                         
                         pdu_obj = futures[future]
                         if pdu_obj.get("web_admin_port"):
                             _remote_pdu_last_poll[ip] = time.time()
+                            if errors:
+                                _remote_pdu_last_error[ip] = time.time()
+                            elif ip in _remote_pdu_last_error:
+                                del _remote_pdu_last_error[ip]
 
                         if results:
                             try:
@@ -1364,6 +1393,7 @@ def get_pdu_telemetry_chart(ip_address: str):
     """
     try:
         from datetime import datetime, timedelta
+        import re as _re
         
         pdu = PDURepo.get_by_ip(ip_address)
         if not pdu:
@@ -1372,39 +1402,42 @@ def get_pdu_telemetry_chart(ip_address: str):
         period = request.args.get("period", "day")
         limit = int(request.args.get("limit", 500))
         
-        # Calculate time range
         now = datetime.now()
         if period == "week":
             from_time = now - timedelta(days=7)
         elif period == "month":
             from_time = now - timedelta(days=30)
-        else:  # day
+        else:
             from_time = now - timedelta(days=1)
         
         from_ts = from_time.isoformat()
         
-        # Get history - use None for from_ts to get all available data
-        history = TelemetryRepo.get_history(pdu["id"], from_ts=None, to_ts=None, limit=limit)
+        history = TelemetryRepo.get_history(pdu["id"], from_ts=from_ts, to_ts=None, limit=limit)
         
-        # Extract power values for chart
+        def _parse_numeric(raw):
+            """Extract leading number from strings like '224.6V', '0.000kW', '1.000'."""
+            if raw is None:
+                return 0.0
+            if isinstance(raw, (int, float)):
+                return float(raw)
+            s = str(raw).replace('"', '').strip()
+            m = _re.match(r'^-?[\d.]+', s)
+            return float(m.group()) if m else 0.0
+
         chart_data = []
-        for entry in reversed(history):  # Oldest first for chart
+        for entry in reversed(history):
             payload = entry.get("payload", {})
             
-            # Payload is stored as flat key-value pairs, not in "results" array
-            def get_val(key):
-                val = payload.get(key, "0")
-                if isinstance(val, str):
-                    val = val.replace('"', '').strip()
-                try:
-                    return float(val) if val else 0
-                except:
-                    return 0
+            def _first(*keys):
+                for k in keys:
+                    if k in payload:
+                        return _parse_numeric(payload[k])
+                return 0.0
             
-            power = get_val("MasterPowerP1")
-            voltage = get_val("MasterVoltageP1")
-            current = get_val("MasterCurrentP1")
-            energy = get_val("MasterEnergyP1")
+            power   = _first("MasterPowerP1", "total_active_power", "l1_active_power")
+            voltage = _first("MasterVoltageP1", "l1_voltage")
+            current = _first("MasterCurrentP1", "l1_current")
+            energy  = _first("MasterEnergyP1", "total_active_energy")
             
             if power > 0 or voltage > 0:
                 chart_data.append({
@@ -1851,7 +1884,7 @@ def pdu_admin_connect():
             return jsonify({"error": "Login failed — check credentials"}), 401
 
         return jsonify({"success": True, **settings})
-    except requests.exceptions.ConnectionError:
+    except _requests_lib.exceptions.ConnectionError:
         return jsonify({"error": f"Cannot reach PDU at {host}:{port}"}), 502
     except Exception as e:
         import traceback; traceback.print_exc()
@@ -1860,13 +1893,25 @@ def pdu_admin_connect():
 
 @app.route("/api/pdu-admin/<host>/settings", methods=["GET"])
 def pdu_admin_get_settings(host: str):
-    """Read all settings from a PDU."""
+    """Read all settings from a PDU.  Retries once on timeout since the
+    background poller may have just released the session."""
     try:
         port = int(request.args.get("port", 6662))
         username = request.args.get("username", "admin")
         password = request.args.get("password", "admin")
         client = _get_pdu_client(host, port, username, password)
-        settings = client.get_all_settings()
+        last_err = None
+        for attempt in range(2):
+            try:
+                settings = client.get_all_settings()
+                break
+            except (_requests_lib.exceptions.ReadTimeout, _requests_lib.exceptions.ConnectionError) as e:
+                last_err = e
+                if attempt == 0:
+                    print(f"[pdu-admin/settings] {host} timeout, retrying…")
+                    time.sleep(2)
+        else:
+            raise last_err
         return jsonify({"success": True, **settings})
     except Exception as e:
         import traceback; traceback.print_exc()
