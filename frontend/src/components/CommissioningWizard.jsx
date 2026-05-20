@@ -550,10 +550,18 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
     setDetectedDevice(null);
     setRemoteSettings(null);
     try {
+      const port = parseInt(remotePort) || 80;
+      const useHttps = remoteUseHttps || port === 443;
       const res = await fetch(`${API_BASE}/api/pdu-admin/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: cleanHost, port: parseInt(remotePort) || 6662, username: remoteUser, password: remotePass })
+        body: JSON.stringify({
+          host: cleanHost,
+          port,
+          username: remoteUser,
+          password: remotePass,
+          use_https: useHttps ? 1 : 0,
+        }),
       });
       const data = await res.json();
       if (data.success) {
@@ -1064,10 +1072,28 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     />
                     <input
                       type="text" value={remotePort}
-                      onChange={e => setRemotePort(e.target.value)}
+                      onChange={e => {
+                        const next = e.target.value;
+                        setRemotePort(next);
+                        if (next === '443') setRemoteUseHttps(true);
+                        else if (next === '80') setRemoteUseHttps(false);
+                      }}
                       className="bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
-                      placeholder="Port (default: 6662)"
+                      placeholder="Port (80 or 443)"
                     />
+                    <label className="col-span-2 flex items-center gap-2 px-1 py-0.5 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={remoteUseHttps}
+                        onChange={e => {
+                          setRemoteUseHttps(e.target.checked);
+                          if (e.target.checked && remotePort === '80') setRemotePort('443');
+                          if (!e.target.checked && remotePort === '443') setRemotePort('80');
+                        }}
+                        className="rounded border-[#233544] bg-[#0B1120] text-[#00E5FF] focus:ring-[#00E5FF]"
+                      />
+                      <span className="text-xs text-slate-400">Use HTTPS (required if the PDU web UI is HTTPS-only)</span>
+                    </label>
                     <input
                       type="text" value={remoteUser}
                       onChange={e => setRemoteUser(e.target.value)}

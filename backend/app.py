@@ -2073,6 +2073,56 @@ def _get_pdu_client(host: str, port: int = 6662,
         return client
 
 
+def _connect_batch_pdu_client(
+    ip: str,
+    port: int,
+    username: str,
+    password: str,
+) -> Tuple[PDUWebClient, int, bool]:
+    """Connect for batch commissioning with HTTP→HTTPS auto-detection.
+
+    PDUs that already switched to HTTPS (e.g. after a partial batch run) only
+    accept HTTPS — retry on 443 when HTTP login fails.
+    """
+    existing = PDURepo.get_by_ip(ip)
+    attempts: list[tuple[int, bool]] = []
+    if existing and _parse_use_https(existing.get("web_admin_https")):
+        attempts.append((int(existing.get("web_admin_port") or 443), True))
+    attempts.append((int(port or _DEFAULT_WEB_ADMIN_PORT), False))
+    if not any(h for p, h in attempts if h):
+        attempts.append((443, True))
+
+    last_err: Exception | None = None
+    seen: set[tuple[int, bool]] = set()
+    for try_port, use_https in attempts:
+        key = (try_port, use_https)
+        if key in seen:
+            continue
+        seen.add(key)
+        _evict_pdu_client(ip, try_port, use_https)
+        client = PDUWebClient(ip, try_port, username, password, use_https=use_https)
+        with _pdu_clients_lock:
+            _pdu_clients[_pdu_client_key(ip, try_port, use_https)] = client
+        try:
+            if client.login():
+                scheme = "https" if use_https else "http"
+                print(f"[batch] Connected to {scheme}://{ip}:{try_port} as {username}")
+                return client, try_port, use_https
+        except Exception as e:
+            last_err = e
+        try:
+            client.logout()
+        except Exception:
+            pass
+
+    scheme_port = ", ".join(
+        f"{'https' if h else 'http'}://{ip}:{p}" for p, h in sorted(seen)
+    )
+    raise ConnectionError(
+        last_err or f"PDU login failed for {username} — tried {scheme_port}"
+    )
+
+
 @app.route("/api/pdu-admin/connect", methods=["POST"])
 def pdu_admin_connect():
     """Login to a PDU web admin panel and return device info + all settings."""
@@ -2695,6 +2745,8 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
             post_web_port, post_use_https = _resolve_web_access_target(
                 web_access_template if web_access_enabled else {}, web_port
             )
+            if web_access_enabled:
+                print(f"[batch] {current_ip} will enable HTTPS on port {post_web_port} after apply")
 
             # Connect to PDU
             status["step"] = "configuring"
@@ -2709,10 +2761,23 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
 
             # Block poller/settings from stealing this PDU's single web session.
             _batch_hold_ip(current_ip)
+            connect_port, connect_https = web_port, False
             hold_pdu_admin(current_ip, web_port, False)
-            client = _get_pdu_client(current_ip, web_port, admin_user, admin_pass)
 
             try:
+                client, connect_port, connect_https = _connect_batch_pdu_client(
+                    current_ip, web_port, admin_user, admin_pass
+                )
+                hold_pdu_admin(current_ip, connect_port, connect_https)
+
+                # Already on HTTPS — skip web-access push/reboot unless network changes.
+                if web_access_enabled and connect_https:
+                    print(f"[batch] {current_ip} already on HTTPS — skipping web_access apply")
+                    web_access_enabled = False
+                    pdu_template.pop("web_access", None)
+                    post_web_port, post_use_https = connect_port, True
+                    needs_reboot = bool(pdu_template.get("network"))
+
                 # Apply + optional reboot under one exclusive lock (critical for HTTPS).
                 report = client.apply_batch_template(pdu_template, reboot_after=needs_reboot)
                 status["sections"] = report
@@ -2722,7 +2787,7 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                     with _batch_lock:
                         _BATCH_JOBS[job_id]["results"][pdu_key] = status
 
-                    verify_port = post_web_port if web_access_enabled else web_port
+                    verify_port = post_web_port if web_access_enabled else connect_port
                     online = False
                     deadline = time.time() + 90
                     while time.time() < deadline:
@@ -2761,6 +2826,7 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                                 _BATCH_JOBS[job_id]["completed"] += 1
                             continue
             finally:
+                release_pdu_admin(current_ip, connect_port, connect_https)
                 release_pdu_admin(current_ip, web_port, False)
                 _batch_release_ip(current_ip)
 
@@ -2769,8 +2835,8 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
             with _batch_lock:
                 _BATCH_JOBS[job_id]["results"][pdu_key] = status
 
-            stored_web_port = post_web_port if web_access_enabled else web_port
-            stored_use_https = post_use_https if web_access_enabled else False
+            stored_web_port = post_web_port if web_access_enabled else connect_port
+            stored_use_https = post_use_https if web_access_enabled else connect_https
 
             pdu_data = {
                 "label": template.get("system", {}).get("router_hostname", "") or template.get("system", {}).get("device_name", f"PDU-{new_ip}"),
@@ -2787,6 +2853,7 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
             }
             pdu_id = PDURepo.upsert(hall_id, new_ip, pdu_data)
 
+            _evict_pdu_client(current_ip, connect_port, connect_https)
             _evict_pdu_client(current_ip, web_port, False)
             if new_ip != current_ip or stored_use_https:
                 _evict_pdu_client(new_ip, stored_web_port, stored_use_https)
