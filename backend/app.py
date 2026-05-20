@@ -2277,6 +2277,8 @@ def pdu_admin_connect():
             return jsonify({"error": "Login failed — check credentials"}), 401
 
         return jsonify({"success": True, "web_port": port, "use_https": use_https, **settings})
+    except ConnectionError as e:
+        return jsonify({"error": str(e)}), 401
     except _requests_lib.exceptions.ConnectionError:
         return jsonify({"error": f"Cannot reach PDU at {host}:{port}"}), 502
     except Exception as e:
@@ -3260,20 +3262,33 @@ def _detect_web_admin(ip: str) -> int | None:
     return None
 
 
+def _http_scan_entry(ip: str, port: int, *, use_https: bool = False, name: str = "PDU") -> dict:
+    return {
+        "ip": ip,
+        "description": f"{'HTTPS' if use_https else 'HTTP'}/{port} web admin",
+        "name": name,
+        "snmp_version": "1",
+        "community": "public",
+        "web_admin_port": port,
+        "web_admin_https": 1 if use_https else 0,
+        "discovery_method": "http",
+    }
+
+
 def _http_probe_pdu(ip: str, ports: list[int] = None, connect_timeout: float = 1.5,
                     http_timeout: float = 3.0) -> dict | None:
-    """Probe an IP for a PDU web admin interface over HTTP (port 80 etc.).
-    Designed for use over VPN/firewalled networks where SNMP UDP/161 is blocked
-    but HTTP TCP is allowed.
+    """Probe an IP for a PDU web admin interface over HTTP/HTTPS.
 
-    Returns a dict matching the SNMP scan shape on success, or None if not a PDU.
+    Designed for use over VPN/firewalled networks where SNMP UDP/161 is blocked
+    but TCP to the web admin port is allowed.  After batch HTTPS commissioning
+    some PDUs only answer on 443 — treat an open TCP port as a positive hit even
+    when the TLS/HTTP probe is imperfect.
     """
     import socket
     if ports is None:
         ports = [80, 6662, 8080, 443]
 
     for port in ports:
-        # Fast TCP connect probe first to skip closed ports cheaply.
         sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -3290,8 +3305,9 @@ def _http_probe_pdu(ip: str, ports: list[int] = None, connect_timeout: float = 1
         if rc != 0:
             continue
 
-        # Port is open — verify it actually looks like a PDU web admin.
-        scheme = "https" if port == 443 else "http"
+        use_https = port == 443
+        scheme = "https" if use_https else "http"
+        body = ""
         try:
             resp = _requests_lib.get(
                 f"{scheme}://{ip}:{port}/",
@@ -3299,21 +3315,29 @@ def _http_probe_pdu(ip: str, ports: list[int] = None, connect_timeout: float = 1
                 verify=False,
                 allow_redirects=True,
             )
+            body = (resp.text or "")[:4096]
+        except _requests_lib.exceptions.SSLError:
+            # Common on PDUs with self-signed HTTPS — port is open, treat as found.
+            if port in (443, 80, 6662, 8080):
+                return _http_scan_entry(ip, port, use_https=use_https)
+            continue
         except Exception:
+            # TCP open on a known PDU web port — report it; login probe comes later.
+            if port in (80, 443, 6662, 8080):
+                return _http_scan_entry(ip, port, use_https=use_https)
             continue
 
-        body = (resp.text or "")[:4096]
         lower = body.lower()
         looks_like_pdu = (
             "login.cgi" in lower
             or "pdu" in lower
             or "power distribution" in lower
             or "rack monitor" in lower
+            or "home0.html" in lower
         )
         if not looks_like_pdu:
             continue
 
-        # Try to extract a friendly name from <title>.
         name = "PDU"
         try:
             import re
@@ -3323,16 +3347,7 @@ def _http_probe_pdu(ip: str, ports: list[int] = None, connect_timeout: float = 1
         except Exception:
             pass
 
-        return {
-            "ip": ip,
-            "description": f"{'HTTPS' if port == 443 else 'HTTP'}/{port} web admin",
-            "name": name,
-            "snmp_version": "1",
-            "community": "public",
-            "web_admin_port": port,
-            "web_admin_https": 1 if port == 443 else 0,
-            "discovery_method": "http",
-        }
+        return _http_scan_entry(ip, port, use_https=use_https, name=name)
 
     return None
 
@@ -3398,15 +3413,20 @@ def scan_network_http():
                 executor.submit(_http_probe_pdu, ip, ports, connect_timeout, http_timeout): ip
                 for ip in ip_list
             }
-            for future in as_completed(futures, timeout=180):
-                try:
-                    result = future.result()
-                except Exception as e:
-                    print(f"[http-scan] probe error for {futures[future]}: {e}")
-                    continue
-                if result:
-                    discovered.append(result)
-                    print(f"[http-scan] FOUND {result['ip']} on port {result.get('web_admin_port')}")
+            scan_deadline = max(180.0, len(ip_list) * 2.0)
+            try:
+                completed = as_completed(futures, timeout=scan_deadline)
+                for future in completed:
+                    try:
+                        result = future.result()
+                    except Exception as e:
+                        print(f"[http-scan] probe error for {futures[future]}: {e}")
+                        continue
+                    if result:
+                        discovered.append(result)
+                        print(f"[http-scan] FOUND {result['ip']} on port {result.get('web_admin_port')}")
+            except TimeoutError:
+                print(f"[http-scan] scan timed out after {scan_deadline:.0f}s — returning {len(discovered)} partial hits")
 
         return jsonify({
             "success": True,

@@ -378,20 +378,35 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
         body: JSON.stringify(body),
       });
       const data = await res.json();
+      if (!res.ok || data.error) {
+        setError(data.error || `Scan failed (HTTP ${res.status})`);
+        return;
+      }
       if (data.discovered && data.discovered.length > 0) {
+        const credUser = batchTemplate.current_credentials?.username || 'admin';
+        const credPass = batchTemplate.current_credentials?.password || 'admin';
         // For each discovered PDU, try to auto-detect web admin
         const enriched = [];
         for (const d of data.discovered) {
-          const entry = { ...d, web_admin_port: null, mac: '', firmware: '' };
+          const scanPort = d.web_admin_port || 80;
+          const scanHttps = !!d.web_admin_https;
+          const entry = { ...d, web_admin_port: scanPort, mac: '', firmware: '' };
           try {
             const waRes = await fetch(`${API_BASE}/api/pdu-admin/connect`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ host: d.ip, port: 80, username: 'admin', password: 'admin' })
+              body: JSON.stringify({
+                host: d.ip,
+                port: scanPort,
+                username: credUser,
+                password: credPass,
+                ...(scanHttps ? { use_https: 1 } : {}),
+              }),
             });
             const waData = await waRes.json();
             if (waData.success) {
-              entry.web_admin_port = 80;
+              entry.web_admin_port = waData.web_port || scanPort;
+              entry.web_admin_https = waData.use_https ? 1 : 0;
               entry.mac = waData.device?.mac || '';
               entry.firmware = waData.device?.firmware || '';
               entry.name = waData.device?.name || d.name;
