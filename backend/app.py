@@ -2073,11 +2073,58 @@ def _get_pdu_client(host: str, port: int = 6662,
         return client
 
 
+def _batch_connect_credentials(ip: str, template: dict) -> Tuple[str, str, bool]:
+    """Credentials for batch login.
+
+    Already-commissioned PDUs may have a changed password and HTTPS enabled
+    from a prior batch — use stored DB credentials instead of the template's
+    stale "Current PDU Password" field.
+    """
+    tpl_user = _coalesce_credential(template.get("current_credentials", {}).get("username"))
+    tpl_pass_raw = template.get("current_credentials", {}).get("password")
+    tpl_pass = (
+        tpl_pass_raw.strip()
+        if isinstance(tpl_pass_raw, str) and tpl_pass_raw.strip()
+        else _coalesce_credential(tpl_pass_raw)
+    )
+
+    existing = PDURepo.get_by_ip(ip)
+    if existing:
+        db_pass = (existing.get("web_admin_pass") or "").strip()
+        if db_pass:
+            db_user = _coalesce_credential(existing.get("web_admin_user"), tpl_user)
+            return db_user, db_pass, True
+    return tpl_user, tpl_pass, False
+
+
+def _batch_hold_pdu_sessions(ip: str, web_port: int = 80) -> None:
+    """Hold both HTTP and HTTPS session keys — poller may use either after prior batch."""
+    hold_pdu_admin(ip, int(web_port or _DEFAULT_WEB_ADMIN_PORT), False)
+    hold_pdu_admin(ip, 443, True)
+    existing = PDURepo.get_by_ip(ip)
+    if existing and _parse_use_https(existing.get("web_admin_https")):
+        hp = int(existing.get("web_admin_port") or 443)
+        if hp not in (int(web_port or _DEFAULT_WEB_ADMIN_PORT), 443):
+            hold_pdu_admin(ip, hp, True)
+
+
+def _batch_release_pdu_sessions(ip: str, web_port: int = 80) -> None:
+    release_pdu_admin(ip, int(web_port or _DEFAULT_WEB_ADMIN_PORT), False)
+    release_pdu_admin(ip, 443, True)
+    existing = PDURepo.get_by_ip(ip)
+    if existing and _parse_use_https(existing.get("web_admin_https")):
+        hp = int(existing.get("web_admin_port") or 443)
+        if hp not in (int(web_port or _DEFAULT_WEB_ADMIN_PORT), 443):
+            release_pdu_admin(ip, hp, True)
+
+
 def _connect_batch_pdu_client(
     ip: str,
     port: int,
     username: str,
     password: str,
+    *,
+    creds_from_db: bool = False,
 ) -> Tuple[PDUWebClient, int, bool]:
     """Connect for batch commissioning with smart HTTP/HTTPS detection.
 
@@ -2154,9 +2201,18 @@ def _connect_batch_pdu_client(
             last_exc = exc
 
     if http_status == "auth":
+        existing = PDURepo.get_by_ip(ip)
+        if existing and _parse_use_https(existing.get("web_admin_https")):
+            hint = (
+                f"PDU is already on HTTPS (port {existing.get('web_admin_port') or 443}) — "
+                "verify login via Remote PDU with HTTPS enabled"
+            )
+        elif creds_from_db:
+            hint = "stored credentials were rejected — verify via Remote PDU or update web credentials"
+        else:
+            hint = "check Current PDU Password"
         raise ConnectionError(
-            f"PDU login failed for {username} at http://{ip}:{http_port} — "
-            "check Current PDU Password"
+            f"PDU login failed for {username} at http://{ip}:{http_port} — {hint}"
         )
 
     tried = ", ".join(
@@ -2707,215 +2763,214 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
     ip_parts = ip_start.split(".") if ip_start else []
     network_change_requested = len(ip_parts) == 4
 
-    for idx, pdu_info in enumerate(pdu_list):
-        current_ip = pdu_info.get("ip", "")
-        mac = pdu_info.get("mac", "")
-        web_port = pdu_info.get("web_admin_port", 80)
-        pdu_key = mac or current_ip
+    all_batch_ips = [str(p.get("ip", "")).strip() for p in pdu_list if p.get("ip")]
+    for ip in all_batch_ips:
+        _batch_hold_ip(ip)
 
-        # Per-PDU status
-        status = {
-            "ip": current_ip,
-            "mac": mac,
-            "step": "connecting",
-            "success": False,
-            "sections": {},
-            "new_ip": "",
-            "error": None,
-        }
-        with _batch_lock:
-            _BATCH_JOBS[job_id]["results"][pdu_key] = status
+    try:
+        for idx, pdu_info in enumerate(pdu_list):
+            current_ip = pdu_info.get("ip", "")
+            mac = pdu_info.get("mac", "")
+            web_port = pdu_info.get("web_admin_port", 80)
+            pdu_key = mac or current_ip
 
-        try:
-            # Calculate the target IP for this PDU (only changes if explicitly requested).
-            if network_change_requested:
-                new_ip = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}.{int(ip_parts[3]) + idx}"
-            else:
-                new_ip = current_ip
-            status["new_ip"] = new_ip
-
-            # Build per-PDU template with resolved IP
-            pdu_template = {}
-            if network_change_requested:
-                pdu_template["network"] = {
-                    **net_template,
-                    "ip": new_ip,
-                    "dhcp": "OFF",
-                }
-            if sys_template:
-                sys_cfg = {k: v for k, v in sys_template.items() if k != "sync_device_name"}
-                hostname_pattern = sys_cfg.get("router_hostname", "")
-                resolved_hostname = _resolve_hostname_pattern(hostname_pattern, idx, new_ip, mac)
-                if hostname_pattern:
-                    sys_cfg["router_hostname"] = resolved_hostname
-                # When the user asks the device name to mirror the hostname,
-                # resolve the same pattern (so each PDU gets a unique name).
-                if sync_device_name and hostname_pattern:
-                    sys_cfg["device_name"] = resolved_hostname
-                else:
-                    name_pattern = sys_cfg.get("device_name", "")
-                    if name_pattern:
-                        sys_cfg["device_name"] = _resolve_hostname_pattern(
-                            name_pattern, idx, new_ip, mac
-                        )
-                pdu_template["system"] = sys_cfg
-            users_cfg = template.get("users") or {}
-            cur_cred_user = _coalesce_credential(template.get("current_credentials", {}).get("username"))
-            new_admin_user = (users_cfg.get("admin_username") or "").strip()
-            new_admin_pass = (users_cfg.get("admin_password") or "").strip()
-            user_wants_rename = bool(new_admin_user and new_admin_user != cur_cred_user)
-            extra_users = any(
-                (users_cfg.get(k) or "").strip()
-                for k in ("user1_username", "user1_password", "user2_username", "user2_password")
-            )
-            if new_admin_pass or user_wants_rename or extra_users:
-                user_patch = {}
-                if user_wants_rename:
-                    user_patch["admin_username"] = new_admin_user
-                if new_admin_pass:
-                    user_patch["admin_password"] = new_admin_pass
-                for k in ("user1_username", "user1_password", "user2_username", "user2_password"):
-                    v = (users_cfg.get(k) or "").strip()
-                    if v:
-                        user_patch[k] = v
-                pdu_template["users"] = user_patch
-            if template.get("snmp"):
-                pdu_template["snmp"] = template["snmp"]
-            if template.get("ntp"):
-                pdu_template["ntp"] = template["ntp"]
-            web_access_template = template.get("web_access") or {}
-            web_access_enabled = str(web_access_template.get("https_http", "0")) == "1"
-            if web_access_enabled:
-                pdu_template["web_access"] = web_access_template
-
-            post_web_port, post_use_https = _resolve_web_access_target(
-                web_access_template if web_access_enabled else {}, web_port
-            )
-            if web_access_enabled:
-                print(f"[batch] {current_ip} will enable HTTPS on port {post_web_port} after apply")
-
-            # Connect to PDU
-            status["step"] = "configuring"
+            # Per-PDU status
+            status = {
+                "ip": current_ip,
+                "mac": mac,
+                "step": "connecting",
+                "success": False,
+                "sections": {},
+                "new_ip": "",
+                "error": None,
+            }
             with _batch_lock:
                 _BATCH_JOBS[job_id]["results"][pdu_key] = status
 
-            admin_user = _coalesce_credential(template.get("current_credentials", {}).get("username"))
-            admin_pass = _coalesce_credential(template.get("current_credentials", {}).get("password"))
-            effective_user = (new_admin_user if user_wants_rename else cur_cred_user)
-            effective_pass = new_admin_pass or admin_pass
-            needs_reboot = bool(pdu_template.get("network")) or web_access_enabled
-
-            # Block poller/settings from stealing this PDU's single web session.
-            _batch_hold_ip(current_ip)
-            connect_port, connect_https = web_port, False
-            hold_pdu_admin(current_ip, web_port, False)
-
             try:
-                client, connect_port, connect_https = _connect_batch_pdu_client(
-                    current_ip, web_port, admin_user, admin_pass
+                # Calculate the target IP for this PDU (only changes if explicitly requested).
+                if network_change_requested:
+                    new_ip = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}.{int(ip_parts[3]) + idx}"
+                else:
+                    new_ip = current_ip
+                status["new_ip"] = new_ip
+
+                # Build per-PDU template with resolved IP
+                pdu_template = {}
+                if network_change_requested:
+                    pdu_template["network"] = {
+                        **net_template,
+                        "ip": new_ip,
+                        "dhcp": "OFF",
+                    }
+                if sys_template:
+                    sys_cfg = {k: v for k, v in sys_template.items() if k != "sync_device_name"}
+                    hostname_pattern = sys_cfg.get("router_hostname", "")
+                    resolved_hostname = _resolve_hostname_pattern(hostname_pattern, idx, new_ip, mac)
+                    if hostname_pattern:
+                        sys_cfg["router_hostname"] = resolved_hostname
+                    if sync_device_name and hostname_pattern:
+                        sys_cfg["device_name"] = resolved_hostname
+                    else:
+                        name_pattern = sys_cfg.get("device_name", "")
+                        if name_pattern:
+                            sys_cfg["device_name"] = _resolve_hostname_pattern(
+                                name_pattern, idx, new_ip, mac
+                            )
+                    pdu_template["system"] = sys_cfg
+                users_cfg = template.get("users") or {}
+                cur_cred_user = _coalesce_credential(template.get("current_credentials", {}).get("username"))
+                new_admin_user = (users_cfg.get("admin_username") or "").strip()
+                new_admin_pass = (users_cfg.get("admin_password") or "").strip()
+                user_wants_rename = bool(new_admin_user and new_admin_user != cur_cred_user)
+                extra_users = any(
+                    (users_cfg.get(k) or "").strip()
+                    for k in ("user1_username", "user1_password", "user2_username", "user2_password")
                 )
-                hold_pdu_admin(current_ip, connect_port, connect_https)
+                if new_admin_pass or user_wants_rename or extra_users:
+                    user_patch = {}
+                    if user_wants_rename:
+                        user_patch["admin_username"] = new_admin_user
+                    if new_admin_pass:
+                        user_patch["admin_password"] = new_admin_pass
+                    for k in ("user1_username", "user1_password", "user2_username", "user2_password"):
+                        v = (users_cfg.get(k) or "").strip()
+                        if v:
+                            user_patch[k] = v
+                    pdu_template["users"] = user_patch
+                if template.get("snmp"):
+                    pdu_template["snmp"] = template["snmp"]
+                if template.get("ntp"):
+                    pdu_template["ntp"] = template["ntp"]
+                web_access_template = template.get("web_access") or {}
+                web_access_enabled = str(web_access_template.get("https_http", "0")) == "1"
+                if web_access_enabled:
+                    pdu_template["web_access"] = web_access_template
 
-                # Already on HTTPS — skip web-access push/reboot unless network changes.
-                if web_access_enabled and connect_https:
-                    print(f"[batch] {current_ip} already on HTTPS — skipping web_access apply")
-                    web_access_enabled = False
-                    pdu_template.pop("web_access", None)
-                    post_web_port, post_use_https = connect_port, True
-                    needs_reboot = bool(pdu_template.get("network"))
+                post_web_port, post_use_https = _resolve_web_access_target(
+                    web_access_template if web_access_enabled else {}, web_port
+                )
+                if web_access_enabled:
+                    print(f"[batch] {current_ip} will enable HTTPS on port {post_web_port} after apply")
 
-                # Apply + optional reboot under one exclusive lock (critical for HTTPS).
-                report = client.apply_batch_template(pdu_template, reboot_after=needs_reboot)
-                status["sections"] = report
+                status["step"] = "configuring"
+                with _batch_lock:
+                    _BATCH_JOBS[job_id]["results"][pdu_key] = status
 
-                if needs_reboot:
-                    status["step"] = "verifying"
-                    with _batch_lock:
-                        _BATCH_JOBS[job_id]["results"][pdu_key] = status
+                admin_user, admin_pass, creds_from_db = _batch_connect_credentials(current_ip, template)
+                if creds_from_db:
+                    print(f"[batch] {current_ip} using stored web-admin credentials from DB")
+                effective_user = (new_admin_user if user_wants_rename else admin_user)
+                effective_pass = new_admin_pass or admin_pass
+                needs_reboot = bool(pdu_template.get("network")) or web_access_enabled
 
-                    verify_port = post_web_port if web_access_enabled else connect_port
-                    online = False
-                    deadline = time.time() + 90
-                    while time.time() < deadline:
-                        time.sleep(5)
-                        try:
-                            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                            sock.settimeout(3)
-                            if sock.connect_ex((new_ip, verify_port)) == 0:
-                                online = True
-                                sock.close()
-                                break
-                            sock.close()
-                        except Exception:
-                            pass
+                connect_port, connect_https = web_port, False
+                _batch_hold_pdu_sessions(current_ip, web_port)
 
-                    if not online:
-                        status["step"] = "reboot_timeout"
-                        status["error"] = f"PDU did not come back at {new_ip}:{verify_port} within 90s"
+                try:
+                    client, connect_port, connect_https = _connect_batch_pdu_client(
+                        current_ip, web_port, admin_user, admin_pass, creds_from_db=creds_from_db
+                    )
+
+                    if web_access_enabled and connect_https:
+                        print(f"[batch] {current_ip} already on HTTPS — skipping web_access apply")
+                        web_access_enabled = False
+                        pdu_template.pop("web_access", None)
+                        post_web_port, post_use_https = connect_port, True
+                        needs_reboot = bool(pdu_template.get("network"))
+
+                    report = client.apply_batch_template(pdu_template, reboot_after=needs_reboot)
+                    status["sections"] = report
+
+                    if needs_reboot:
+                        status["step"] = "verifying"
                         with _batch_lock:
                             _BATCH_JOBS[job_id]["results"][pdu_key] = status
-                            _BATCH_JOBS[job_id]["completed"] += 1
-                        continue
 
-                    if web_access_enabled:
-                        _evict_pdu_client(current_ip, web_port, False)
-                        verify_client = PDUWebClient(
-                            new_ip, post_web_port, effective_user, effective_pass, use_https=post_use_https
-                        )
-                        if not verify_client.login():
-                            status["step"] = "verify_https_failed"
-                            status["error"] = (
-                                f"PDU rebooted but HTTPS login failed at {new_ip}:{post_web_port}"
-                            )
+                        verify_port = post_web_port if web_access_enabled else connect_port
+                        online = False
+                        deadline = time.time() + 90
+                        while time.time() < deadline:
+                            time.sleep(5)
+                            try:
+                                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                                sock.settimeout(3)
+                                if sock.connect_ex((new_ip, verify_port)) == 0:
+                                    online = True
+                                    sock.close()
+                                    break
+                                sock.close()
+                            except Exception:
+                                pass
+
+                        if not online:
+                            status["step"] = "reboot_timeout"
+                            status["error"] = f"PDU did not come back at {new_ip}:{verify_port} within 90s"
                             with _batch_lock:
                                 _BATCH_JOBS[job_id]["results"][pdu_key] = status
                                 _BATCH_JOBS[job_id]["completed"] += 1
                             continue
-            finally:
-                release_pdu_admin(current_ip, connect_port, connect_https)
-                release_pdu_admin(current_ip, web_port, False)
-                _batch_release_ip(current_ip)
 
-            # Commission into database
-            status["step"] = "commissioning"
+                        if web_access_enabled:
+                            _evict_pdu_client(current_ip, web_port, False)
+                            verify_client = PDUWebClient(
+                                new_ip, post_web_port, effective_user, effective_pass, use_https=post_use_https
+                            )
+                            if not verify_client.login():
+                                status["step"] = "verify_https_failed"
+                                status["error"] = (
+                                    f"PDU rebooted but HTTPS login failed at {new_ip}:{post_web_port}"
+                                )
+                                with _batch_lock:
+                                    _BATCH_JOBS[job_id]["results"][pdu_key] = status
+                                    _BATCH_JOBS[job_id]["completed"] += 1
+                                continue
+                finally:
+                    _batch_release_pdu_sessions(current_ip, web_port)
+
+                status["step"] = "commissioning"
+                with _batch_lock:
+                    _BATCH_JOBS[job_id]["results"][pdu_key] = status
+
+                stored_web_port = post_web_port if web_access_enabled else connect_port
+                stored_use_https = post_use_https if web_access_enabled else connect_https
+
+                pdu_data = {
+                    "label": template.get("system", {}).get("router_hostname", "") or template.get("system", {}).get("device_name", f"PDU-{new_ip}"),
+                    "snmp_port": 161,
+                    "snmp_community_ref": template.get("snmp", {}).get("read_community", "public"),
+                    "snmp_version": pdu_info.get("snmp_version", "2c"),
+                    "is_active": True,
+                    "mac_address": mac,
+                    "hostname": pdu_template.get("system", {}).get("router_hostname", ""),
+                    "web_admin_port": stored_web_port,
+                    "web_admin_https": stored_use_https,
+                    "web_admin_user": effective_user,
+                    "web_admin_pass": effective_pass,
+                }
+                pdu_id = PDURepo.upsert(hall_id, new_ip, pdu_data)
+
+                _evict_pdu_client(current_ip, connect_port, connect_https)
+                _evict_pdu_client(current_ip, web_port, False)
+                if new_ip != current_ip or stored_use_https:
+                    _evict_pdu_client(new_ip, stored_web_port, stored_use_https)
+
+                status["step"] = "done"
+                status["success"] = True
+                status["pdu_id"] = pdu_id
+
+            except Exception as e:
+                status["step"] = "error"
+                status["error"] = str(e)
+                import traceback; traceback.print_exc()
+
             with _batch_lock:
                 _BATCH_JOBS[job_id]["results"][pdu_key] = status
+                _BATCH_JOBS[job_id]["completed"] += 1
 
-            stored_web_port = post_web_port if web_access_enabled else connect_port
-            stored_use_https = post_use_https if web_access_enabled else connect_https
-
-            pdu_data = {
-                "label": template.get("system", {}).get("router_hostname", "") or template.get("system", {}).get("device_name", f"PDU-{new_ip}"),
-                "snmp_port": 161,
-                "snmp_community_ref": template.get("snmp", {}).get("read_community", "public"),
-                "snmp_version": pdu_info.get("snmp_version", "2c"),
-                "is_active": True,
-                "mac_address": mac,
-                "hostname": pdu_template.get("system", {}).get("router_hostname", ""),
-                "web_admin_port": stored_web_port,
-                "web_admin_https": stored_use_https,
-                "web_admin_user": effective_user,
-                "web_admin_pass": effective_pass,
-            }
-            pdu_id = PDURepo.upsert(hall_id, new_ip, pdu_data)
-
-            _evict_pdu_client(current_ip, connect_port, connect_https)
-            _evict_pdu_client(current_ip, web_port, False)
-            if new_ip != current_ip or stored_use_https:
-                _evict_pdu_client(new_ip, stored_web_port, stored_use_https)
-
-            status["step"] = "done"
-            status["success"] = True
-            status["pdu_id"] = pdu_id
-
-        except Exception as e:
-            status["step"] = "error"
-            status["error"] = str(e)
-            import traceback; traceback.print_exc()
-
-        with _batch_lock:
-            _BATCH_JOBS[job_id]["results"][pdu_key] = status
-            _BATCH_JOBS[job_id]["completed"] += 1
+    finally:
+        for ip in all_batch_ips:
+            _batch_release_ip(ip)
 
     # Mark job complete
     with _batch_lock:
