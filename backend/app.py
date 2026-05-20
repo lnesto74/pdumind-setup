@@ -1825,8 +1825,21 @@ def _build_support_debug_report() -> Dict[str, Any]:
         creds_ok = bool(web_port and web_user and web_pass)
         pass_state = "SET" if web_pass else "EMPTY"
 
+        db_anomalies: List[str] = []
+        if is_active and not web_port:
+            db_anomalies.append("DB_MISSING_PORT")
+        if is_active and not web_pass:
+            db_anomalies.append("DB_MISSING_PASSWORD")
+        if is_active and not web_user:
+            db_anomalies.append("DB_MISSING_USER")
+        if web_port and int(web_port) == 443 and not use_https:
+            db_anomalies.append("DB_HTTPS_FLAG_WRONG")
+        if web_port and int(web_port) == 80 and use_https:
+            db_anomalies.append("DB_HTTP_FLAG_WRONG")
+
         tcp_443 = _debug_tcp_reachable(host, 443) if ip and is_active else None
         tcp_80 = _debug_tcp_reachable(host, 80) if ip and is_active else None
+        network_reachable = bool(tcp_443 or tcp_80) if is_active else None
 
         with MULTI_PDU_LOCK:
             cached = MULTI_PDU_RESULTS.get(ip, {})
@@ -1834,16 +1847,34 @@ def _build_support_debug_report() -> Dict[str, Any]:
         cache_count = len(cached) if cached else 0
 
         row_issues: List[str] = []
+        recommended_action = None
+        if not is_active:
+            recommended_action = "Inactive placeholder — ignore unless commissioning this rack"
+        elif not network_reachable:
+            recommended_action = "Connect PDU to network first, then run Repair"
+            row_issues.append("network unreachable (443/80 closed)")
+        elif db_anomalies and network_reachable:
+            recommended_action = "Run Commissioning → Repair with password that works in Chrome"
+            if "DB_MISSING_PASSWORD" in db_anomalies:
+                row_issues.append("DB password wiped — Repair will restore after login")
+            if "DB_MISSING_PORT" in db_anomalies:
+                row_issues.append("DB web port missing — Repair will auto-detect HTTPS/HTTP")
+        elif creds_ok and cache_count == 0:
+            recommended_action = "Credentials OK — wait ~30s for telemetry or run Repair"
+            row_issues.append("no cached telemetry yet")
+        elif creds_ok:
+            recommended_action = "Healthy"
+        else:
+            recommended_action = "Run Repair with correct web admin password"
+
         if is_active and not web_port:
             row_issues.append("missing web_admin_port")
         if is_active and web_port and not web_pass:
             row_issues.append("missing web_admin_pass")
         if is_active and web_port and not web_user:
             row_issues.append("missing web_admin_user")
-        if is_active and not creds_ok and (tcp_443 or tcp_80):
-            row_issues.append("PDU reachable but DB credentials incomplete — run Repair")
-        if is_active and creds_ok and cache_count == 0:
-            row_issues.append("no cached telemetry yet")
+        if is_active and not creds_ok and network_reachable:
+            row_issues.append("PDU online but DB credentials incomplete")
 
         pdu_rows.append({
             "id": pdu.get("id"),
@@ -1858,17 +1889,39 @@ def _build_support_debug_report() -> Dict[str, Any]:
             "web_admin_pass": pass_state,
             "credentials_ok": creds_ok,
             "commissioned_metadata": commissioned,
+            "db_anomalies": db_anomalies,
+            "network_reachable": network_reachable,
             "tcp_443": tcp_443,
             "tcp_80": tcp_80,
             "telemetry_cache_fields": cache_count,
             "cache_errors": len(cache_errors),
             "issues": row_issues,
+            "recommended_action": recommended_action,
         })
 
     active_pdus = [p for p in pdu_rows if p["is_active"]]
+    inactive_count = len(pdu_rows) - len(active_pdus)
     creds_ok_count = sum(1 for p in active_pdus if p["credentials_ok"])
     missing_port = sum(1 for p in active_pdus if not p.get("web_admin_port"))
-    missing_pass = sum(1 for p in active_pdus if p.get("web_admin_port") and p["web_admin_pass"] == "EMPTY")
+    missing_pass = sum(1 for p in active_pdus if p.get("web_admin_pass") == "EMPTY")
+    network_down = sum(1 for p in active_pdus if p.get("network_reachable") is False)
+    db_corrupt = sum(1 for p in active_pdus if p.get("db_anomalies"))
+
+    with MULTI_PDU_LOCK:
+        cache_ips = list(MULTI_PDU_RESULTS.keys())
+
+    recommendations: List[str] = []
+    if not active_pdus:
+        recommendations.append("No active PDUs — commission PDUs in the Data Hall first")
+    elif network_down == len(active_pdus):
+        recommendations.append("No active PDU reachable on network — check power, cabling, and Docker LAN access")
+    elif db_corrupt and network_down < len(active_pdus):
+        recommendations.append(
+            "Database credentials corrupted but PDUs are online — run Commissioning → Repair "
+            "with the password that works in Chrome (batch may have changed it from admin/admin)"
+        )
+    elif creds_ok_count == len(active_pdus) and len(cache_ips) < creds_ok_count:
+        recommendations.append("Credentials OK — wait 30s for telemetry cache or restart containers")
 
     if active_pdus and missing_port:
         issues.append(
@@ -1882,8 +1935,6 @@ def _build_support_debug_report() -> Dict[str, Any]:
     elif active_pdus and creds_ok_count < len(active_pdus):
         issues.append(f"WARNING: only {creds_ok_count}/{len(active_pdus)} PDUs have complete web credentials")
 
-    with MULTI_PDU_LOCK:
-        cache_ips = list(MULTI_PDU_RESULTS.keys())
     if active_pdus and creds_ok_count and len(cache_ips) < creds_ok_count:
         issues.append(f"INFO: telemetry cache populated for {len(cache_ips)}/{creds_ok_count} web-ready PDUs")
 
@@ -1905,15 +1956,21 @@ def _build_support_debug_report() -> Dict[str, Any]:
             "halls": len(halls),
             "pdus_total": len(pdu_rows),
             "pdus_active": len(active_pdus),
+            "pdus_inactive": inactive_count,
             "web_credentials_ok": creds_ok_count,
             "missing_web_port": missing_port,
+            "missing_web_password": missing_pass,
+            "network_unreachable": network_down,
+            "db_anomaly_pdus": db_corrupt,
             "telemetry_cache_pdus": len(cache_ips),
             "poller_running": poller_running,
             "poller_paused": _poller_is_paused(),
             "issues_count": len(issues),
         },
+        "recommendations": recommendations,
         "issues": issues,
         "halls": [{"id": h["id"], "name": h.get("name"), "description": h.get("description")} for h in halls],
+        "active_pdus": active_pdus,
         "pdus": pdu_rows,
     }
     report["text"] = _format_support_debug_text(report)
@@ -1921,22 +1978,36 @@ def _build_support_debug_report() -> Dict[str, Any]:
 
 
 def _format_support_debug_text(report: Dict[str, Any]) -> str:
+    s = report["summary"]
     lines = [
         "=== PDUMind Support Debug Report ===",
         f"Generated: {report['generated_at']}",
         f"Version:   {report['version']}",
         "",
-        "--- SUMMARY ---",
-        f"Halls:              {report['summary']['halls']}",
-        f"Active PDUs:        {report['summary']['pdus_active']} / {report['summary']['pdus_total']}",
-        f"Web credentials OK: {report['summary']['web_credentials_ok']}",
-        f"Missing web port:   {report['summary']['missing_web_port']}",
-        f"Telemetry cache:    {report['summary']['telemetry_cache_pdus']} PDUs",
-        f"Poller running:     {'yes' if report['summary']['poller_running'] else 'NO'}",
-        f"Poller paused:      {'yes' if report['summary']['poller_paused'] else 'no'}",
+        "--- SUMMARY (active PDUs only) ---",
+        f"Active PDUs:         {s['pdus_active']}",
+        f"Inactive/placeholder:{s.get('pdus_inactive', 0)} (layout placeholders — ignore)",
+        f"Web credentials OK:  {s['web_credentials_ok']} / {s['pdus_active']}",
+        f"DB anomalies:        {s.get('db_anomaly_pdus', 0)} PDU(s)",
+        f"Network unreachable:   {s.get('network_unreachable', 0)} PDU(s)",
+        f"Missing web port:    {s.get('missing_web_port', 0)}",
+        f"Missing password:    {s.get('missing_web_password', 0)}",
+        f"Telemetry cache:     {s['telemetry_cache_pdus']} PDU(s)",
+        f"Poller running:      {'yes' if s['poller_running'] else 'NO'}",
+        f"Poller paused:       {'yes' if s['poller_paused'] else 'no'}",
         "",
-        f"--- ISSUES ({report['summary']['issues_count']}) ---",
+        "--- RECOMMENDED ACTIONS ---",
     ]
+    if report.get("recommendations"):
+        for rec in report["recommendations"]:
+            lines.append(f"  → {rec}")
+    else:
+        lines.append("  (none — system looks healthy for active PDUs)")
+
+    lines.extend([
+        "",
+        f"--- ISSUES ({s['issues_count']}) ---",
+    ])
     if report["issues"]:
         for issue in report["issues"]:
             lines.append(f"  • {issue}")
@@ -1950,36 +2021,53 @@ def _format_support_debug_text(report: Dict[str, Any]) -> str:
         f"Exists: {'yes' if report['database']['exists'] else 'NO'}",
         f"Size:   {report['database']['size_mb']} MB",
         "",
-        "--- PDUs ---",
+        "--- ACTIVE PDUs (what matters) ---",
     ])
 
-    current_hall = None
-    for p in report["pdus"]:
-        if p["hall_id"] != current_hall:
-            current_hall = p["hall_id"]
-            hall_name = next((h["name"] for h in report["halls"] if h["id"] == current_hall), f"Hall {current_hall}")
-            lines.append("")
-            lines.append(f"[Hall: {hall_name} (id={current_hall})]")
-        active_tag = "active" if p["is_active"] else "INACTIVE"
-        https_tag = "HTTPS" if p["web_admin_https"] else "HTTP"
-        port_disp = p["web_admin_port"] if p["web_admin_port"] else "MISSING"
-        tcp = []
-        if p["tcp_443"] is True:
-            tcp.append("443:open")
-        elif p["tcp_443"] is False:
-            tcp.append("443:closed")
-        if p["tcp_80"] is True:
-            tcp.append("80:open")
-        elif p["tcp_80"] is False:
-            tcp.append("80:closed")
-        tcp_str = ", ".join(tcp) if tcp else "n/a"
-        lines.append(
-            f"  {p['ip'] or '?'} | {active_tag} | port:{port_disp} ({https_tag}) | "
-            f"user:{p['web_admin_user']} | pass:{p['web_admin_pass']} | "
-            f"cache:{p['telemetry_cache_fields']} fields | tcp:{tcp_str} | rack:{p['rack'] or '-'}"
-        )
-        for ri in p["issues"]:
-            lines.append(f"    ! {ri}")
+    active_by_hall: Dict[int, list] = {}
+    for p in report.get("active_pdus") or []:
+        active_by_hall.setdefault(p["hall_id"], []).append(p)
+
+    if not active_by_hall:
+        lines.append("  (no active PDUs)")
+    for hall_id, pdus in sorted(active_by_hall.items()):
+        hall_name = next((h["name"] for h in report["halls"] if h["id"] == hall_id), f"Hall {hall_id}")
+        lines.append(f"")
+        lines.append(f"[{hall_name} (id={hall_id})]")
+        for p in pdus:
+            https_tag = "HTTPS" if p["web_admin_https"] else "HTTP"
+            port_disp = p["web_admin_port"] if p["web_admin_port"] else "MISSING"
+            tcp = []
+            if p["tcp_443"] is True:
+                tcp.append("443:open")
+            elif p["tcp_443"] is False:
+                tcp.append("443:closed")
+            if p["tcp_80"] is True:
+                tcp.append("80:open")
+            elif p["tcp_80"] is False:
+                tcp.append("80:closed")
+            tcp_str = ", ".join(tcp) if tcp else "n/a"
+            anomaly_str = ",".join(p.get("db_anomalies") or []) or "none"
+            lines.append(
+                f"  {p['ip']} | port:{port_disp} ({https_tag}) | user:{p['web_admin_user']} | "
+                f"pass:{p['web_admin_pass']} | network:{tcp_str} | cache:{p['telemetry_cache_fields']} | "
+                f"DB issues:{anomaly_str}"
+            )
+            if p.get("recommended_action"):
+                lines.append(f"    → {p['recommended_action']}")
+            for ri in p.get("issues") or []:
+                lines.append(f"    ! {ri}")
+
+    inactive = [p for p in report["pdus"] if not p["is_active"]]
+    if inactive:
+        lines.extend([
+            "",
+            f"--- INACTIVE PLACEHOLDERS ({len(inactive)} total, truncated) ---",
+            f"  {len(inactive)} layout IP placeholders — not real PDUs, safe to ignore.",
+        ])
+        if len(inactive) <= 5:
+            for p in inactive:
+                lines.append(f"  {p['ip']} (inactive)")
 
     lines.extend(["", "=== End of Report ==="])
     return "\n".join(lines)
@@ -2513,30 +2601,42 @@ def _diagnose_pdu_login(
     password: str,
     *,
     verify_telemetry: bool = True,
+    pdu: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """Try every common web-admin endpoint and return a per-attempt diagnostic report."""
+    """Try web-admin endpoints and return a per-attempt diagnostic report."""
     _evict_all_pdu_clients_for_host(host)
     user = (username or "").strip() or "admin"
     pwd = password if password is not None and str(password).strip() else "admin"
     attempts: list[Dict[str, Any]] = []
 
+    port_plans: list[tuple[int, bool]] = []
+    if pdu and pdu.get("web_admin_port"):
+        port_plans.append((int(pdu["web_admin_port"]), _parse_use_https(pdu.get("web_admin_https"))))
     for try_port, use_https in [(443, True), (80, False), (6662, False), (8080, False)]:
+        if (try_port, use_https) not in port_plans:
+            port_plans.append((try_port, use_https))
+
+    for try_port, use_https in port_plans:
         scheme = "https" if use_https else "http"
         url = f"{scheme}://{host}:{try_port}"
         client = PDUWebClient(host, try_port, user, pwd, use_https=use_https, timeout=8)
         ok = False
         err: str | None = None
+        tcp_ok = _debug_tcp_reachable(host, try_port, timeout=3.0)
         try:
-            ok = client.login()
-            err = client.last_login_error
-            if ok and verify_telemetry:
-                try:
-                    client.get_live_telemetry()
-                except Exception as exc:
-                    ok = False
-                    err = f"Login OK but telemetry read failed: {exc}"
+            if not tcp_ok:
+                err = "Connection timed out — PDU not reachable on this port"
+            else:
+                ok = client.login()
+                err = client.last_login_error
+                if ok and verify_telemetry:
+                    try:
+                        client.get_live_telemetry()
+                    except Exception as exc:
+                        ok = False
+                        err = f"Login OK but telemetry read failed: {exc}"
         except Exception as exc:
-            err = str(exc)
+            err = _friendly_connect_error(str(exc))
         finally:
             try:
                 client.logout()
@@ -2547,6 +2647,7 @@ def _diagnose_pdu_login(
             "url": url,
             "port": try_port,
             "use_https": use_https,
+            "tcp_reachable": tcp_ok,
             "success": ok,
             "error": None if ok else (err or "Login failed"),
         })
@@ -2566,10 +2667,288 @@ def _diagnose_pdu_login(
         "host": host,
         "username": user,
         "attempts": attempts,
-        "error": "; ".join(
-            f"{a['url']}: {a['error']}" for a in attempts if a.get("error")
-        ) or "All login attempts failed",
+        "error": _summarize_login_failures(attempts),
     }
+
+
+def _friendly_connect_error(raw: str) -> str:
+    """Short customer-safe error from requests/urllib exceptions."""
+    if "ConnectTimeoutError" in raw or "timed out" in raw.lower():
+        return "Connection timed out — PDU not reachable"
+    if "Connection refused" in raw:
+        return "Connection refused — port closed"
+    if "UNSAFE_LEGACY_RENEGOTIATION" in raw:
+        return "HTTPS SSL handshake failed (legacy renegotiation)"
+    if len(raw) > 160:
+        return raw[:160] + "…"
+    return raw
+
+
+def _summarize_login_failures(attempts: list[Dict[str, Any]]) -> str:
+    """Build a short repair failure summary (not a full Python stack trace)."""
+    if not attempts:
+        return "No login attempts made"
+    if all(not a.get("tcp_reachable") for a in attempts):
+        ports = ", ".join(str(a["port"]) for a in attempts[:4])
+        return f"Network unreachable on ports {ports} — check PDU power, cable, and subnet"
+    auth_fails = [a for a in attempts if a.get("tcp_reachable") and not a.get("success")]
+    if auth_fails:
+        ports_open = ", ".join(str(a["port"]) for a in auth_fails)
+        last = auth_fails[-1].get("error") or "Login failed"
+        if "Login failed" in last or "login" in last.lower():
+            return (
+                f"PDU responds on port(s) {ports_open} but login failed — "
+                "enter the password that works in Chrome (batch may have changed it)"
+            )
+        return f"PDU responds on port(s) {ports_open} — {last}"
+    return attempts[-1].get("error") or "All login attempts failed"
+
+
+def _analyze_pdu_db_credentials(pdu: Dict[str, Any]) -> Dict[str, Any]:
+    """Detect common DB corruption patterns from partial upserts / batch runs."""
+    web_port = pdu.get("web_admin_port")
+    web_pass = (pdu.get("web_admin_pass") or "").strip()
+    web_user = (pdu.get("web_admin_user") or "").strip()
+    use_https = bool(pdu.get("web_admin_https"))
+    anomalies: List[str] = []
+    if not web_port:
+        anomalies.append("DB_MISSING_PORT")
+    if not web_pass:
+        anomalies.append("DB_MISSING_PASSWORD")
+    if not web_user:
+        anomalies.append("DB_MISSING_USER")
+    if web_port and int(web_port) == 443 and not use_https:
+        anomalies.append("DB_HTTPS_FLAG_WRONG")
+    if web_port and int(web_port) == 80 and use_https:
+        anomalies.append("DB_HTTP_FLAG_WRONG")
+    commissioned = False
+    if pdu.get("metadata_json"):
+        try:
+            commissioned = bool(json.loads(pdu["metadata_json"]).get("commissioned"))
+        except Exception:
+            pass
+    return {
+        "web_admin_port": web_port,
+        "web_admin_https": use_https,
+        "web_admin_user": web_user or None,
+        "password_set": bool(web_pass),
+        "credentials_complete": bool(web_port and web_user and web_pass),
+        "commissioned_metadata": commissioned,
+        "anomalies": anomalies,
+    }
+
+
+def _probe_pdu_tcp_ports(host: str, pdu: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Quick TCP scan of likely web-admin ports."""
+    ports_to_try: list[int] = []
+    if pdu and pdu.get("web_admin_port"):
+        ports_to_try.append(int(pdu["web_admin_port"]))
+    for p in (443, 80, 6662, 8080):
+        if p not in ports_to_try:
+            ports_to_try.append(p)
+    results = {}
+    for port in ports_to_try:
+        results[str(port)] = _debug_tcp_reachable(host, port, timeout=3.0)
+    open_ports = [int(p) for p, ok in results.items() if ok]
+    return {
+        "host": host,
+        "ports": results,
+        "open_ports": open_ports,
+        "any_open": bool(open_ports),
+    }
+
+
+def _repair_credential_candidates(
+    pdu: Dict[str, Any],
+    username: str | None,
+    password: str | None,
+) -> list[tuple[str, str, str]]:
+    """Ordered login attempts: form → database → factory default."""
+    candidates: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(user: str, pwd: str, source: str) -> None:
+        key = (user, pwd)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append((user, pwd, source))
+
+    form_user = (username or "").strip() or "admin"
+    form_pass = password if password is not None and str(password).strip() else "admin"
+    _add(form_user, form_pass, "repair_form")
+
+    db_pass = (pdu.get("web_admin_pass") or "").strip()
+    if db_pass:
+        db_user = _coalesce_credential(pdu.get("web_admin_user"), form_user)
+        _add(db_user, db_pass, "database_stored")
+
+    _add("admin", "admin", "factory_default")
+    return candidates
+
+
+def _smart_repair_pdu(
+    pdu: Dict[str, Any],
+    *,
+    username: str | None = None,
+    password: str | None = None,
+) -> Dict[str, Any]:
+    """Iterative auto-repair: diagnose DB → TCP probe → try credential sets → update DB."""
+    ip = pdu["ip_address"]
+    hall_id = pdu["hall_id"]
+    host = pdu.get("remote_host") or ip
+    steps: List[Dict[str, Any]] = []
+
+    db_analysis = _analyze_pdu_db_credentials(pdu)
+    steps.append({"phase": "1_db_analysis", "label": "Analyze database record", **db_analysis})
+
+    if _is_pdu_session_held(host):
+        msg = (
+            "PDU web session busy — close PDU Settings panel and any open PDU tabs in Chrome, then retry"
+        )
+        steps.append({"phase": "blocked", "label": "Session busy", "code": "SESSION_BUSY"})
+        return {
+            "success": False,
+            "code": "SESSION_BUSY",
+            "ip": ip,
+            "message": msg,
+            "error": msg,
+            "steps": steps,
+        }
+
+    _evict_all_pdu_clients_for_host(host)
+    tcp = _probe_pdu_tcp_ports(host, pdu)
+    steps.append({"phase": "2_network_probe", "label": "TCP reachability", **tcp})
+
+    if not tcp["any_open"]:
+        msg = (
+            f"Cannot reach {ip} on the network (ports 443/80 closed). "
+            "Check PDU is powered on, cabled, and on the same subnet as PDUMind."
+        )
+        steps.append({"phase": "failed", "label": "Network unreachable", "code": "NETWORK_UNREACHABLE"})
+        return {
+            "success": False,
+            "code": "NETWORK_UNREACHABLE",
+            "ip": ip,
+            "message": msg,
+            "error": msg,
+            "steps": steps,
+            "recommendation": "Fix network connectivity first — Repair cannot update the database until the PDU responds.",
+        }
+
+    candidates = _repair_credential_candidates(pdu, username, password)
+    steps.append({
+        "phase": "3_credential_plan",
+        "label": "Credential attempts planned",
+        "sources": [c[2] for c in candidates],
+        "count": len(candidates),
+    })
+
+    last_error = ""
+    for cred_user, cred_pass, cred_source in candidates:
+        steps.append({
+            "phase": "4_try_login",
+            "label": f"Try login ({cred_source})",
+            "source": cred_source,
+            "username": cred_user,
+        })
+        diag = _diagnose_pdu_login(
+            host, cred_user, cred_pass, verify_telemetry=True, pdu=pdu
+        )
+        steps.append({
+            "phase": "4_login_result",
+            "source": cred_source,
+            "success": diag.get("success", False),
+            "attempts": [
+                {
+                    "url": a.get("url"),
+                    "tcp_reachable": a.get("tcp_reachable"),
+                    "success": a.get("success"),
+                    "error": a.get("error"),
+                }
+                for a in diag.get("attempts", [])
+            ],
+        })
+        if diag.get("success"):
+            port = int(diag["port"])
+            use_https = bool(diag["use_https"])
+            PDURepo.upsert(
+                hall_id,
+                ip,
+                {
+                    "web_admin_port": port,
+                    "web_admin_https": use_https,
+                    "web_admin_user": cred_user,
+                    "web_admin_pass": cred_pass,
+                },
+            )
+            _evict_all_pdu_clients_for_host(host)
+            scheme = "https" if use_https else "http"
+            fixed_db = []
+            if "DB_MISSING_PORT" in db_analysis["anomalies"]:
+                fixed_db.append("restored web_admin_port")
+            if "DB_MISSING_PASSWORD" in db_analysis["anomalies"]:
+                fixed_db.append("restored password")
+            if "DB_HTTPS_FLAG_WRONG" in db_analysis["anomalies"] or "DB_HTTP_FLAG_WRONG" in db_analysis["anomalies"]:
+                fixed_db.append("corrected HTTP/HTTPS flag")
+            msg = f"Connected via {scheme}://{host}:{port} as {cred_user} (via {cred_source})"
+            if fixed_db:
+                msg += f" — DB fixed: {', '.join(fixed_db)}"
+            steps.append({
+                "phase": "5_success",
+                "label": "Database updated",
+                "port": port,
+                "use_https": use_https,
+                "credential_source": cred_source,
+                "db_fixes": fixed_db,
+            })
+            print(f"[pdu-repair] {ip} -> {msg}")
+            return {
+                "success": True,
+                "code": "SUCCESS",
+                "ip": ip,
+                "message": msg,
+                "credential_source": cred_source,
+                "before": db_analysis,
+                "after": {
+                    "web_admin_port": port,
+                    "web_admin_https": use_https,
+                    "web_admin_user": cred_user,
+                },
+                "steps": steps,
+            }
+        last_error = diag.get("error") or last_error
+
+    msg = last_error or "All repair attempts failed"
+    code = "AUTH_FAILED" if tcp["any_open"] else "NETWORK_UNREACHABLE"
+    recommendation = (
+        "PDU is online but login failed. Enter the password that works when you open the PDU in Chrome. "
+        "If batch commissioning changed the password, use that password — not admin/admin."
+        if code == "AUTH_FAILED"
+        else "Check network connectivity before retrying Repair."
+    )
+    steps.append({"phase": "failed", "label": "Repair failed", "code": code, "error": msg})
+    print(f"[pdu-repair] {ip} failed ({code}): {msg}")
+    return {
+        "success": False,
+        "code": code,
+        "ip": ip,
+        "message": msg,
+        "error": msg,
+        "recommendation": recommendation,
+        "steps": steps,
+    }
+
+
+def _repair_pdu_web_credentials(
+    pdu: Dict[str, Any],
+    *,
+    username: str | None = None,
+    password: str | None = None,
+) -> tuple[bool, str]:
+    """Re-probe a PDU and rewrite DB web-admin port/protocol/credentials."""
+    result = _smart_repair_pdu(pdu, username=username, password=password)
+    return result["success"], result.get("message") or result.get("error", "Repair failed")
 
 
 def _connect_pdu_admin_probe(
@@ -2609,50 +2988,6 @@ def _connect_pdu_admin_probe(
     tried = ", ".join(f"{'https' if h else 'http'}://{host}:{p}" for p, h in seen)
     detail = errors[-1] if errors else tried
     raise ConnectionError(f"PDU login failed for {username} — tried {tried}. Last: {detail}")
-
-
-def _repair_pdu_web_credentials(
-    pdu: Dict[str, Any],
-    *,
-    username: str | None = None,
-    password: str | None = None,
-) -> tuple[bool, str]:
-    """Re-probe a PDU and rewrite DB web-admin port/protocol/credentials."""
-    ip = pdu["ip_address"]
-    hall_id = pdu["hall_id"]
-    host = pdu.get("remote_host") or ip
-    user = (username or "").strip() or "admin"
-    pwd = password if password is not None and str(password).strip() else "admin"
-
-    _evict_all_pdu_clients_for_host(host)
-    try:
-        diag = _diagnose_pdu_login(host, user, pwd, verify_telemetry=True)
-        if not diag.get("success"):
-            msg = diag.get("error") or "Login failed on all ports"
-            print(f"[pdu-repair] {ip} failed: {msg}")
-            return False, msg
-
-        port = int(diag["port"])
-        use_https = bool(diag["use_https"])
-        PDURepo.upsert(
-            hall_id,
-            ip,
-            {
-                "web_admin_port": port,
-                "web_admin_https": use_https,
-                "web_admin_user": user,
-                "web_admin_pass": pwd,
-            },
-        )
-        _evict_all_pdu_clients_for_host(host)
-        scheme = "https" if use_https else "http"
-        msg = f"Connected via {scheme}://{host}:{port} as {user}"
-        print(f"[pdu-repair] {ip} -> {msg}")
-        return True, msg
-    except Exception as exc:
-        msg = str(exc)
-        print(f"[pdu-repair] {ip} failed: {msg}")
-        return False, msg
 
 
 def _wait_for_pdu_after_reboot(
@@ -4074,14 +4409,11 @@ def repair_hall_web_access(hall_id: int):
                 if pdu_ids is not None and pdu["id"] not in pdu_ids:
                     continue
                 _evict_all_pdu_clients_for_host(pdu.get("remote_host") or pdu["ip_address"])
-                before = {
-                    "web_admin_port": pdu.get("web_admin_port"),
-                    "web_admin_https": bool(pdu.get("web_admin_https")),
-                    "web_admin_user": pdu.get("web_admin_user"),
-                }
-                ok, repair_msg = _repair_pdu_web_credentials(pdu, username=user, password=password)
-                after = None
-                if ok:
+                before = _analyze_pdu_db_credentials(pdu)
+                repair_result = _smart_repair_pdu(pdu, username=user, password=password)
+                ok = repair_result.get("success", False)
+                after = repair_result.get("after")
+                if ok and not after:
                     refreshed = PDURepo.get(pdu["id"]) or pdu
                     after = {
                         "web_admin_port": refreshed.get("web_admin_port"),
@@ -4093,10 +4425,14 @@ def repair_hall_web_access(hall_id: int):
                     "ip": pdu["ip_address"],
                     "label": pdu.get("label") or pdu.get("hostname"),
                     "success": ok,
-                    "message": repair_msg,
-                    "error": None if ok else repair_msg,
+                    "code": repair_result.get("code"),
+                    "message": repair_result.get("message"),
+                    "error": None if ok else repair_result.get("error"),
+                    "recommendation": repair_result.get("recommendation"),
+                    "credential_source": repair_result.get("credential_source"),
                     "before": before,
                     "after": after,
+                    "steps": repair_result.get("steps", []),
                 })
                 time.sleep(1.5)
         finally:

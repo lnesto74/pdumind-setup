@@ -100,6 +100,15 @@ export default function SupportDebugTab() {
         </div>
       </div>
 
+      {report?.recommendations?.length > 0 && (
+        <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-100 text-xs space-y-1">
+          <p className="font-semibold text-amber-200">Recommended actions</p>
+          {report.recommendations.map((rec, i) => (
+            <p key={i}>→ {rec}</p>
+          ))}
+        </div>
+      )}
+
       {error && (
         <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-300 text-xs">
           {error}

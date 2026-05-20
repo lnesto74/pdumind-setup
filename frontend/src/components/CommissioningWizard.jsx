@@ -219,11 +219,10 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
       if (!res.ok) throw new Error(data.error || 'Failed to load hall PDUs');
       const pdus = (data.pdus || []).slice().sort((a, b) => compareIp(a.ip_address, b.ip_address));
       setRepairPdus(pdus);
-      const webPdus = pdus.filter(p => p.web_admin_port);
       if (!preserveResults) {
-        setRepairSelected(new Set(webPdus.map(p => p.id)));
-        const firstWeb = webPdus[0];
-        if (firstWeb?.web_admin_user) setRepairUser(firstWeb.web_admin_user);
+        setRepairSelected(new Set(pdus.map(p => p.id)));
+        const first = pdus[0];
+        if (first?.web_admin_user) setRepairUser(first.web_admin_user);
       }
     } catch (e) {
       setError(e.message);
@@ -1268,18 +1267,16 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                 <div className="space-y-3">
                   <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30">
                     <p className="text-xs text-amber-200 leading-relaxed">
-                      Fixes telemetry and Remote PDU login when the database has the wrong HTTPS flag, port, or password after a partial batch run.
-                      Loads PDUs from <span className="font-semibold text-white">{hallName || `Hall #${hallId}`}</span> — no manual hall ID or IP list needed.
+                      <span className="font-semibold text-white">Smart auto-repair</span> — diagnoses DB corruption, probes the network,
+                      then tries credentials in order: your password → stored DB password → factory admin/admin.
+                      Fixes wrong port, HTTPS flag, and wiped credentials automatically when the PDU responds.
                       <span className="block mt-1 text-amber-100/80">Close any open PDU tabs in Chrome before repairing — each PDU allows only one web session.</span>
                     </p>
                   </div>
 
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-xs text-slate-400">
-                      {repairPdus.length} PDU(s) in this hall
-                      {repairPdus.filter(p => p.web_admin_port).length !== repairPdus.length && (
-                        <span className="text-slate-500"> — {repairPdus.filter(p => !p.web_admin_port).length} SNMP-only (skipped)</span>
-                      )}
+                      {repairPdus.length} active PDU(s) in {hallName || `Hall #${hallId}`}
                     </p>
                     <button
                       type="button"
@@ -1304,7 +1301,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                       />
                     </div>
                     <div>
-                      <label className="text-[9px] text-slate-500 uppercase">Password (must work in browser now)</label>
+                      <label className="text-[9px] text-slate-500 uppercase">Password (must work in Chrome now)</label>
                       <input
                         type="password"
                         value={repairPass}
@@ -1359,78 +1356,75 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   {repairPdus.length > 0 && (
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
-                        <p className="text-[10px] text-slate-500 uppercase tracking-wider">Stored in database today</p>
+                        <p className="text-[10px] text-slate-500 uppercase tracking-wider">Active PDUs in hall</p>
                         <button
                           type="button"
                           onClick={() => {
-                            const webIds = repairPdus.filter(p => p.web_admin_port).map(p => p.id);
-                            setRepairSelected(prev => (prev.size === webIds.length ? new Set() : new Set(webIds)));
+                            const ids = repairPdus.map(p => p.id);
+                            setRepairSelected(prev => (prev.size === ids.length ? new Set() : new Set(ids)));
                           }}
                           className="text-[10px] text-[#00E5FF] hover:text-[#00E5FF]/80"
                         >
-                          {repairSelected.size === repairPdus.filter(p => p.web_admin_port).length ? 'Deselect all' : 'Select all web PDUs'}
+                          {repairSelected.size === repairPdus.length ? 'Deselect all' : 'Select all'}
                         </button>
                       </div>
-                      <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
+                      <div className="max-h-64 overflow-y-auto space-y-1.5 pr-1">
                         {repairPdus.map(pdu => {
                           const result = findRepairResult(pdu);
                           const probe = probeResults[pdu.ip_address];
-                          const canRepair = !!pdu.web_admin_port;
                           const storedScheme = pdu.web_admin_https ? 'https' : 'http';
-                          const storedPort = pdu.web_admin_port || '—';
+                          const storedPort = pdu.web_admin_port || 'missing';
+                          const dbIssues = [];
+                          if (!pdu.web_admin_port) dbIssues.push('no port');
+                          if (!pdu.web_admin_pass) dbIssues.push('no pass');
                           return (
                             <div
                               key={pdu.id}
                               className={`p-3 rounded-lg border ${
                                 result?.success
                                   ? 'bg-emerald-500/10 border-emerald-500/40'
-                                  : result && !result.skipped
+                                  : result
                                     ? 'bg-red-500/10 border-red-500/40'
-                                    : !canRepair
-                                      ? 'bg-[#0a1222] border-[#1f2a3a] opacity-60'
-                                      : repairSelected.has(pdu.id)
-                                        ? 'bg-[#0B1120] border-[#00E5FF]/30'
-                                        : 'bg-[#0B1120] border-[#233544]'
+                                    : repairSelected.has(pdu.id)
+                                      ? 'bg-[#0B1120] border-[#00E5FF]/30'
+                                      : 'bg-[#0B1120] border-[#233544]'
                               }`}
                             >
                               <div className="flex items-start gap-3">
-                                {canRepair ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => toggleRepairPdu(pdu.id)}
-                                    className={`mt-0.5 w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
-                                      repairSelected.has(pdu.id) ? 'border-emerald-400 bg-emerald-500/20' : 'border-slate-600'
-                                    }`}
-                                  >
-                                    {repairSelected.has(pdu.id) && (
-                                      <span className="material-icons-outlined text-emerald-400 text-xs">check</span>
-                                    )}
-                                  </button>
-                                ) : (
-                                  <span className="material-icons-outlined text-slate-600 text-sm mt-0.5">block</span>
-                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => toggleRepairPdu(pdu.id)}
+                                  className={`mt-0.5 w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
+                                    repairSelected.has(pdu.id) ? 'border-emerald-400 bg-emerald-500/20' : 'border-slate-600'
+                                  }`}
+                                >
+                                  {repairSelected.has(pdu.id) && (
+                                    <span className="material-icons-outlined text-emerald-400 text-xs">check</span>
+                                  )}
+                                </button>
                                 <div className="flex-1 min-w-0">
                                   <div className="flex flex-wrap items-center gap-2">
                                     <span className="font-mono text-white text-sm">{pdu.ip_address}</span>
                                     {pdu.label && <span className="text-[10px] text-slate-500 truncate">{pdu.label}</span>}
-                                    {canRepair ? (
-                                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
-                                        DB: {storedScheme}:{storedPort} / {pdu.web_admin_user || 'admin'}
-                                      </span>
-                                    ) : (
-                                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-700/40 text-slate-400">SNMP only</span>
-                                    )}
+                                    <span className={`text-[9px] px-1.5 py-0.5 rounded border ${
+                                      dbIssues.length
+                                        ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                        : 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
+                                    }`}>
+                                      DB: {storedScheme}:{storedPort} / {pdu.web_admin_user || 'admin'}
+                                      {dbIssues.length ? ` (${dbIssues.join(', ')})` : ''}
+                                    </span>
                                     {result && (
                                       <span className={`text-[9px] px-1.5 py-0.5 rounded border font-semibold ${
                                         result.success
                                           ? 'bg-emerald-500/30 text-emerald-200 border-emerald-500/50'
-                                          : result.skipped
-                                            ? 'bg-slate-700/40 text-slate-400 border-slate-600/40'
-                                            : 'bg-red-500/30 text-red-200 border-red-500/50'
+                                          : 'bg-red-500/30 text-red-200 border-red-500/50'
                                       }`}>
                                         {result.success
                                           ? `OK → ${result.after?.web_admin_https ? 'https' : 'http'}:${result.after?.web_admin_port}`
-                                          : result.skipped ? 'Skipped' : 'FAILED'}
+                                          : result.code === 'NETWORK_UNREACHABLE' ? 'OFFLINE'
+                                          : result.code === 'AUTH_FAILED' ? 'LOGIN FAILED'
+                                          : 'FAILED'}
                                       </span>
                                     )}
                                   </div>
@@ -1439,21 +1433,31 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                       {result.message}
                                     </p>
                                   )}
-                                  {result?.error && !result.success && (
-                                    <p className="text-[10px] text-red-200/90 mt-1 font-mono break-all leading-relaxed">
-                                      {result.error}
+                                  {result?.recommendation && !result.success && (
+                                    <p className="text-[10px] text-amber-200/90 mt-1 leading-relaxed">
+                                      → {result.recommendation}
                                     </p>
                                   )}
-                                  {result?.after && result.before && result.success && (
-                                    <p className="text-[10px] text-slate-500 mt-1 font-mono">
-                                      {result.before.web_admin_https ? 'https' : 'http'}:{result.before.web_admin_port}
-                                      {' → '}
-                                      {result.after.web_admin_https ? 'https' : 'http'}:{result.after.web_admin_port}
-                                    </p>
+                                  {result?.steps?.length > 0 && (
+                                    <details className="mt-2">
+                                      <summary className="text-[10px] text-slate-400 cursor-pointer hover:text-slate-300">
+                                        Repair steps ({result.steps.length})
+                                      </summary>
+                                      <div className="mt-1 space-y-0.5 pl-2 border-l border-slate-700">
+                                        {result.steps.map((step, i) => (
+                                          <p key={i} className="text-[9px] font-mono text-slate-500 leading-relaxed">
+                                            {step.label || step.phase}
+                                            {step.source ? ` [${step.source}]` : ''}
+                                            {step.code ? ` — ${step.code}` : ''}
+                                            {step.open_ports ? ` — open: ${step.open_ports.join(',')}` : ''}
+                                          </p>
+                                        ))}
+                                      </div>
+                                    </details>
                                   )}
                                   {probe && !probe.success && (
                                     <div className="mt-2 space-y-1">
-                                      {probe.attempts?.map((a) => (
+                                      {probe.attempts?.slice(0, 4).map((a) => (
                                         <p key={a.url} className="text-[10px] font-mono text-slate-400">
                                           {a.url}: {a.success ? 'OK' : (a.error || 'failed')}
                                         </p>
@@ -1461,26 +1465,24 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                     </div>
                                   )}
                                 </div>
-                                {canRepair && (
-                                  <div className="flex flex-col gap-1 shrink-0">
-                                    <button
-                                      type="button"
-                                      onClick={() => testProbeLogin(pdu.ip_address)}
-                                      disabled={repairLoading}
-                                      className="text-[10px] text-slate-400 hover:text-white disabled:opacity-40"
-                                    >
-                                      Test
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => runRepairWebAccess([pdu.id])}
-                                      disabled={repairLoading}
-                                      className="text-[10px] text-[#00E5FF] hover:text-white disabled:opacity-40"
-                                    >
-                                      Repair
-                                    </button>
-                                  </div>
-                                )}
+                                <div className="flex flex-col gap-1 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => testProbeLogin(pdu.ip_address)}
+                                    disabled={repairLoading}
+                                    className="text-[10px] text-slate-400 hover:text-white disabled:opacity-40"
+                                  >
+                                    Test
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => runRepairWebAccess([pdu.id])}
+                                    disabled={repairLoading}
+                                    className="text-[10px] text-[#00E5FF] hover:text-[#00E5FF]/80 disabled:opacity-40"
+                                  >
+                                    Repair
+                                  </button>
+                                </div>
                               </div>
                             </div>
                           );
@@ -1490,7 +1492,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   )}
 
                   {repairPdus.length === 0 && !repairLoading && (
-                    <p className="text-xs text-slate-500 text-center py-6">No PDUs in this hall yet. Commission PDUs first, then use Repair if telemetry breaks.</p>
+                    <p className="text-xs text-slate-500 text-center py-6">No active PDUs in this hall yet. Commission PDUs first, then use Repair if telemetry breaks.</p>
                   )}
 
                   <button
@@ -1504,12 +1506,13 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     ) : (
                       <span className="material-icons-outlined text-sm">healing</span>
                     )}
-                    Repair {repairSelected.size || 0} selected PDU{repairSelected.size === 1 ? '' : 's'}
+                    Smart Repair {repairSelected.size || 0} selected PDU{repairSelected.size === 1 ? '' : 's'}
                   </button>
 
                   <p className="text-[10px] text-slate-600 leading-relaxed">
-                    Use <span className="text-slate-400">Test</span> on one PDU first — it shows exactly which ports/schemes failed and why, without changing the database.
-                    Repair updates the hall database so telemetry and Remote PDU use the working protocol and credentials.
+                    Tries: your password → DB stored password → factory admin/admin, on HTTPS:443 then HTTP:80.
+                    If batch commissioning changed the password, enter that password above.
+                    Use <span className="text-slate-400">Test</span> first to diagnose without changing the database.
                   </p>
                 </div>
               )}
