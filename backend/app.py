@@ -590,7 +590,7 @@ def _poll_remote_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str
     ip = pdu["ip_address"]
     host, web_port, web_user, web_pass, use_https = _web_admin_creds_from_pdu(pdu)
 
-    if is_pdu_admin_held(host, web_port, use_https):
+    if _is_pdu_session_held(host):
         print(f"[poll_remote] {ip} skipped — PDU Settings session active")
         with MULTI_PDU_LOCK:
             cached = MULTI_PDU_RESULTS.get(ip, {})
@@ -605,68 +605,77 @@ def _poll_remote_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str
     results = {}
     errors = {}
 
-    client = _get_pdu_client(host, web_port, web_user, web_pass, use_https=use_https)
+    poll_plans: list[tuple[int, bool]] = [(web_port, use_https)]
+    if use_https:
+        poll_plans.append((_DEFAULT_WEB_ADMIN_PORT, False))
 
-    # Non-blocking: if another thread holds the lock (settings panel, etc.),
-    # return cached results rather than blocking for 10-60+ seconds.
-    if not client._lock.acquire(blocking=False):
-        print(f"[poll_remote] {ip} skipped — client busy (settings/admin)")
-        with MULTI_PDU_LOCK:
-            cached = MULTI_PDU_RESULTS.get(ip, {})
-        return ip, cached, {}
+    last_err: Exception | None = None
+    for poll_port, poll_https in poll_plans:
+        client = _get_pdu_client(host, poll_port, web_user, web_pass, use_https=poll_https)
+        if poll_https != use_https:
+            print(f"[poll_remote] {ip} retrying on HTTP — DB HTTPS flag may be stale")
 
-    try:
-        tele = client.get_live_telemetry()
+        if not client._lock.acquire(blocking=False):
+            print(f"[poll_remote] {ip} skipped — client busy (settings/admin)")
+            with MULTI_PDU_LOCK:
+                cached = MULTI_PDU_RESULTS.get(ip, {})
+            return ip, cached, {}
 
-        _skip = {"csrf", "breakers", "datetime", "alarm_flags",
-                 "l1_color", "l2_color", "l3_color", "name", "firmware"}
-        for key, val in tele.items():
-            if key in _skip or key.startswith("field_"):
-                continue
-            results[key] = {"name": key, "oid": f"web:{key}", "value": str(val)}
-
-        _aliases = {
-            "MasterVoltageP1": "l1_voltage", "MasterCurrentP1": "l1_current",
-            "MasterPowerP1": "l1_active_power",
-            "MasterVoltageP2": "l2_voltage", "MasterVoltageP3": "l3_voltage",
-            "TotalCurrent": "neutral_current", "TotalPower": "total_active_power",
-            "TotalEnergy": "total_active_energy",
-        }
-        for alias, cgi_key in _aliases.items():
-            if cgi_key in tele:
-                results[alias] = {"name": alias, "oid": f"web:{cgi_key}", "value": str(tele[cgi_key])}
-
-        for i, br in enumerate(tele.get("breakers", []), 1):
-            results[f"Output{i}Status"] = {
-                "name": f"Output{i}Status", "oid": f"web:breaker_{i}",
-                "value": br.get("status", "0"),
-            }
-
-        import json
-        alarm_flags = tele.get("alarm_flags", [])
-        results["_alarm_flags"] = {
-            "name": "_alarm_flags", "oid": "web:alarm_flags",
-            "value": json.dumps(alarm_flags),
-        }
-        results["_alarm_count"] = {
-            "name": "_alarm_count", "oid": "web:alarm_count",
-            "value": str(len(alarm_flags)),
-        }
-
-    except Exception as e:
-        errors["_remote"] = {"name": "_remote", "error": str(e)}
-        # Return cached results on error so the frontend never sees zeros
-        with MULTI_PDU_LOCK:
-            results = MULTI_PDU_RESULTS.get(ip, {})
-        print(f"[poll_remote] {ip} error, returning cached data: {e}")
-    finally:
-        # Logout before releasing the lock so another thread cannot login
-        # while this one is still tearing down the PDU's single web session.
         try:
-            client.logout()
-        except Exception:
-            pass
-        client._lock.release()
+            tele = client.get_live_telemetry()
+
+            _skip = {"csrf", "breakers", "datetime", "alarm_flags",
+                     "l1_color", "l2_color", "l3_color", "name", "firmware"}
+            for key, val in tele.items():
+                if key in _skip or key.startswith("field_"):
+                    continue
+                results[key] = {"name": key, "oid": f"web:{key}", "value": str(val)}
+
+            _aliases = {
+                "MasterVoltageP1": "l1_voltage", "MasterCurrentP1": "l1_current",
+                "MasterPowerP1": "l1_active_power",
+                "MasterVoltageP2": "l2_voltage", "MasterVoltageP3": "l3_voltage",
+                "TotalCurrent": "neutral_current", "TotalPower": "total_active_power",
+                "TotalEnergy": "total_active_energy",
+            }
+            for alias, cgi_key in _aliases.items():
+                if cgi_key in tele:
+                    results[alias] = {"name": alias, "oid": f"web:{cgi_key}", "value": str(tele[cgi_key])}
+
+            for i, br in enumerate(tele.get("breakers", []), 1):
+                results[f"Output{i}Status"] = {
+                    "name": f"Output{i}Status", "oid": f"web:breaker_{i}",
+                    "value": br.get("status", "0"),
+                }
+
+            import json
+            alarm_flags = tele.get("alarm_flags", [])
+            results["_alarm_flags"] = {
+                "name": "_alarm_flags", "oid": "web:alarm_flags",
+                "value": json.dumps(alarm_flags),
+            }
+            results["_alarm_count"] = {
+                "name": "_alarm_count", "oid": "web:alarm_count",
+                "value": str(len(alarm_flags)),
+            }
+            last_err = None
+            break
+
+        except Exception as e:
+            last_err = e
+            errors["_remote"] = {"name": "_remote", "error": str(e)}
+            with MULTI_PDU_LOCK:
+                results = MULTI_PDU_RESULTS.get(ip, {})
+            print(f"[poll_remote] {ip} error on {'HTTPS' if poll_https else 'HTTP'}, returning cached: {e}")
+        finally:
+            try:
+                client.logout()
+            except Exception:
+                pass
+            client._lock.release()
+
+    if last_err is not None and not results:
+        return ip, results, errors
 
     return ip, results, errors
 
@@ -2118,6 +2127,101 @@ def _batch_release_pdu_sessions(ip: str, web_port: int = 80) -> None:
             release_pdu_admin(ip, hp, True)
 
 
+def _is_pdu_session_held(host: str) -> bool:
+    """True if batch/settings holds any HTTP/HTTPS session key for this host."""
+    if is_pdu_admin_held(host, 80, False) or is_pdu_admin_held(host, 443, True):
+        return True
+    existing = PDURepo.get_by_ip(host)
+    if existing:
+        hp = int(existing.get("web_admin_port") or _DEFAULT_WEB_ADMIN_PORT)
+        hh = _parse_use_https(existing.get("web_admin_https"))
+        if is_pdu_admin_held(host, hp, hh):
+            return True
+    return False
+
+
+def _probe_pdu_login(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    use_https: bool,
+    *,
+    retries: int = 5,
+) -> PDUWebClient | None:
+    """Try login with retries; returns a logged-in client or None."""
+    _evict_pdu_client(host, port, use_https)
+    client = PDUWebClient(host, port, username, password, use_https=use_https)
+    with _pdu_clients_lock:
+        _pdu_clients[_pdu_client_key(host, port, use_https)] = client
+    for attempt in range(retries):
+        if client.login():
+            return client
+        time.sleep(1.0 * (attempt + 1))
+    try:
+        client.logout()
+    except Exception:
+        pass
+    return None
+
+
+def _connect_pdu_admin_probe(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    port: int = 80,
+    prefer_https: bool | None = None,
+) -> Tuple[PDUWebClient, int, bool]:
+    """Connect to PDU web admin, probing HTTP and HTTPS as needed."""
+    http_port = int(port or _DEFAULT_WEB_ADMIN_PORT) if not prefer_https else 80
+    if prefer_https is True:
+        attempts = [(443, True), (http_port, False)]
+    elif prefer_https is False:
+        attempts = [(http_port, False), (443, True)]
+    else:
+        attempts = [(http_port, False), (443, True)]
+
+    seen: set[tuple[int, bool]] = set()
+    for try_port, use_https in attempts:
+        key = (try_port, use_https)
+        if key in seen:
+            continue
+        seen.add(key)
+        client = _probe_pdu_login(host, try_port, username, password, use_https, retries=3)
+        if client:
+            scheme = "https" if use_https else "http"
+            print(f"[pdu-admin] Connected to {scheme}://{host}:{try_port} as {username}")
+            return client, try_port, use_https
+
+    tried = ", ".join(f"{'https' if h else 'http'}://{host}:{p}" for p, h in seen)
+    raise ConnectionError(f"PDU login failed for {username} — tried {tried}")
+
+
+def _wait_for_pdu_after_reboot(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    timeout: int = 120,
+    prefer_https: bool = True,
+    https_port: int = 443,
+    http_port: int = 80,
+) -> Tuple[PDUWebClient | None, int, bool]:
+    """Wait for a rebooted PDU and return whichever protocol answers first."""
+    deadline = time.time() + timeout
+    order = [(https_port, True), (http_port, False)] if prefer_https else [(http_port, False), (https_port, True)]
+    while time.time() < deadline:
+        for try_port, use_https in order:
+            client = _probe_pdu_login(host, try_port, username, password, use_https, retries=2)
+            if client:
+                scheme = "https" if use_https else "http"
+                print(f"[batch] Verified {scheme}://{host}:{try_port} after reboot")
+                return client, try_port, use_https
+        time.sleep(5)
+    return None, http_port, False
+
+
 def _connect_batch_pdu_client(
     ip: str,
     port: int,
@@ -2126,103 +2230,27 @@ def _connect_batch_pdu_client(
     *,
     creds_from_db: bool = False,
 ) -> Tuple[PDUWebClient, int, bool]:
-    """Connect for batch commissioning with smart HTTP/HTTPS detection.
-
-    - Tries HTTP first (unless DB already records HTTPS for this PDU).
-    - Retries login on HTTP to survive transient single-session conflicts.
-    - Falls back to HTTPS:443 only when HTTP is *unreachable*, not when
-      credentials are rejected (avoids misleading SSL errors on HTTP-only PDUs).
-    """
-    http_port = int(port or _DEFAULT_WEB_ADMIN_PORT)
+    """Connect for batch commissioning — delegates to shared HTTP/HTTPS probe."""
     existing = PDURepo.get_by_ip(ip)
-
-    attempts: list[tuple[int, bool]] = []
+    prefer_https = None
     if existing and _parse_use_https(existing.get("web_admin_https")):
-        attempts.append((int(existing.get("web_admin_port") or 443), True))
-    attempts.append((http_port, False))
-
-    def _try_login(try_port: int, use_https: bool) -> tuple[str, PDUWebClient | None, Exception | None]:
-        _evict_pdu_client(ip, try_port, use_https)
-        client = PDUWebClient(ip, try_port, username, password, use_https=use_https)
-        with _pdu_clients_lock:
-            _pdu_clients[_pdu_client_key(ip, try_port, use_https)] = client
-
-        saw_auth_reject = False
-        last_exc: Exception | None = None
-        for attempt in range(5):
-            try:
-                if client.login():
-                    scheme = "https" if use_https else "http"
-                    print(f"[batch] Connected to {scheme}://{ip}:{try_port} as {username}")
-                    return "ok", client, None
-                saw_auth_reject = True
-                time.sleep(1.0 * (attempt + 1))
-            except _requests_lib.exceptions.SSLError as e:
-                try:
-                    client.logout()
-                except Exception:
-                    pass
-                return "ssl", None, e
-            except (_requests_lib.exceptions.ConnectionError, _requests_lib.exceptions.Timeout) as e:
-                last_exc = e
-                time.sleep(1.0 * (attempt + 1))
-            except Exception as e:
-                last_exc = e
-                time.sleep(1.0 * (attempt + 1))
-
-        try:
-            client.logout()
-        except Exception:
-            pass
-        if saw_auth_reject and last_exc is None:
-            return "auth", None, None
-        return "unreachable", None, last_exc
-
-    http_status: str | None = None
-    http_exc: Exception | None = None
-    last_exc: Exception | None = None
-
-    for try_port, use_https in attempts:
-        status, client, exc = _try_login(try_port, use_https)
-        if status == "ok" and client is not None:
-            return client, try_port, use_https
-        if exc is not None:
-            last_exc = exc
-        if not use_https:
-            http_status = status
-            http_exc = exc
-
-    # Only probe HTTPS when HTTP could not be reached (e.g. PDU already HTTPS-only).
-    if http_status == "unreachable" and not any(h for _, h in attempts if h):
-        status, client, exc = _try_login(443, True)
-        if status == "ok" and client is not None:
-            return client, 443, True
-        if exc is not None:
-            last_exc = exc
-
-    if http_status == "auth":
+        prefer_https = True
+    try:
+        return _connect_pdu_admin_probe(
+            ip, username, password, port=port, prefer_https=prefer_https
+        )
+    except ConnectionError as e:
+        if creds_from_db:
+            raise ConnectionError(
+                f"{e} — stored credentials may be stale; try Remote PDU or reset web credentials"
+            ) from e
         existing = PDURepo.get_by_ip(ip)
         if existing and _parse_use_https(existing.get("web_admin_https")):
-            hint = (
-                f"PDU is already on HTTPS (port {existing.get('web_admin_port') or 443}) — "
-                "verify login via Remote PDU with HTTPS enabled"
-            )
-        elif creds_from_db:
-            hint = "stored credentials were rejected — verify via Remote PDU or update web credentials"
-        else:
-            hint = "check Current PDU Password"
-        raise ConnectionError(
-            f"PDU login failed for {username} at http://{ip}:{http_port} — {hint}"
-        )
-
-    tried = ", ".join(
-        f"{'https' if h else 'http'}://{ip}:{p}" for p, h in attempts
-    )
-    if http_status == "unreachable":
-        tried += f", https://{ip}:443"
-    raise ConnectionError(
-        last_exc or f"PDU login failed for {username} — tried {tried}"
-    )
+            raise ConnectionError(
+                f"{e} — PDU may still be on HTTP despite DB HTTPS flag; "
+                "try Remote PDU with HTTP port 80"
+            ) from e
+        raise
 
 
 @app.route("/api/pdu-admin/connect", methods=["POST"])
@@ -2239,15 +2267,16 @@ def pdu_admin_connect():
         if not host:
             return jsonify({"error": "host is required"}), 400
 
-        client = _get_pdu_client(host, port, username, password, use_https=use_https)
-        # Use get_all_settings() which internally acquires the lock and
-        # ensures a valid session – avoids racing with the background poller.
+        prefer_https = True if use_https else (False if data.get("use_https") is not None else None)
+        client, port, use_https = _connect_pdu_admin_probe(
+            host, username, password, port=port, prefer_https=prefer_https
+        )
         try:
             settings = client.get_all_settings()
         except ConnectionError:
             return jsonify({"error": "Login failed — check credentials"}), 401
 
-        return jsonify({"success": True, **settings})
+        return jsonify({"success": True, "web_port": port, "use_https": use_https, **settings})
     except _requests_lib.exceptions.ConnectionError:
         return jsonify({"error": f"Cannot reach PDU at {host}:{port}"}), 502
     except Exception as e:
@@ -2872,6 +2901,19 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                         current_ip, web_port, admin_user, admin_pass, creds_from_db=creds_from_db
                     )
 
+                    if web_access_enabled and not connect_https:
+                        try:
+                            wa_cfg = client.get_web_access_config()
+                            if str(wa_cfg.get("https_http", "0")) == "1":
+                                print(f"[batch] {current_ip} already configured for HTTPS — skipping web_access apply")
+                                web_access_enabled = False
+                                pdu_template.pop("web_access", None)
+                                post_web_port = int(wa_cfg.get("https_port") or 443)
+                                post_use_https = True
+                                needs_reboot = bool(pdu_template.get("network"))
+                        except Exception:
+                            pass
+
                     if web_access_enabled and connect_https:
                         print(f"[batch] {current_ip} already on HTTPS — skipping web_access apply")
                         web_access_enabled = False
@@ -2887,40 +2929,62 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                         with _batch_lock:
                             _BATCH_JOBS[job_id]["results"][pdu_key] = status
 
-                        verify_port = post_web_port if web_access_enabled else connect_port
-                        online = False
-                        deadline = time.time() + 90
-                        while time.time() < deadline:
-                            time.sleep(5)
-                            try:
-                                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                                sock.settimeout(3)
-                                if sock.connect_ex((new_ip, verify_port)) == 0:
-                                    online = True
-                                    sock.close()
-                                    break
-                                sock.close()
-                            except Exception:
-                                pass
-
-                        if not online:
-                            status["step"] = "reboot_timeout"
-                            status["error"] = f"PDU did not come back at {new_ip}:{verify_port} within 90s"
-                            with _batch_lock:
-                                _BATCH_JOBS[job_id]["results"][pdu_key] = status
-                                _BATCH_JOBS[job_id]["completed"] += 1
-                            continue
-
                         if web_access_enabled:
-                            _evict_pdu_client(current_ip, web_port, False)
-                            verify_client = PDUWebClient(
-                                new_ip, post_web_port, effective_user, effective_pass, use_https=post_use_https
+                            verify_client, verify_port, verified_https = _wait_for_pdu_after_reboot(
+                                new_ip,
+                                effective_user,
+                                effective_pass,
+                                timeout=120,
+                                prefer_https=True,
+                                https_port=post_web_port,
+                                http_port=int(web_port or 80),
                             )
-                            if not verify_client.login():
+                            if not verify_client:
                                 status["step"] = "verify_https_failed"
                                 status["error"] = (
-                                    f"PDU rebooted but HTTPS login failed at {new_ip}:{post_web_port}"
+                                    f"PDU did not respond after reboot at {new_ip} "
+                                    f"(waited 120s for HTTPS on port {post_web_port})"
                                 )
+                                with _batch_lock:
+                                    _BATCH_JOBS[job_id]["results"][pdu_key] = status
+                                    _BATCH_JOBS[job_id]["completed"] += 1
+                                continue
+                            if not verified_https:
+                                status["step"] = "verify_https_failed"
+                                status["error"] = (
+                                    f"PDU rebooted but HTTPS is not active at {new_ip} — "
+                                    "still answering on HTTP; check PDU web access settings"
+                                )
+                                with _batch_lock:
+                                    _BATCH_JOBS[job_id]["results"][pdu_key] = status
+                                    _BATCH_JOBS[job_id]["completed"] += 1
+                                continue
+                            connect_port, connect_https = verify_port, verified_https
+                            post_web_port, post_use_https = verify_port, verified_https
+                            try:
+                                verify_client.logout()
+                            except Exception:
+                                pass
+                        else:
+                            verify_port = connect_port
+                            online = False
+                            deadline = time.time() + 90
+                            while time.time() < deadline:
+                                time.sleep(5)
+                                try:
+                                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                                    sock.settimeout(3)
+                                    if sock.connect_ex((new_ip, verify_port)) == 0:
+                                        online = True
+                                        sock.close()
+                                        break
+                                    sock.close()
+                                except Exception:
+                                    pass
+
+                            if not online:
+                                status["step"] = "reboot_timeout"
+                                status["error"] = f"PDU did not come back at {new_ip}:{verify_port} within 90s"
                                 with _batch_lock:
                                     _BATCH_JOBS[job_id]["results"][pdu_key] = status
                                     _BATCH_JOBS[job_id]["completed"] += 1

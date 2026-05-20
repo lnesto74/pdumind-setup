@@ -84,18 +84,26 @@ class PDUWebClient:
                 sha1_pass.encode(), nonce.encode(), hashlib.sha1
             ).hexdigest()
 
-            resp = self._session.post(
-                f"{self.base_url}/login.cgi",
-                data={
-                    "ip": self.username,
-                    "port": hmac_val,
-                    "radom": nonce,
-                    "login": "Log On",
-                },
-                timeout=self.timeout,
-                allow_redirects=False,
-                verify=self._ssl_verify(),
-            )
+            try:
+                resp = self._session.post(
+                    f"{self.base_url}/login.cgi",
+                    data={
+                        "ip": self.username,
+                        "port": hmac_val,
+                        "radom": nonce,
+                        "login": "Log On",
+                    },
+                    timeout=self.timeout,
+                    allow_redirects=False,
+                    verify=self._ssl_verify(),
+                )
+            except requests.exceptions.SSLError:
+                self._logged_in = False
+                return False
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+                self._logged_in = False
+                return False
+
             if resp.status_code == 200 and "home0.html" in resp.text:
                 self._logged_in = True
                 self._login_time = _time.time()

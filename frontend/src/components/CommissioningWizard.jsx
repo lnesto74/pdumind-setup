@@ -551,7 +551,6 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
     setRemoteSettings(null);
     try {
       const port = parseInt(remotePort) || 80;
-      const useHttps = remoteUseHttps || port === 443;
       const res = await fetch(`${API_BASE}/api/pdu-admin/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -560,13 +559,15 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
           port,
           username: remoteUser,
           password: remotePass,
-          use_https: useHttps ? 1 : 0,
+          ...(remoteUseHttps ? { use_https: 1 } : {}),
         }),
       });
       const data = await res.json();
       if (data.success) {
         setIsRemoteMode(true);
         setRemoteSettings(data);
+        if (data.web_port) setRemotePort(String(data.web_port));
+        if (data.use_https !== undefined) setRemoteUseHttps(!!data.use_https);
         setDetectedDevice({
           ip: data.device?.ip || remoteHost,
           name: data.device?.name || 'PDU',
