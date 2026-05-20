@@ -596,6 +596,12 @@ def _poll_remote_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str
             cached = MULTI_PDU_RESULTS.get(ip, {})
         return ip, cached, {}
 
+    if _is_batch_commission_active(ip):
+        print(f"[poll_remote] {ip} skipped — batch commissioning active")
+        with MULTI_PDU_LOCK:
+            cached = MULTI_PDU_RESULTS.get(ip, {})
+        return ip, cached, {}
+
     results = {}
     errors = {}
 
@@ -2457,6 +2463,24 @@ def pdu_admin_set_web_access(host: str):
 
 _BATCH_JOBS: Dict[str, Dict[str, Any]] = {}  # job_id -> job state
 _batch_lock = Lock()
+# IPs currently being batch-commissioned — poller must not login to these PDUs.
+_BATCH_ACTIVE_IPS: set[str] = set()
+_BATCH_ACTIVE_IPS_LOCK = Lock()
+
+
+def _batch_hold_ip(ip: str) -> None:
+    with _BATCH_ACTIVE_IPS_LOCK:
+        _BATCH_ACTIVE_IPS.add(ip)
+
+
+def _batch_release_ip(ip: str) -> None:
+    with _BATCH_ACTIVE_IPS_LOCK:
+        _BATCH_ACTIVE_IPS.discard(ip)
+
+
+def _is_batch_commission_active(ip: str) -> bool:
+    with _BATCH_ACTIVE_IPS_LOCK:
+        return ip in _BATCH_ACTIVE_IPS
 
 
 def _resolve_hostname_pattern(pattern: str, idx: int, ip: str, mac: str) -> str:
@@ -2681,63 +2705,64 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
             admin_pass = _coalesce_credential(template.get("current_credentials", {}).get("password"))
             effective_user = (new_admin_user if user_wants_rename else cur_cred_user)
             effective_pass = new_admin_pass or admin_pass
+            needs_reboot = bool(pdu_template.get("network")) or web_access_enabled
+
+            # Block poller/settings from stealing this PDU's single web session.
+            _batch_hold_ip(current_ip)
+            hold_pdu_admin(current_ip, web_port, False)
             client = _get_pdu_client(current_ip, web_port, admin_user, admin_pass)
 
-            # Apply template
-            report = client.apply_batch_template(pdu_template)
-            status["sections"] = report
+            try:
+                # Apply + optional reboot under one exclusive lock (critical for HTTPS).
+                report = client.apply_batch_template(pdu_template, reboot_after=needs_reboot)
+                status["sections"] = report
 
-            # Reboot to apply network or web-access changes
-            needs_reboot = bool(pdu_template.get("network")) or web_access_enabled
-            if needs_reboot:
-                status["step"] = "rebooting"
-                with _batch_lock:
-                    _BATCH_JOBS[job_id]["results"][pdu_key] = status
-                client.reboot()
-
-                # Wait for PDU at new IP / web port
-                status["step"] = "verifying"
-                with _batch_lock:
-                    _BATCH_JOBS[job_id]["results"][pdu_key] = status
-
-                verify_port = post_web_port if web_access_enabled else web_port
-                online = False
-                deadline = time.time() + 90
-                while time.time() < deadline:
-                    time.sleep(5)
-                    try:
-                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        sock.settimeout(3)
-                        if sock.connect_ex((new_ip, verify_port)) == 0:
-                            online = True
-                            sock.close()
-                            break
-                        sock.close()
-                    except Exception:
-                        pass
-
-                if not online:
-                    status["step"] = "reboot_timeout"
-                    status["error"] = f"PDU did not come back at {new_ip}:{verify_port} within 90s"
+                if needs_reboot:
+                    status["step"] = "verifying"
                     with _batch_lock:
                         _BATCH_JOBS[job_id]["results"][pdu_key] = status
-                        _BATCH_JOBS[job_id]["completed"] += 1
-                    continue
 
-                if web_access_enabled:
-                    _evict_pdu_client(current_ip, web_port, False)
-                    verify_client = PDUWebClient(
-                        new_ip, post_web_port, effective_user, effective_pass, use_https=post_use_https
-                    )
-                    if not verify_client.login():
-                        status["step"] = "verify_https_failed"
-                        status["error"] = (
-                            f"PDU rebooted but HTTPS login failed at {new_ip}:{post_web_port}"
-                        )
+                    verify_port = post_web_port if web_access_enabled else web_port
+                    online = False
+                    deadline = time.time() + 90
+                    while time.time() < deadline:
+                        time.sleep(5)
+                        try:
+                            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                            sock.settimeout(3)
+                            if sock.connect_ex((new_ip, verify_port)) == 0:
+                                online = True
+                                sock.close()
+                                break
+                            sock.close()
+                        except Exception:
+                            pass
+
+                    if not online:
+                        status["step"] = "reboot_timeout"
+                        status["error"] = f"PDU did not come back at {new_ip}:{verify_port} within 90s"
                         with _batch_lock:
                             _BATCH_JOBS[job_id]["results"][pdu_key] = status
                             _BATCH_JOBS[job_id]["completed"] += 1
                         continue
+
+                    if web_access_enabled:
+                        _evict_pdu_client(current_ip, web_port, False)
+                        verify_client = PDUWebClient(
+                            new_ip, post_web_port, effective_user, effective_pass, use_https=post_use_https
+                        )
+                        if not verify_client.login():
+                            status["step"] = "verify_https_failed"
+                            status["error"] = (
+                                f"PDU rebooted but HTTPS login failed at {new_ip}:{post_web_port}"
+                            )
+                            with _batch_lock:
+                                _BATCH_JOBS[job_id]["results"][pdu_key] = status
+                                _BATCH_JOBS[job_id]["completed"] += 1
+                            continue
+            finally:
+                release_pdu_admin(current_ip, web_port, False)
+                _batch_release_ip(current_ip)
 
             # Commission into database
             status["step"] = "commissioning"

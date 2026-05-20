@@ -159,18 +159,23 @@ class PDUWebClient:
         """Trigger a device reboot.  Returns True if the CGI responded (the
         PDU will go offline for 30-60 s while it restarts)."""
         with self._lock:
+            return self._reboot_in_session()
+
+    def _reboot_in_session(self) -> bool:
+        """Reboot using the active session — avoids re-login after long applies."""
+        if not self._logged_in:
             self._ensure_session()
-            try:
-                resp = self._session.get(
-                    f"{self.base_url}/reboot.cgi",
-                    timeout=self.timeout,
-                    verify=self._ssl_verify(),
-                )
-                self._logged_in = False
-                return resp.status_code == 200
-            except requests.exceptions.ConnectionError:
-                self._logged_in = False
-                return True  # PDU already rebooting
+        try:
+            resp = self._session.get(
+                f"{self.base_url}/reboot.cgi",
+                timeout=self.timeout,
+                verify=self._ssl_verify(),
+            )
+            self._logged_in = False
+            return resp.status_code == 200
+        except requests.exceptions.ConnectionError:
+            self._logged_in = False
+            return True  # PDU already rebooting
 
     def wait_online(self, timeout: int = 90, poll_interval: int = 5) -> bool:
         """Block until the PDU responds to a login, or *timeout* seconds
@@ -815,9 +820,30 @@ class PDUWebClient:
     # Batch apply: push a full template in one go
     # ------------------------------------------------------------------
 
-    def apply_batch_template(self, template: Dict[str, Any]) -> Dict[str, Any]:
-        """Apply a commissioning template: network, system, users, SNMP, NTP.
-        Returns a report dict with per-section success/failure."""
+    def apply_batch_template(
+        self, template: Dict[str, Any], *, reboot_after: bool = False
+    ) -> Dict[str, Any]:
+        """Apply a commissioning template under one exclusive session.
+
+        Holds the client lock for the entire apply so the background poller
+        cannot steal the PDU's single web-admin session mid-template.  When
+        *reboot_after* is True, reboots immediately after apply (required for
+        HTTPS / network changes) while the session is still open.
+        """
+        with self._lock:
+            prev_ttl = self._session_ttl
+            self._session_ttl = 300
+            try:
+                report = self._apply_batch_template_body(template)
+                if reboot_after:
+                    ok = self._reboot_in_session()
+                    report["_reboot"] = {"success": ok}
+                return report
+            finally:
+                self._session_ttl = prev_ttl
+
+    def _apply_batch_template_body(self, template: Dict[str, Any]) -> Dict[str, Any]:
+        """Inner batch apply — caller must hold self._lock."""
         report: Dict[str, Any] = {}
 
         # 1. DHCP → Static if needed
