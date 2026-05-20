@@ -2339,6 +2339,14 @@ def pdu_admin_get_settings(host: str):
         return jsonify({"error": str(e)}), 500
 
 
+def _trigger_pdu_reboot(client: PDUWebClient, host: str = "") -> bool:
+    """Reboot a PDU — same code path as Apply & Reboot in PDU Settings / Remote PDU."""
+    label = host or client.host
+    ok = client.reboot()
+    print(f"[pdu] Apply & Reboot triggered for {label} -> {'OK' if ok else 'FAILED'}")
+    return ok
+
+
 @app.route("/api/pdu-admin/<host>/settings/network", methods=["POST"])
 def pdu_admin_set_network(host: str):
     """Change IPv4 settings on a PDU.  Optionally reboots the device so the
@@ -2367,7 +2375,8 @@ def pdu_admin_set_network(host: str):
 
         need_reboot = data.get("reboot", False)
         if need_reboot:
-            client.reboot()
+            if not _trigger_pdu_reboot(client, host):
+                return jsonify({"error": "Settings saved but reboot failed"}), 500
             return jsonify({
                 "success": True,
                 "rebooting": True,
@@ -2395,7 +2404,8 @@ def pdu_admin_reboot(host: str):
         wait = data.get("wait", False)
 
         client = _get_pdu_client(host, port, username, password, use_https=use_https)
-        client.reboot()
+        if not _trigger_pdu_reboot(client, host):
+            return jsonify({"error": "Reboot failed"}), 500
 
         if wait:
             online = client.wait_online(timeout=90)
@@ -2617,7 +2627,8 @@ def pdu_admin_set_web_access(host: str):
         target_port, target_https = _resolve_web_access_target(data, port)
         need_reboot = data.get("reboot", True)
         if need_reboot:
-            client.reboot()
+            if not _trigger_pdu_reboot(client, host):
+                return jsonify({"error": "Settings saved but reboot failed"}), 500
             return jsonify({
                 "success": True,
                 "rebooting": True,
@@ -2926,14 +2937,11 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                         post_web_port, post_use_https = connect_port, True
                         needs_reboot = bool(pdu_template.get("network"))
 
-                    report = client.apply_batch_template(pdu_template, reboot_after=needs_reboot)
+                    report = client.apply_batch_template(pdu_template, reboot_after=False)
                     status["sections"] = report
-                    reboot_ok = report.get("_reboot", {}).get("success", False)
+                    reboot_ok = False
                     if needs_reboot:
-                        print(
-                            f"[batch] {current_ip} reboot requested — "
-                            f"{'OK' if reboot_ok else 'FAILED (no buzz expected)'}"
-                        )
+                        reboot_ok = _trigger_pdu_reboot(client, current_ip)
                         status["rebooted"] = reboot_ok
                     else:
                         print(f"[batch] {current_ip} config applied — no reboot needed")

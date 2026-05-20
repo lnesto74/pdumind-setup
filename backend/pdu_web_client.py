@@ -844,9 +844,9 @@ class PDUWebClient:
         """Apply a commissioning template under one exclusive session.
 
         Holds the client lock for the entire apply so the background poller
-        cannot steal the PDU's single web-admin session mid-template.  When
-        *reboot_after* is True, reboots immediately after apply (required for
-        HTTPS / network changes) while the session is still open.
+        cannot steal the PDU's single web-admin session mid-template.
+        Call ``reboot()`` after apply when a reboot is required — same as
+        Apply & Reboot in PDU Settings / Remote PDU commissioning.
         """
         with self._lock:
             prev_ttl = self._session_ttl
@@ -854,7 +854,7 @@ class PDUWebClient:
             try:
                 report = self._apply_batch_template_body(template)
                 if reboot_after:
-                    ok = self._reboot_in_session()
+                    ok = self.reboot()
                     report["_reboot"] = {"success": ok}
                 return report
             finally:
