@@ -2304,6 +2304,58 @@ _BATCH_JOBS: Dict[str, Dict[str, Any]] = {}  # job_id -> job state
 _batch_lock = Lock()
 
 
+def _resolve_hostname_pattern(pattern: str, idx: int, ip: str, mac: str) -> str:
+    """Resolve hostname/device-name placeholders for a specific PDU index.
+
+    Supported placeholders:
+      {seq}    legacy 3-digit zero-padded sequence, starts at 1: 001, 002, ...
+      {idx}    zero-based index: 0, 1, 2, ...
+      {ip}     full IP address
+      {mac}    last 6 chars of MAC (no separators)
+      {N}      start at N, padded to width(N): {10} -> 10, 11, 12, ...
+      {N-M}    start at N, padded to max(width(N), width(M)): {10-17} -> 10..17.
+               M is informational; actual end is determined by selected count.
+               Leading zeros in N or M are preserved as padding width.
+    """
+    import re as _re
+
+    if not pattern:
+        return ""
+
+    def _numeric_repl(match: "_re.Match[str]") -> str:
+        start_token = match.group(1)
+        end_token = match.group(2)
+        start = int(start_token)
+        if end_token is not None:
+            width = max(len(start_token), len(end_token))
+        else:
+            width = len(start_token)
+        return str(start + idx).zfill(width)
+
+    result = _re.sub(r"\{(\d+)(?:-(\d+))?\}", _numeric_repl, pattern)
+    result = result.replace("{seq}", str(idx + 1).zfill(3))
+    result = result.replace("{idx}", str(idx))
+    result = result.replace("{ip}", ip or "")
+    mac_clean = (mac or "").replace(":", "").replace("-", "").replace(".", "")
+    result = result.replace("{mac}", mac_clean[-6:] if mac_clean else "")
+    return result
+
+
+def _sort_pdus_by_ip(pdu_list: list) -> list:
+    """Stable sort a list of PDU dicts by IP address (numeric octet comparison).
+    Entries without a valid IPv4 address are moved to the end, preserving relative order.
+    """
+    import ipaddress
+
+    def _key(p):
+        try:
+            return (0, int(ipaddress.IPv4Address(str(p.get("ip", "")).strip())))
+        except Exception:
+            return (1, 0)
+
+    return sorted(pdu_list, key=_key)
+
+
 @app.route("/api/batch/commission", methods=["POST"])
 def batch_commission():
     """Start a batch commissioning job. Accepts a template and a list of PDUs."""
@@ -2361,8 +2413,24 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
     """Execute batch commissioning in background thread."""
     import socket
 
-    ip_start = template.get("network", {}).get("ip_start", "")
+    # Decide whether to sort by IP before assigning sequence numbers.
+    # Frontend can opt out with template["ordering"] == "manual" to keep its
+    # explicit order (e.g. user drag-reordered in the preview screen).
+    ordering = (template.get("ordering") or "ip").lower()
+    if ordering == "ip":
+        pdu_list = _sort_pdus_by_ip(pdu_list)
+
+    # Configuration flags from the template
+    sys_template = template.get("system") or {}
+    sync_device_name = bool(sys_template.get("sync_device_name", True))
+
+    # Network reconfiguration is only triggered when the user explicitly fills
+    # the Starting IP. Otherwise we keep whatever the network admin assigned
+    # (no IP/mask/gateway/DNS push, and crucially no reboot).
+    net_template = template.get("network") or {}
+    ip_start = (net_template.get("ip_start") or "").strip()
     ip_parts = ip_start.split(".") if ip_start else []
+    network_change_requested = len(ip_parts) == 4
 
     for idx, pdu_info in enumerate(pdu_list):
         current_ip = pdu_info.get("ip", "")
@@ -2384,31 +2452,37 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
             _BATCH_JOBS[job_id]["results"][pdu_key] = status
 
         try:
-            # Calculate the target IP for this PDU
-            new_ip = current_ip
-            if len(ip_parts) == 4:
+            # Calculate the target IP for this PDU (only changes if explicitly requested).
+            if network_change_requested:
                 new_ip = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}.{int(ip_parts[3]) + idx}"
+            else:
+                new_ip = current_ip
             status["new_ip"] = new_ip
 
             # Build per-PDU template with resolved IP
             pdu_template = {}
-            if template.get("network"):
+            if network_change_requested:
                 pdu_template["network"] = {
-                    **template["network"],
+                    **net_template,
                     "ip": new_ip,
                     "dhcp": "OFF",
                 }
-            if template.get("system"):
-                sys_cfg = dict(template["system"])
+            if sys_template:
+                sys_cfg = {k: v for k, v in sys_template.items() if k != "sync_device_name"}
                 hostname_pattern = sys_cfg.get("router_hostname", "")
+                resolved_hostname = _resolve_hostname_pattern(hostname_pattern, idx, new_ip, mac)
                 if hostname_pattern:
-                    sys_cfg["router_hostname"] = (
-                        hostname_pattern
-                        .replace("{seq}", str(idx + 1).zfill(3))
-                        .replace("{ip}", new_ip)
-                        .replace("{mac}", mac[-6:] if mac else "")
-                        .replace("{idx}", str(idx))
-                    )
+                    sys_cfg["router_hostname"] = resolved_hostname
+                # When the user asks the device name to mirror the hostname,
+                # resolve the same pattern (so each PDU gets a unique name).
+                if sync_device_name and hostname_pattern:
+                    sys_cfg["device_name"] = resolved_hostname
+                else:
+                    name_pattern = sys_cfg.get("device_name", "")
+                    if name_pattern:
+                        sys_cfg["device_name"] = _resolve_hostname_pattern(
+                            name_pattern, idx, new_ip, mac
+                        )
                 pdu_template["system"] = sys_cfg
             if template.get("users"):
                 pdu_template["users"] = template["users"]

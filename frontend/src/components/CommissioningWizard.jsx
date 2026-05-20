@@ -9,6 +9,50 @@ const STEPS = [
   { id: 'confirm', label: 'Confirm', icon: 'check_circle' },
 ];
 
+// Resolve a hostname/device-name pattern for a specific PDU index. Mirrors
+// the backend implementation in app.py:_resolve_hostname_pattern so the
+// preview shown in the UI is byte-for-byte what the backend will apply.
+//
+// Supported placeholders:
+//   {seq}    3-digit zero-padded sequence starting at 1 (001, 002, ...)
+//   {idx}    zero-based index (0, 1, 2, ...)
+//   {ip}     assigned IP address (full)
+//   {mac}    last 6 chars of the MAC (any separators stripped)
+//   {N}      start at N, padded to width(N): {10} -> 10, 11, 12, ...
+//   {N-M}    start at N, padded to max(width(N), width(M)): {10-17} -> 10..17
+//            M is informational; actual end depends on selected PDU count.
+//            Leading zeros in N/M are preserved as padding width.
+function resolveHostnamePattern(pattern, idx, ip, mac) {
+  if (!pattern) return '';
+  let result = pattern.replace(/\{(\d+)(?:-(\d+))?\}/g, (_match, startTok, endTok) => {
+    const start = parseInt(startTok, 10);
+    const width = endTok ? Math.max(startTok.length, endTok.length) : startTok.length;
+    return String(start + idx).padStart(width, '0');
+  });
+  result = result.replace('{seq}', String(idx + 1).padStart(3, '0'));
+  result = result.replace('{idx}', String(idx));
+  result = result.replace('{ip}', ip || '');
+  const macClean = (mac || '').replace(/[:.\-]/g, '');
+  result = result.replace('{mac}', macClean ? macClean.slice(-6) : '');
+  return result;
+}
+
+// Compare two IPv4 addresses as 32-bit integers. Invalid IPs sort to the end.
+function compareIp(a, b) {
+  const toInt = (ip) => {
+    const parts = String(ip || '').split('.');
+    if (parts.length !== 4) return Number.MAX_SAFE_INTEGER;
+    let n = 0;
+    for (const p of parts) {
+      const v = parseInt(p, 10);
+      if (Number.isNaN(v) || v < 0 || v > 255) return Number.MAX_SAFE_INTEGER;
+      n = n * 256 + v;
+    }
+    return n;
+  };
+  return toInt(a) - toInt(b);
+}
+
 const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
   const [step, setStep] = useState(0);
   const [error, setError] = useState(null);
@@ -59,7 +103,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
   const [batchSelected, setBatchSelected] = useState(new Set());
   const [batchTemplate, setBatchTemplate] = useState({
     network: { ip_start: '', mask: '255.255.255.0', gateway: '', dns1: '', dns2: '' },
-    system: { device_name: '', router_hostname: 'PDU-{seq}' },
+    system: { device_name: '', router_hostname: 'PDU-{seq}', sync_device_name: true },
     users: { admin_username: 'admin', admin_password: '' },
     snmp: { read_community: 'public', write_community: 'private', snmpv1: true, snmpv2: true, trap_ip: '' },
     ntp: { sntp_server: 'pool.ntp.org', timezone: '81' },
@@ -67,6 +111,9 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
   });
   const [batchStep, setBatchStep] = useState(0); // 0=scan, 1=template, 2=deploy, 3=report, 4=rack-assign
   const [batchScanMethod, setBatchScanMethod] = useState('snmp'); // 'snmp' | 'http' — HTTP is for VPN/firewalled networks where UDP/161 is blocked
+  const [batchPreviewOpen, setBatchPreviewOpen] = useState(false); // shows the resolved-plan confirmation overlay before deploy
+  const [batchSortByIp, setBatchSortByIp] = useState(true); // sort selected PDUs by IP before assigning sequence numbers
+  const [batchOrder, setBatchOrder] = useState([]); // explicit IP order used in preview (overrides sort when user drags)
   const [batchJobId, setBatchJobId] = useState(null);
   const [batchProgress, setBatchProgress] = useState(null);
   const [batchRacks, setBatchRacks] = useState([]); // available racks for batch assignment
@@ -350,21 +397,57 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
     });
   };
 
+  // Compute the final ordered list of selected PDUs used by the preview
+  // and the actual deploy. Ordering rules:
+  //   1. If `batchOrder` is set (user opened the preview), use it verbatim —
+  //      this captures any manual drag-reorders.
+  //   2. Otherwise, sort selected PDUs by IP when `batchSortByIp` is true,
+  //      else fall back to scan-completion order.
+  const getOrderedBatchPdus = () => {
+    const selected = batchDevices.filter(d => batchSelected.has(d.ip));
+    if (batchOrder && batchOrder.length > 0) {
+      const byIp = Object.fromEntries(selected.map(d => [d.ip, d]));
+      const ordered = batchOrder.map(ip => byIp[ip]).filter(Boolean);
+      // Append any newly-selected PDUs that aren't yet in the explicit order.
+      const seen = new Set(ordered.map(d => d.ip));
+      for (const d of selected) if (!seen.has(d.ip)) ordered.push(d);
+      return ordered;
+    }
+    if (batchSortByIp) return [...selected].sort((a, b) => compareIp(a.ip, b.ip));
+    return selected;
+  };
+
+  // Open the preview overlay; initializes the explicit IP order from the
+  // current sort preference so the user can then drag items if needed.
+  const openBatchPreview = () => {
+    if (batchSelected.size === 0) { setError('Select at least one PDU'); return; }
+    const ordered = getOrderedBatchPdus();
+    setBatchOrder(ordered.map(d => d.ip));
+    setError(null);
+    setBatchPreviewOpen(true);
+  };
+
   const batchDeploy = async () => {
     if (batchSelected.size === 0) { setError('No PDUs selected'); return; }
     setLoading(true);
     setError(null);
-    const selectedPdus = batchDevices.filter(d => batchSelected.has(d.ip)).map(d => ({
+    const orderedPdus = getOrderedBatchPdus();
+    const selectedPdus = orderedPdus.map(d => ({
       ip: d.ip,
       mac: d.mac || '',
       web_admin_port: d.web_admin_port || 80,
       snmp_version: d.snmp_version || '1',
     }));
+    // Tell the backend the order in the payload is authoritative — we already
+    // sorted (or the user manually reordered) so the backend should not
+    // re-sort and risk shuffling the hostname↔IP pairing.
+    const templateForDeploy = { ...batchTemplate, ordering: 'manual' };
+    setBatchPreviewOpen(false);
     try {
       const res = await fetch(`${API_BASE}/api/batch/commission`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ template: batchTemplate, pdus: selectedPdus, hall_id: hallId })
+        body: JSON.stringify({ template: templateForDeploy, pdus: selectedPdus, hall_id: hallId })
       });
       const data = await res.json();
       if (data.success) {
@@ -626,7 +709,49 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
 
   const finalIp = useCustomIp ? customIp : suggestedIp;
 
+  // Build the resolved deploy plan for the preview overlay. Hostnames and
+  // device names are computed with the same logic the backend will use.
+  const buildBatchPreviewRows = () => {
+    const ordered = getOrderedBatchPdus();
+    const hostnamePat = batchTemplate.system?.router_hostname || '';
+    const namePat = batchTemplate.system?.device_name || '';
+    const syncDevice = batchTemplate.system?.sync_device_name !== false;
+    const ipStart = (batchTemplate.network?.ip_start || '').trim();
+    const ipParts = ipStart.split('.');
+    const networkChange = ipParts.length === 4 && ipParts.every(p => /^\d+$/.test(p));
+    return ordered.map((d, idx) => {
+      let assignedIp = d.ip;
+      if (networkChange) {
+        assignedIp = `${ipParts[0]}.${ipParts[1]}.${ipParts[2]}.${parseInt(ipParts[3], 10) + idx}`;
+      }
+      const hostname = resolveHostnamePattern(hostnamePat, idx, assignedIp, d.mac || '');
+      const deviceName = syncDevice
+        ? hostname
+        : resolveHostnamePattern(namePat, idx, assignedIp, d.mac || '');
+      return {
+        idx,
+        currentIp: d.ip,
+        assignedIp,
+        mac: d.mac || '',
+        hostname,
+        deviceName,
+        webPort: d.web_admin_port || 80,
+      };
+    });
+  };
+
+  // Move a row in the preview list (manual reordering before deploy).
+  const moveBatchRow = (fromIdx, toIdx) => {
+    setBatchOrder(prev => {
+      const next = [...prev];
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, moved);
+      return next;
+    });
+  };
+
   return (
+    <>
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-[#0d1526] rounded-2xl border border-[#233544] w-full max-w-3xl max-h-[85vh] overflow-hidden flex flex-col shadow-2xl shadow-cyan-500/10">
 
@@ -956,9 +1081,21 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         </button>
                       </div>
                       {/* Network */}
-                      <div className="p-3 rounded-lg bg-[#0B1120] border border-[#233544]">
-                        <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider mb-2 flex items-center gap-1">
-                          <span className="material-icons-outlined text-xs">lan</span> Network
+                      <div className={`p-3 rounded-lg border ${batchTemplate.network.ip_start ? 'bg-[#0B1120] border-[#233544]' : 'bg-[#0a1222] border-[#1f2a3a] opacity-90'}`}>
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider flex items-center gap-1">
+                            <span className="material-icons-outlined text-xs">lan</span> Network
+                            <span className="ml-2 text-[9px] text-slate-500 normal-case tracking-normal">(optional)</span>
+                          </p>
+                          {!batchTemplate.network.ip_start && (
+                            <span className="text-[9px] text-emerald-400 flex items-center gap-1">
+                              <span className="material-icons-outlined text-[10px]">check_circle</span>
+                              Keeping current IPs (no reboot)
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-slate-400 mb-2 leading-relaxed">
+                          Leave <span className="font-mono text-slate-300">Starting IP</span> empty to keep the IPs already assigned by your network administrator. Fill it in only if you want PDUMind to push new static IPs (will reboot each PDU).
                         </p>
                         <div className="grid grid-cols-2 gap-2">
                           <div>
@@ -966,7 +1103,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                             <input type="text" value={batchTemplate.network.ip_start}
                               onChange={e => setBatchTemplate(p => ({ ...p, network: { ...p.network, ip_start: e.target.value } }))}
                               className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
-                              placeholder="192.168.1.101" />
+                              placeholder="(empty = keep current IPs)" />
                             <p className="text-[9px] text-slate-600 mt-0.5">Auto-increments: .101, .102, .103...</p>
                           </div>
                           {['mask', 'gateway', 'dns1', 'dns2'].map(k => (
@@ -974,7 +1111,8 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                               <label className="text-[9px] text-slate-500 uppercase">{k === 'mask' ? 'Subnet Mask' : k === 'dns1' ? 'DNS 1' : k === 'dns2' ? 'DNS 2' : 'Gateway'}</label>
                               <input type="text" value={batchTemplate.network[k] || ''}
                                 onChange={e => setBatchTemplate(p => ({ ...p, network: { ...p.network, [k]: e.target.value } }))}
-                                className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]" />
+                                disabled={!batchTemplate.network.ip_start}
+                                className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF] disabled:opacity-40 disabled:cursor-not-allowed" />
                             </div>
                           ))}
                         </div>
@@ -984,28 +1122,46 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider mb-2 flex items-center gap-1">
                           <span className="material-icons-outlined text-xs">dns</span> System
                         </p>
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="text-[9px] text-slate-500 uppercase">Device Name</label>
-                            <input type="text" value={batchTemplate.system.device_name}
-                              onChange={e => setBatchTemplate(p => ({ ...p, system: { ...p.system, device_name: e.target.value } }))}
-                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]" />
-                          </div>
+                        <div className="space-y-2">
                           <div>
                             <label className="text-[9px] text-slate-500 uppercase">Hostname Pattern</label>
                             <input type="text" value={batchTemplate.system.router_hostname}
                               onChange={e => setBatchTemplate(p => ({ ...p, system: { ...p.system, router_hostname: e.target.value } }))}
                               className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
-                              placeholder="PDU-{seq}" />
+                              placeholder="SIN1-PDU-2NBS{10-17}-A" />
                             <div className="text-[9px] text-slate-600 mt-1 space-y-0.5">
                               <p className="text-slate-500 font-medium">Variables (auto-replaced per PDU):</p>
-                              <p><span className="text-[#00E5FF] font-mono">{'{seq}'}</span> — sequence number: 001, 002, 003...</p>
-                              <p><span className="text-[#00E5FF] font-mono">{'{ip}'}</span> — assigned IP address (e.g. 192.168.0.101)</p>
-                              <p><span className="text-[#00E5FF] font-mono">{'{mac}'}</span> — last 6 chars of MAC address</p>
+                              <p><span className="text-[#00E5FF] font-mono">{'{N}'}</span> — start at N (e.g. <span className="font-mono text-white">{'{10}'}</span> → 10, 11, 12...)</p>
+                              <p><span className="text-[#00E5FF] font-mono">{'{N-M}'}</span> — start at N, width from M (e.g. <span className="font-mono text-white">{'{10-17}'}</span> → 10, 11, 12... 17)</p>
+                              <p><span className="text-[#00E5FF] font-mono">{'{seq}'}</span> — 3-digit zero-padded sequence: 001, 002, 003...</p>
                               <p><span className="text-[#00E5FF] font-mono">{'{idx}'}</span> — zero-based index: 0, 1, 2...</p>
-                              <p className="text-slate-500 mt-0.5">Example: <span className="font-mono text-white">Agoda-{'{seq}'}</span> → Agoda-001, Agoda-002...</p>
+                              <p><span className="text-[#00E5FF] font-mono">{'{ip}'}</span> — assigned IP address</p>
+                              <p><span className="text-[#00E5FF] font-mono">{'{mac}'}</span> — last 6 chars of MAC</p>
+                              <p className="text-emerald-400 mt-1">
+                                <span className="material-icons-outlined text-[10px] mr-0.5">lightbulb</span>
+                                Example: <span className="font-mono text-white">SIN1-PDU-2NBS{'{10-17}'}-A</span>
+                                {' '}with PDUs at 10.106.76.206-213 →
+                                {' '}<span className="font-mono text-white">SIN1-PDU-2NBS10-A … SIN1-PDU-2NBS17-A</span>
+                              </p>
                             </div>
                           </div>
+                          <label className="flex items-center gap-2 cursor-pointer p-2 rounded bg-[#161E2E] border border-[#233544] hover:border-[#00E5FF]/50 transition-colors">
+                            <input type="checkbox"
+                              checked={batchTemplate.system.sync_device_name !== false}
+                              onChange={e => setBatchTemplate(p => ({ ...p, system: { ...p.system, sync_device_name: e.target.checked } }))}
+                              className="accent-[#00E5FF]" />
+                            <span className="text-[11px] text-white">Use hostname as device name</span>
+                            <span className="text-[9px] text-slate-500 ml-1">— each PDU's device name will mirror its resolved hostname</span>
+                          </label>
+                          {batchTemplate.system.sync_device_name === false && (
+                            <div>
+                              <label className="text-[9px] text-slate-500 uppercase">Device Name (or pattern)</label>
+                              <input type="text" value={batchTemplate.system.device_name}
+                                onChange={e => setBatchTemplate(p => ({ ...p, system: { ...p.system, device_name: e.target.value } }))}
+                                className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
+                                placeholder="Same placeholders as hostname pattern" />
+                            </div>
+                          )}
                         </div>
                       </div>
                       {/* Credentials */}
@@ -1077,11 +1233,11 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                           </div>
                         </div>
                       </div>
-                      {/* Deploy button */}
-                      <button onClick={batchDeploy} disabled={loading}
+                      {/* Preview button */}
+                      <button onClick={openBatchPreview} disabled={loading || batchSelected.size === 0}
                         className="w-full py-3 bg-emerald-500/20 border border-emerald-500/50 text-emerald-400 rounded-lg text-sm font-bold hover:bg-emerald-500/30 disabled:opacity-50 flex items-center justify-center gap-2">
-                        <span className="material-icons-outlined text-sm">rocket_launch</span>
-                        Deploy to {batchSelected.size} PDUs
+                        <span className="material-icons-outlined text-sm">visibility</span>
+                        Preview &amp; Commission {batchSelected.size} PDUs
                       </button>
                     </div>
                   )}
@@ -1935,6 +2091,165 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
         </div>}
       </div>
     </div>
+
+    {/* Batch Commission Preview & Confirmation overlay */}
+    {batchPreviewOpen && (
+      <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[60] flex items-center justify-center p-4">
+        <div className="bg-[#0B1120] border border-[#233544] rounded-xl shadow-2xl w-full max-w-5xl max-h-[92vh] flex flex-col">
+          {/* Header */}
+          <div className="flex items-center justify-between p-4 border-b border-[#233544]">
+            <div>
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                <span className="material-icons-outlined text-emerald-400">fact_check</span>
+                Review Batch Plan
+              </h3>
+              <p className="text-xs text-slate-400 mt-1">
+                {batchSelected.size} PDU{batchSelected.size === 1 ? '' : 's'} will be configured with the following resolved hostnames and settings. Drag rows to reorder.
+              </p>
+            </div>
+            <button onClick={() => setBatchPreviewOpen(false)}
+              className="text-slate-400 hover:text-white p-1 rounded transition-colors">
+              <span className="material-icons-outlined">close</span>
+            </button>
+          </div>
+
+          {/* Toolbar */}
+          <div className="px-4 py-2 border-b border-[#1a2638] flex items-center gap-3 text-[11px]">
+            <label className="flex items-center gap-1.5 cursor-pointer text-slate-300 hover:text-white">
+              <input type="checkbox" checked={batchSortByIp}
+                onChange={e => {
+                  setBatchSortByIp(e.target.checked);
+                  if (e.target.checked) {
+                    const sorted = [...getOrderedBatchPdus()].sort((a, b) => compareIp(a.ip, b.ip));
+                    setBatchOrder(sorted.map(d => d.ip));
+                  }
+                }}
+                className="accent-[#00E5FF]" />
+              Sort by IP
+            </label>
+            <button
+              onClick={() => {
+                const sorted = [...batchDevices.filter(d => batchSelected.has(d.ip))].sort((a, b) => compareIp(a.ip, b.ip));
+                setBatchOrder(sorted.map(d => d.ip));
+                setBatchSortByIp(true);
+              }}
+              className="text-[#00E5FF] hover:text-[#00E5FF]/80 flex items-center gap-1">
+              <span className="material-icons-outlined text-xs">refresh</span>
+              Reset Order
+            </button>
+            <div className="ml-auto text-slate-500">
+              Hostnames are resolved using <span className="font-mono text-[#00E5FF]">{batchTemplate.system?.router_hostname || '(empty)'}</span>
+            </div>
+          </div>
+
+          {/* Preview table */}
+          <div className="flex-1 overflow-auto">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-[#0a1222] border-b border-[#233544] text-slate-400 uppercase text-[9px] tracking-wider">
+                <tr>
+                  <th className="px-3 py-2 text-left w-10">#</th>
+                  <th className="px-3 py-2 text-center w-16">Move</th>
+                  <th className="px-3 py-2 text-left">IP Address</th>
+                  <th className="px-3 py-2 text-left">Hostname</th>
+                  <th className="px-3 py-2 text-left">Device Name</th>
+                  <th className="px-3 py-2 text-left">MAC</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(() => {
+                  const rows = buildBatchPreviewRows();
+                  if (rows.length === 0) {
+                    return (
+                      <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-500">No PDUs selected.</td></tr>
+                    );
+                  }
+                  return rows.map((row, i) => (
+                    <tr key={row.currentIp} className="border-b border-[#1a2638] hover:bg-[#0F1A2E] transition-colors">
+                      <td className="px-3 py-2 text-slate-500 font-mono">{i + 1}</td>
+                      <td className="px-3 py-2 text-center">
+                        <div className="inline-flex gap-0.5">
+                          <button
+                            disabled={i === 0}
+                            onClick={() => moveBatchRow(i, i - 1)}
+                            className="p-0.5 text-slate-500 hover:text-[#00E5FF] disabled:opacity-20 disabled:hover:text-slate-500"
+                            title="Move up">
+                            <span className="material-icons-outlined text-xs">arrow_upward</span>
+                          </button>
+                          <button
+                            disabled={i === rows.length - 1}
+                            onClick={() => moveBatchRow(i, i + 1)}
+                            className="p-0.5 text-slate-500 hover:text-[#00E5FF] disabled:opacity-20 disabled:hover:text-slate-500"
+                            title="Move down">
+                            <span className="material-icons-outlined text-xs">arrow_downward</span>
+                          </button>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 font-mono">
+                        <span className="text-white">{row.assignedIp}</span>
+                        {row.assignedIp !== row.currentIp && (
+                          <span className="ml-2 text-[10px] text-amber-300">
+                            was {row.currentIp}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 font-mono text-emerald-300">{row.hostname || <span className="text-slate-600">(empty)</span>}</td>
+                      <td className="px-3 py-2 font-mono text-cyan-300">{row.deviceName || <span className="text-slate-600">(empty)</span>}</td>
+                      <td className="px-3 py-2 font-mono text-slate-400">{row.mac || <span className="text-slate-600">—</span>}</td>
+                    </tr>
+                  ));
+                })()}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Settings summary */}
+          <div className="px-4 py-3 border-t border-[#233544] bg-[#0a1222]">
+            <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-2">Other settings applied to all PDUs</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
+              <div className="p-2 rounded bg-[#0B1120] border border-[#1a2638]">
+                <p className="text-slate-500 text-[9px] uppercase">Network IPs</p>
+                <p className={`font-mono ${batchTemplate.network?.ip_start ? 'text-amber-300' : 'text-emerald-300'}`}>
+                  {batchTemplate.network?.ip_start
+                    ? `Static, from ${batchTemplate.network.ip_start}`
+                    : 'Kept as-is (no reboot)'}
+                </p>
+              </div>
+              <div className="p-2 rounded bg-[#0B1120] border border-[#1a2638]">
+                <p className="text-slate-500 text-[9px] uppercase">SNMP</p>
+                <p className="font-mono text-white truncate">
+                  R:{batchTemplate.snmp?.read_community || '—'} / W:{batchTemplate.snmp?.write_community || '—'}
+                </p>
+              </div>
+              <div className="p-2 rounded bg-[#0B1120] border border-[#1a2638]">
+                <p className="text-slate-500 text-[9px] uppercase">NTP</p>
+                <p className="font-mono text-white truncate">{batchTemplate.ntp?.sntp_server || '—'}</p>
+              </div>
+              <div className="p-2 rounded bg-[#0B1120] border border-[#1a2638]">
+                <p className="text-slate-500 text-[9px] uppercase">Admin Password</p>
+                <p className="font-mono text-white">
+                  {batchTemplate.users?.admin_password ? '••••••••  (will be changed)' : 'Unchanged'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Footer actions */}
+          <div className="flex items-center justify-between p-4 border-t border-[#233544]">
+            <button onClick={() => setBatchPreviewOpen(false)}
+              className="px-4 py-2 text-slate-300 hover:text-white text-sm flex items-center gap-1.5">
+              <span className="material-icons-outlined text-sm">arrow_back</span>
+              Back to Template
+            </button>
+            <button onClick={batchDeploy} disabled={loading || batchSelected.size === 0}
+              className="px-5 py-2.5 bg-emerald-500/20 border border-emerald-500/50 hover:bg-emerald-500/30 disabled:opacity-50 text-emerald-300 rounded-lg font-bold text-sm flex items-center gap-2 transition-all">
+              <span className="material-icons-outlined text-sm">rocket_launch</span>
+              Confirm &amp; Commission {batchSelected.size} PDU{batchSelected.size === 1 ? '' : 's'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 };
 
