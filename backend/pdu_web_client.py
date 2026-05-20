@@ -62,6 +62,7 @@ class PDUWebClient:
         self._login_time: float = 0
         self._session_ttl = 15  # PDU times out after ~20 s; refresh at 15
         self._lock = threading.RLock()  # serialize all PDU interactions (reentrant)
+        self.last_login_error: str | None = None
 
     def _ssl_verify(self) -> bool:
         """PDUs ship with a default self-signed certificate when HTTPS is enabled."""
@@ -70,6 +71,41 @@ class PDUWebClient:
     # ------------------------------------------------------------------
     # Authentication
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _response_indicates_login_success(resp: requests.Response) -> bool:
+        body = resp.text or ""
+        location = (resp.headers.get("Location") or "").lower()
+        if resp.status_code == 200 and "home0.html" in body:
+            return True
+        if resp.status_code in (200, 302) and (
+            "home_upload.cgi" in body.lower()
+            or "home0.html" in body.lower()
+            or "home" in location
+            or (resp.status_code == 302 and location)
+        ):
+            return True
+        return False
+
+    def _finalize_login(self, resp: requests.Response) -> bool:
+        if self._response_indicates_login_success(resp):
+            self._logged_in = True
+            self._login_time = _time.time()
+            self.last_login_error = None
+            return True
+
+        body = resp.text or ""
+        location = resp.headers.get("Location") or ""
+        self.last_login_error = (
+            f"HTTP {resp.status_code}"
+            + (f", redirect={location!r}" if location else "")
+            + f", body[:160]={body[:160]!r}"
+        )
+        print(
+            f"[pdu-login] {self.base_url} rejected user={self.username!r} — {self.last_login_error}"
+        )
+        self._logged_in = False
+        return False
 
     def login(self) -> bool:
         with self._lock:
@@ -98,37 +134,36 @@ class PDUWebClient:
                     verify=self._ssl_verify(),
                 )
             except requests.exceptions.SSLError as exc:
-                print(f"[pdu-login] {self.base_url} SSL error: {exc}")
+                self.last_login_error = f"SSL error: {exc}"
+                print(f"[pdu-login] {self.base_url} {self.last_login_error}")
                 self._logged_in = False
                 return False
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
-                print(f"[pdu-login] {self.base_url} unreachable: {exc}")
+                self.last_login_error = f"Unreachable: {exc}"
+                print(f"[pdu-login] {self.base_url} {self.last_login_error}")
                 self._logged_in = False
                 return False
 
-            if resp.status_code == 200 and "home0.html" in resp.text:
-                self._logged_in = True
-                self._login_time = _time.time()
+            if self._finalize_login(resp):
                 return True
 
-            # Some firmware / HTTPS setups redirect or embed a different landing marker.
-            body = resp.text or ""
-            location = (resp.headers.get("Location") or "").lower()
-            if resp.status_code in (200, 302) and (
-                "home_upload.cgi" in body.lower()
-                or "home0.html" in body.lower()
-                or "home" in location
-                or (resp.status_code == 302 and location)
-            ):
-                self._logged_in = True
-                self._login_time = _time.time()
-                return True
-
-            if resp.status_code == 200:
-                print(
-                    f"[pdu-login] {self.base_url} rejected user={self.username!r} "
-                    f"(HTTP {resp.status_code}, body[:120]={body[:120]!r})"
-                )
+            # Some HTTPS firmware returns 302 — follow once to confirm session.
+            if resp.status_code in (301, 302, 303, 307, 308):
+                location = resp.headers.get("Location") or ""
+                if location and not location.startswith("http"):
+                    location = f"{self.base_url}/{location.lstrip('/')}"
+                if location:
+                    try:
+                        follow = self._session.get(
+                            location,
+                            timeout=self.timeout,
+                            verify=self._ssl_verify(),
+                        )
+                        if self._finalize_login(follow):
+                            return True
+                    except requests.exceptions.RequestException as exc:
+                        self.last_login_error = f"Redirect follow failed: {exc}"
+                        print(f"[pdu-login] {self.base_url} {self.last_login_error}")
 
             self._logged_in = False
             return False

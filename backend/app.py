@@ -623,83 +623,107 @@ def _poll_remote_pdu(
 
     last_err: Exception | None = None
     winning_plan: tuple[int, bool] | None = None
-    for poll_port, poll_https in poll_plans:
-        client = _get_pdu_client(host, poll_port, web_user, web_pass, use_https=poll_https)
-        if poll_port != web_port or poll_https != use_https:
-            scheme = "HTTPS" if poll_https else "HTTP"
-            print(f"[poll_remote] {ip} trying {scheme}:{poll_port} — DB has {'HTTPS' if use_https else 'HTTP'}:{web_port}")
+    winning_creds: tuple[str, str] | None = None
 
-        if not client._lock.acquire(blocking=False):
-            print(f"[poll_remote] {ip} skipped — client busy (settings/admin)")
-            with MULTI_PDU_LOCK:
-                cached = MULTI_PDU_RESULTS.get(ip, {})
-            return ip, cached, {}
+    cred_sets: list[tuple[str, str, str]] = [(web_user, web_pass, "db")]
+    if (web_user, web_pass) != ("admin", "admin"):
+        cred_sets.append(("admin", "admin", "factory"))
 
-        try:
-            tele = client.get_live_telemetry()
+    for cred_user, cred_pass, cred_src in cred_sets:
+        for poll_port, poll_https in poll_plans:
+            _evict_pdu_client(host, poll_port, poll_https)
+            client = _get_pdu_client(host, poll_port, cred_user, cred_pass, use_https=poll_https)
+            if poll_port != web_port or poll_https != use_https or cred_src != "db":
+                scheme = "HTTPS" if poll_https else "HTTP"
+                print(
+                    f"[poll_remote] {ip} trying {scheme}:{poll_port} "
+                    f"({cred_src} creds) — DB has {'HTTPS' if use_https else 'HTTP'}:{web_port}"
+                )
 
-            _skip = {"csrf", "breakers", "datetime", "alarm_flags",
-                     "l1_color", "l2_color", "l3_color", "name", "firmware"}
-            for key, val in tele.items():
-                if key in _skip or key.startswith("field_"):
-                    continue
-                results[key] = {"name": key, "oid": f"web:{key}", "value": str(val)}
+            if not client._lock.acquire(blocking=False):
+                print(f"[poll_remote] {ip} skipped — client busy (settings/admin)")
+                with MULTI_PDU_LOCK:
+                    cached = MULTI_PDU_RESULTS.get(ip, {})
+                return ip, cached, {}
 
-            _aliases = {
-                "MasterVoltageP1": "l1_voltage", "MasterCurrentP1": "l1_current",
-                "MasterPowerP1": "l1_active_power",
-                "MasterVoltageP2": "l2_voltage", "MasterVoltageP3": "l3_voltage",
-                "TotalCurrent": "neutral_current", "TotalPower": "total_active_power",
-                "TotalEnergy": "total_active_energy",
-            }
-            for alias, cgi_key in _aliases.items():
-                if cgi_key in tele:
-                    results[alias] = {"name": alias, "oid": f"web:{cgi_key}", "value": str(tele[cgi_key])}
+            try:
+                tele = client.get_live_telemetry()
 
-            for i, br in enumerate(tele.get("breakers", []), 1):
-                results[f"Output{i}Status"] = {
-                    "name": f"Output{i}Status", "oid": f"web:breaker_{i}",
-                    "value": br.get("status", "0"),
+                _skip = {"csrf", "breakers", "datetime", "alarm_flags",
+                         "l1_color", "l2_color", "l3_color", "name", "firmware"}
+                for key, val in tele.items():
+                    if key in _skip or key.startswith("field_"):
+                        continue
+                    results[key] = {"name": key, "oid": f"web:{key}", "value": str(val)}
+
+                _aliases = {
+                    "MasterVoltageP1": "l1_voltage", "MasterCurrentP1": "l1_current",
+                    "MasterPowerP1": "l1_active_power",
+                    "MasterVoltageP2": "l2_voltage", "MasterVoltageP3": "l3_voltage",
+                    "TotalCurrent": "neutral_current", "TotalPower": "total_active_power",
+                    "TotalEnergy": "total_active_energy",
                 }
+                for alias, cgi_key in _aliases.items():
+                    if cgi_key in tele:
+                        results[alias] = {"name": alias, "oid": f"web:{cgi_key}", "value": str(tele[cgi_key])}
 
-            import json
-            alarm_flags = tele.get("alarm_flags", [])
-            results["_alarm_flags"] = {
-                "name": "_alarm_flags", "oid": "web:alarm_flags",
-                "value": json.dumps(alarm_flags),
-            }
-            results["_alarm_count"] = {
-                "name": "_alarm_count", "oid": "web:alarm_count",
-                "value": str(len(alarm_flags)),
-            }
-            last_err = None
-            winning_plan = (poll_port, poll_https)
+                for i, br in enumerate(tele.get("breakers", []), 1):
+                    results[f"Output{i}Status"] = {
+                        "name": f"Output{i}Status", "oid": f"web:breaker_{i}",
+                        "value": br.get("status", "0"),
+                    }
+
+                import json
+                alarm_flags = tele.get("alarm_flags", [])
+                results["_alarm_flags"] = {
+                    "name": "_alarm_flags", "oid": "web:alarm_flags",
+                    "value": json.dumps(alarm_flags),
+                }
+                results["_alarm_count"] = {
+                    "name": "_alarm_count", "oid": "web:alarm_count",
+                    "value": str(len(alarm_flags)),
+                }
+                last_err = None
+                winning_plan = (poll_port, poll_https)
+                winning_creds = (cred_user, cred_pass)
+                break
+
+            except Exception as e:
+                last_err = e
+                errors["_remote"] = {"name": "_remote", "error": str(e)}
+                with MULTI_PDU_LOCK:
+                    results = MULTI_PDU_RESULTS.get(ip, {})
+                print(
+                    f"[poll_remote] {ip} error on {'HTTPS' if poll_https else 'HTTP'} "
+                    f"({cred_src} creds): {e}"
+                )
+            finally:
+                try:
+                    client.logout()
+                except Exception:
+                    pass
+                client._lock.release()
+
+        if winning_plan:
             break
 
-        except Exception as e:
-            last_err = e
-            errors["_remote"] = {"name": "_remote", "error": str(e)}
-            with MULTI_PDU_LOCK:
-                results = MULTI_PDU_RESULTS.get(ip, {})
-            print(f"[poll_remote] {ip} error on {'HTTPS' if poll_https else 'HTTP'}, returning cached: {e}")
-        finally:
-            try:
-                client.logout()
-            except Exception:
-                pass
-            client._lock.release()
-
+    db_updates: Dict[str, Any] = {}
     if winning_plan and (winning_plan[0] != web_port or winning_plan[1] != use_https):
         wp, wh = winning_plan
         print(f"[poll_remote] {ip} auto-corrected DB → {'https' if wh else 'http'}:{wp}")
-        PDURepo.upsert(
-            pdu["hall_id"],
-            ip,
-            {"web_admin_port": wp, "web_admin_https": wh},
-        )
+        db_updates["web_admin_port"] = wp
+        db_updates["web_admin_https"] = wh
+    if winning_creds and winning_creds != (web_user, web_pass):
+        cu, cp = winning_creds
+        print(f"[poll_remote] {ip} auto-corrected credentials → user={cu!r}")
+        db_updates["web_admin_user"] = cu
+        db_updates["web_admin_pass"] = cp
+    if db_updates:
+        PDURepo.upsert(pdu["hall_id"], ip, db_updates)
 
     if last_err is not None and not results:
-        if _allow_repair and _repair_pdu_web_credentials(pdu):
+        repaired, repair_msg = _repair_pdu_web_credentials(pdu)
+        if _allow_repair and repaired:
             fresh = PDURepo.get_by_ip(ip)
             if fresh:
                 return _poll_remote_pdu(fresh, _allow_repair=False)
@@ -2217,15 +2241,83 @@ def _probe_pdu_login(
     client = PDUWebClient(host, port, username, password, use_https=use_https)
     with _pdu_clients_lock:
         _pdu_clients[_pdu_client_key(host, port, use_https)] = client
+    last_err = "Login failed"
     for attempt in range(retries):
         if client.login():
             return client
+        last_err = client.last_login_error or last_err
         time.sleep(1.0 * (attempt + 1))
     try:
         client.logout()
     except Exception:
         pass
+    client.last_login_error = last_err
     return None
+
+
+def _diagnose_pdu_login(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    verify_telemetry: bool = True,
+) -> Dict[str, Any]:
+    """Try every common web-admin endpoint and return a per-attempt diagnostic report."""
+    _evict_all_pdu_clients_for_host(host)
+    user = (username or "").strip() or "admin"
+    pwd = password if password is not None and str(password).strip() else "admin"
+    attempts: list[Dict[str, Any]] = []
+
+    for try_port, use_https in [(443, True), (80, False), (6662, False), (8080, False)]:
+        scheme = "https" if use_https else "http"
+        url = f"{scheme}://{host}:{try_port}"
+        client = PDUWebClient(host, try_port, user, pwd, use_https=use_https, timeout=8)
+        ok = False
+        err: str | None = None
+        try:
+            ok = client.login()
+            err = client.last_login_error
+            if ok and verify_telemetry:
+                try:
+                    client.get_live_telemetry()
+                except Exception as exc:
+                    ok = False
+                    err = f"Login OK but telemetry read failed: {exc}"
+        except Exception as exc:
+            err = str(exc)
+        finally:
+            try:
+                client.logout()
+            except Exception:
+                pass
+
+        attempts.append({
+            "url": url,
+            "port": try_port,
+            "use_https": use_https,
+            "success": ok,
+            "error": None if ok else (err or "Login failed"),
+        })
+        if ok:
+            return {
+                "success": True,
+                "host": host,
+                "username": user,
+                "port": try_port,
+                "use_https": use_https,
+                "url": url,
+                "attempts": attempts,
+            }
+
+    return {
+        "success": False,
+        "host": host,
+        "username": user,
+        "attempts": attempts,
+        "error": "; ".join(
+            f"{a['url']}: {a['error']}" for a in attempts if a.get("error")
+        ) or "All login attempts failed",
+    }
 
 
 def _connect_pdu_admin_probe(
@@ -2247,6 +2339,7 @@ def _connect_pdu_admin_probe(
         attempts = [(443, True), (http_port, False)]
 
     seen: set[tuple[int, bool]] = set()
+    errors: list[str] = []
     for try_port, use_https in attempts:
         key = (try_port, use_https)
         if key in seen:
@@ -2257,9 +2350,13 @@ def _connect_pdu_admin_probe(
             scheme = "https" if use_https else "http"
             print(f"[pdu-admin] Connected to {scheme}://{host}:{try_port} as {username}")
             return client, try_port, use_https
+        probe_client = _pdu_clients.get(_pdu_client_key(host, try_port, use_https))
+        err = (probe_client.last_login_error if probe_client else None) or "Login failed"
+        errors.append(f"{'https' if use_https else 'http'}://{host}:{try_port} — {err}")
 
     tried = ", ".join(f"{'https' if h else 'http'}://{host}:{p}" for p, h in seen)
-    raise ConnectionError(f"PDU login failed for {username} — tried {tried}")
+    detail = errors[-1] if errors else tried
+    raise ConnectionError(f"PDU login failed for {username} — tried {tried}. Last: {detail}")
 
 
 def _repair_pdu_web_credentials(
@@ -2267,7 +2364,7 @@ def _repair_pdu_web_credentials(
     *,
     username: str | None = None,
     password: str | None = None,
-) -> bool:
+) -> tuple[bool, str]:
     """Re-probe a PDU and rewrite DB web-admin port/protocol/credentials."""
     ip = pdu["ip_address"]
     hall_id = pdu["hall_id"]
@@ -2277,13 +2374,14 @@ def _repair_pdu_web_credentials(
 
     _evict_all_pdu_clients_for_host(host)
     try:
-        client, port, use_https = _connect_pdu_admin_probe(
-            host, user, pwd, port=_DEFAULT_WEB_ADMIN_PORT, prefer_https=None
-        )
-        try:
-            client.logout()
-        except Exception:
-            pass
+        diag = _diagnose_pdu_login(host, user, pwd, verify_telemetry=True)
+        if not diag.get("success"):
+            msg = diag.get("error") or "Login failed on all ports"
+            print(f"[pdu-repair] {ip} failed: {msg}")
+            return False, msg
+
+        port = int(diag["port"])
+        use_https = bool(diag["use_https"])
         PDURepo.upsert(
             hall_id,
             ip,
@@ -2296,11 +2394,13 @@ def _repair_pdu_web_credentials(
         )
         _evict_all_pdu_clients_for_host(host)
         scheme = "https" if use_https else "http"
-        print(f"[pdu-repair] {ip} -> {scheme}://{host}:{port} as {user}")
-        return True
-    except ConnectionError as exc:
-        print(f"[pdu-repair] {ip} failed: {exc}")
-        return False
+        msg = f"Connected via {scheme}://{host}:{port} as {user}"
+        print(f"[pdu-repair] {ip} -> {msg}")
+        return True, msg
+    except Exception as exc:
+        msg = str(exc)
+        print(f"[pdu-repair] {ip} failed: {msg}")
+        return False, msg
 
 
 def _wait_for_pdu_after_reboot(
@@ -2372,6 +2472,29 @@ def _connect_batch_pdu_client(
     raise ConnectionError(
         f"{last_err} — verify Current PDU Password (must match Remote PDU login)"
     ) from last_err
+
+
+@app.route("/api/pdu-admin/probe-login", methods=["POST"])
+def pdu_admin_probe_login():
+    """Test PDU web login without changing the database — returns per-port diagnostics."""
+    try:
+        data = request.get_json(force=True) if request.data else {}
+        host = (data.get("host") or data.get("ip") or "").strip()
+        username = data.get("web_admin_user") or data.get("username")
+        password = data.get("web_admin_pass") or data.get("password")
+        if not host:
+            return jsonify({"error": "host is required"}), 400
+        _pause_pdu_poller()
+        try:
+            report = _diagnose_pdu_login(host, username or "admin", password or "admin")
+        finally:
+            _resume_pdu_poller()
+        status = 200 if report.get("success") else 401
+        return jsonify(report), status
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/pdu-admin/connect", methods=["POST"])
@@ -3732,7 +3855,7 @@ def repair_hall_web_access(hall_id: int):
                         "before": before,
                     })
                     continue
-                ok = _repair_pdu_web_credentials(pdu, username=user, password=password)
+                ok, repair_msg = _repair_pdu_web_credentials(pdu, username=user, password=password)
                 after = None
                 if ok:
                     refreshed = PDURepo.get(pdu["id"]) or pdu
@@ -3746,6 +3869,8 @@ def repair_hall_web_access(hall_id: int):
                     "ip": pdu["ip_address"],
                     "label": pdu.get("label") or pdu.get("hostname"),
                     "success": ok,
+                    "message": repair_msg,
+                    "error": None if ok else repair_msg,
                     "before": before,
                     "after": after,
                 })

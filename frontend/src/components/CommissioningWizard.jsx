@@ -140,6 +140,8 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
   const [repairPass, setRepairPass] = useState('admin');
   const [repairResults, setRepairResults] = useState(null);
   const [repairLoading, setRepairLoading] = useState(false);
+  const [repairStatus, setRepairStatus] = useState(null); // last run summary for visible feedback
+  const [probeResults, setProbeResults] = useState({}); // ip -> probe report
 
   const currentStep = STEPS[step];
 
@@ -206,10 +208,10 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
     }
   }, [step, hallId]);
 
-  const fetchRepairPdus = useCallback(async () => {
+  const fetchRepairPdus = useCallback(async ({ preserveResults = false } = {}) => {
     if (!hallId) return;
     setRepairLoading(true);
-    setError(null);
+    if (!preserveResults) setError(null);
     try {
       const res = await fetch(`${API_BASE}/api/halls/${hallId}/state`);
       const data = await res.json();
@@ -217,16 +219,93 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
       const pdus = (data.pdus || []).slice().sort((a, b) => compareIp(a.ip_address, b.ip_address));
       setRepairPdus(pdus);
       const webPdus = pdus.filter(p => p.web_admin_port);
-      setRepairSelected(new Set(webPdus.map(p => p.id)));
-      const firstWeb = webPdus[0];
-      if (firstWeb?.web_admin_user) setRepairUser(firstWeb.web_admin_user);
-      setRepairResults(null);
+      if (!preserveResults) {
+        setRepairSelected(new Set(webPdus.map(p => p.id)));
+        const firstWeb = webPdus[0];
+        if (firstWeb?.web_admin_user) setRepairUser(firstWeb.web_admin_user);
+      }
     } catch (e) {
       setError(e.message);
     } finally {
       setRepairLoading(false);
     }
   }, [hallId]);
+
+  const findRepairResult = (pdu) => {
+    if (!repairResults?.results) return null;
+    return repairResults.results.find(r => r.id === pdu.id || r.ip === pdu.ip_address) || null;
+  };
+
+  const testProbeLogin = async (host) => {
+    if (!host) return;
+    setRepairLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/pdu-admin/probe-login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host,
+          web_admin_user: repairUser.trim(),
+          web_admin_pass: repairPass,
+        }),
+      });
+      const data = await res.json();
+      setProbeResults(prev => ({ ...prev, [host]: data }));
+      if (!data.success) {
+        setError(`Probe failed for ${host}: ${data.error || 'login failed on all ports'}`);
+      }
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setRepairLoading(false);
+    }
+  };
+
+  const runRepairWebAccess = async (pduIds = null) => {
+    if (!hallId) { setError('No data hall selected'); return; }
+    const ids = pduIds || [...repairSelected];
+    if (!ids.length) { setError('Select at least one PDU to repair'); return; }
+    if (!repairUser.trim()) { setError('Enter the web admin username'); return; }
+    if (!repairPass) { setError('Enter the web admin password that works in the browser'); return; }
+
+    setRepairLoading(true);
+    setError(null);
+    setRepairStatus({ phase: 'running', message: `Repairing ${ids.length} PDU(s)...` });
+    try {
+      const res = await fetch(`${API_BASE}/api/halls/${hallId}/pdus/repair-web-access`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          web_admin_user: repairUser.trim(),
+          web_admin_pass: repairPass,
+          pdu_ids: ids,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Repair failed');
+      setRepairResults(data);
+      const failed = (data.results || []).filter(r => !r.success && !r.skipped);
+      const ok = data.repaired || 0;
+      const total = data.total || 0;
+      setRepairStatus({
+        phase: ok === total && total > 0 ? 'success' : (ok > 0 ? 'partial' : 'failed'),
+        message: ok === total && total > 0
+          ? `All ${ok} PDU(s) repaired successfully.`
+          : ok > 0
+            ? `Repaired ${ok} of ${total}. ${failed.length} failed — see errors below.`
+            : `Repair failed for all ${total} PDU(s). Check password and close browser PDU tabs.`,
+        data,
+      });
+      await fetchRepairPdus({ preserveResults: true });
+      if (data.repaired > 0 && onComplete) onComplete();
+    } catch (e) {
+      setRepairStatus({ phase: 'failed', message: e.message });
+      setError(e.message);
+    } finally {
+      setRepairLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (step === 0 && scanMode === 'repair' && hallId) {
@@ -241,37 +320,6 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
       else next.add(pduId);
       return next;
     });
-  };
-
-  const runRepairWebAccess = async (pduIds = null) => {
-    if (!hallId) { setError('No data hall selected'); return; }
-    const ids = pduIds || [...repairSelected];
-    if (!ids.length) { setError('Select at least one PDU to repair'); return; }
-    if (!repairUser.trim()) { setError('Enter the web admin username'); return; }
-    if (!repairPass) { setError('Enter the web admin password that works in the browser'); return; }
-
-    setRepairLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`${API_BASE}/api/halls/${hallId}/pdus/repair-web-access`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          web_admin_user: repairUser.trim(),
-          web_admin_pass: repairPass,
-          pdu_ids: ids,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Repair failed');
-      setRepairResults(data);
-      await fetchRepairPdus();
-      if (data.repaired > 0 && onComplete) onComplete();
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setRepairLoading(false);
-    }
   };
 
   const fetchNextIp = async () => {
@@ -1061,7 +1109,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                 ].map(m => (
                   <button
                     key={m.id}
-                    onClick={() => { setScanMode(m.id); setError(null); setDetectedDevice(null); setSubnetDevices([]); setRemoteSettings(null); setIsRemoteMode(false); setRepairResults(null); }}
+                    onClick={() => { setScanMode(m.id); setError(null); setDetectedDevice(null); setSubnetDevices([]); setRemoteSettings(null); setIsRemoteMode(false); }}
                     className={`flex-1 py-2 px-3 text-xs uppercase rounded-md flex items-center justify-center gap-1.5 transition-all ${
                       scanMode === m.id
                         ? 'bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/40'
@@ -1278,6 +1326,35 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     </button>
                   )}
 
+                  {repairStatus && (
+                    <div className={`p-3 rounded-lg border text-sm ${
+                      repairStatus.phase === 'success'
+                        ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-100'
+                        : repairStatus.phase === 'partial'
+                          ? 'bg-amber-500/15 border-amber-500/50 text-amber-100'
+                          : repairStatus.phase === 'running'
+                            ? 'bg-cyan-500/10 border-cyan-500/40 text-cyan-100'
+                            : 'bg-red-500/15 border-red-500/50 text-red-100'
+                    }`}>
+                      <div className="flex items-start gap-2">
+                        <span className="material-icons-outlined text-base mt-0.5">
+                          {repairStatus.phase === 'success' ? 'check_circle'
+                            : repairStatus.phase === 'partial' ? 'warning'
+                            : repairStatus.phase === 'running' ? 'sync'
+                            : 'error'}
+                        </span>
+                        <div>
+                          <p className="font-semibold">{repairStatus.message}</p>
+                          {repairResults && (
+                            <p className="text-xs mt-1 opacity-90">
+                              {repairResults.repaired} succeeded · {repairResults.total - repairResults.repaired} failed · hall {repairResults.hall_name || hallName}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {repairPdus.length > 0 && (
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
@@ -1295,7 +1372,8 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                       </div>
                       <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
                         {repairPdus.map(pdu => {
-                          const result = repairResults?.results?.find(r => r.id === pdu.id);
+                          const result = findRepairResult(pdu);
+                          const probe = probeResults[pdu.ip_address];
                           const canRepair = !!pdu.web_admin_port;
                           const storedScheme = pdu.web_admin_https ? 'https' : 'http';
                           const storedPort = pdu.web_admin_port || '—';
@@ -1303,11 +1381,15 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                             <div
                               key={pdu.id}
                               className={`p-3 rounded-lg border ${
-                                !canRepair
-                                  ? 'bg-[#0a1222] border-[#1f2a3a] opacity-60'
-                                  : repairSelected.has(pdu.id)
-                                    ? 'bg-emerald-500/10 border-emerald-500/40'
-                                    : 'bg-[#0B1120] border-[#233544]'
+                                result?.success
+                                  ? 'bg-emerald-500/10 border-emerald-500/40'
+                                  : result && !result.skipped
+                                    ? 'bg-red-500/10 border-red-500/40'
+                                    : !canRepair
+                                      ? 'bg-[#0a1222] border-[#1f2a3a] opacity-60'
+                                      : repairSelected.has(pdu.id)
+                                        ? 'bg-[#0B1120] border-[#00E5FF]/30'
+                                        : 'bg-[#0B1120] border-[#233544]'
                               }`}
                             >
                               <div className="flex items-start gap-3">
@@ -1338,36 +1420,65 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                       <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-700/40 text-slate-400">SNMP only</span>
                                     )}
                                     {result && (
-                                      <span className={`text-[9px] px-1.5 py-0.5 rounded border ${
+                                      <span className={`text-[9px] px-1.5 py-0.5 rounded border font-semibold ${
                                         result.success
-                                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                                          ? 'bg-emerald-500/30 text-emerald-200 border-emerald-500/50'
                                           : result.skipped
                                             ? 'bg-slate-700/40 text-slate-400 border-slate-600/40'
-                                            : 'bg-red-500/20 text-red-300 border-red-500/30'
+                                            : 'bg-red-500/30 text-red-200 border-red-500/50'
                                       }`}>
                                         {result.success
-                                          ? `Fixed → ${result.after?.web_admin_https ? 'https' : 'http'}:${result.after?.web_admin_port}`
-                                          : result.skipped ? 'Skipped' : 'Login failed'}
+                                          ? `OK → ${result.after?.web_admin_https ? 'https' : 'http'}:${result.after?.web_admin_port}`
+                                          : result.skipped ? 'Skipped' : 'FAILED'}
                                       </span>
                                     )}
                                   </div>
-                                  {result?.after && result.before && (
+                                  {result?.message && (
+                                    <p className={`text-[11px] mt-1.5 leading-relaxed ${result.success ? 'text-emerald-300' : 'text-red-300'}`}>
+                                      {result.message}
+                                    </p>
+                                  )}
+                                  {result?.error && !result.success && (
+                                    <p className="text-[10px] text-red-200/90 mt-1 font-mono break-all leading-relaxed">
+                                      {result.error}
+                                    </p>
+                                  )}
+                                  {result?.after && result.before && result.success && (
                                     <p className="text-[10px] text-slate-500 mt-1 font-mono">
                                       {result.before.web_admin_https ? 'https' : 'http'}:{result.before.web_admin_port}
                                       {' → '}
                                       {result.after.web_admin_https ? 'https' : 'http'}:{result.after.web_admin_port}
                                     </p>
                                   )}
+                                  {probe && !probe.success && (
+                                    <div className="mt-2 space-y-1">
+                                      {probe.attempts?.map((a) => (
+                                        <p key={a.url} className="text-[10px] font-mono text-slate-400">
+                                          {a.url}: {a.success ? 'OK' : (a.error || 'failed')}
+                                        </p>
+                                      ))}
+                                    </div>
+                                  )}
                                 </div>
                                 {canRepair && (
-                                  <button
-                                    type="button"
-                                    onClick={() => runRepairWebAccess([pdu.id])}
-                                    disabled={repairLoading}
-                                    className="text-[10px] text-[#00E5FF] hover:text-white shrink-0 disabled:opacity-40"
-                                  >
-                                    Repair one
-                                  </button>
+                                  <div className="flex flex-col gap-1 shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={() => testProbeLogin(pdu.ip_address)}
+                                      disabled={repairLoading}
+                                      className="text-[10px] text-slate-400 hover:text-white disabled:opacity-40"
+                                    >
+                                      Test
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => runRepairWebAccess([pdu.id])}
+                                      disabled={repairLoading}
+                                      className="text-[10px] text-[#00E5FF] hover:text-white disabled:opacity-40"
+                                    >
+                                      Repair
+                                    </button>
+                                  </div>
                                 )}
                               </div>
                             </div>
@@ -1395,23 +1506,9 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     Repair {repairSelected.size || 0} selected PDU{repairSelected.size === 1 ? '' : 's'}
                   </button>
 
-                  {repairResults && (
-                    <div className={`p-3 rounded-lg border text-xs ${
-                      repairResults.repaired === repairResults.total && repairResults.total > 0
-                        ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200'
-                        : 'bg-amber-500/10 border-amber-500/40 text-amber-200'
-                    }`}>
-                      Repaired {repairResults.repaired} of {repairResults.total} attempted in {repairResults.hall_name || hallName}.
-                      {repairResults.repaired < repairResults.total && (
-                        <span className="block mt-1 text-amber-100/90">
-                          Failed units may still use a different password — try the password that works in Chrome for that IP.
-                        </span>
-                      )}
-                    </div>
-                  )}
-
                   <p className="text-[10px] text-slate-600 leading-relaxed">
-                    Probes HTTP port 80 and HTTPS port 443 on each selected PDU. On success, updates this hall&apos;s database so telemetry and Remote PDU use the correct protocol and credentials.
+                    Use <span className="text-slate-400">Test</span> on one PDU first — it shows exactly which ports/schemes failed and why, without changing the database.
+                    Repair updates the hall database so telemetry and Remote PDU use the working protocol and credentials.
                   </p>
                 </div>
               )}
