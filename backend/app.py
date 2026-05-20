@@ -1074,6 +1074,10 @@ def multi_pdu_poller():
     
     while not MULTI_PDU_STOP:
         try:
+            if _poller_is_paused():
+                time.sleep(1)
+                continue
+
             all_pdus = PDURepo.get_all_active()
             
             if not all_pdus:
@@ -2019,6 +2023,41 @@ def _evict_pdu_client(host: str, port: int, use_https: bool = False) -> None:
             pass
 
 
+def _evict_all_pdu_clients_for_host(host: str) -> None:
+    """Logout and drop every cached web-admin client for *host* (all ports/schemes)."""
+    with _pdu_clients_lock:
+        keys = [k for k in list(_pdu_clients.keys()) if f":{host}:" in k]
+        clients = [_pdu_clients.pop(k) for k in keys]
+    for client in clients:
+        try:
+            client.logout()
+        except Exception:
+            pass
+
+
+_BATCH_POLLER_PAUSE = 0
+_BATCH_POLLER_PAUSE_LOCK = Lock()
+
+
+def _pause_pdu_poller() -> None:
+    global _BATCH_POLLER_PAUSE
+    with _BATCH_POLLER_PAUSE_LOCK:
+        _BATCH_POLLER_PAUSE += 1
+    print("[batch] Background PDU poller paused")
+
+
+def _resume_pdu_poller() -> None:
+    global _BATCH_POLLER_PAUSE
+    with _BATCH_POLLER_PAUSE_LOCK:
+        _BATCH_POLLER_PAUSE = max(0, _BATCH_POLLER_PAUSE - 1)
+    print("[batch] Background PDU poller resumed")
+
+
+def _poller_is_paused() -> bool:
+    with _BATCH_POLLER_PAUSE_LOCK:
+        return _BATCH_POLLER_PAUSE > 0
+
+
 _pdu_admin_holds: Dict[str, int] = {}
 _pdu_admin_holds_lock = Lock()
 
@@ -2225,26 +2264,43 @@ def _connect_batch_pdu_client(
     *,
     web_https_hint: bool = False,
 ) -> Tuple[PDUWebClient, int, bool]:
-    """Connect for batch commissioning — template password first, DB as fallback."""
-    prefer_https: bool | None = True if web_https_hint else None
-    existing = PDURepo.get_by_ip(ip)
-    if existing and _parse_use_https(existing.get("web_admin_https")):
-        prefer_https = True
+    """Connect for batch commissioning — one clean path, poller paused, HTTP first."""
+    _evict_all_pdu_clients_for_host(ip)
+    time.sleep(1.5)  # let any in-flight poll finish and release the PDU session slot
+
+    scan_port = int(port or _DEFAULT_WEB_ADMIN_PORT)
+    endpoints: list[tuple[int, bool]] = []
+    if web_https_hint and scan_port == 443:
+        endpoints.append((443, True))
+    endpoints.append((80, False))
+    if web_https_hint and scan_port != 443:
+        endpoints.append((scan_port, True))
+    elif not web_https_hint:
+        endpoints.append((443, True))
+    # dedupe preserving order
+    seen: set[tuple[int, bool]] = set()
+    unique_endpoints: list[tuple[int, bool]] = []
+    for ep in endpoints:
+        if ep not in seen:
+            seen.add(ep)
+            unique_endpoints.append(ep)
 
     last_err: ConnectionError | None = None
     for user, password, source in _batch_credential_candidates(ip, template):
-        try:
-            client, connect_port, connect_https = _connect_pdu_admin_probe(
-                ip, user, password, port=port, prefer_https=prefer_https
-            )
-            print(f"[batch] {ip} connected using {source} credentials as {user}")
-            return client, connect_port, connect_https
-        except ConnectionError as e:
-            last_err = e
-            print(f"[batch] {ip} login failed with {source} credentials")
+        for try_port, use_https in unique_endpoints:
+            client = _probe_pdu_login(ip, try_port, user, password, use_https, retries=5)
+            if client:
+                scheme = "https" if use_https else "http"
+                print(f"[batch] {ip} connected via {scheme}://{ip}:{try_port} ({source} creds)")
+                return client, try_port, use_https
+        last_err = ConnectionError(
+            f"PDU login failed for {user} — tried "
+            + ", ".join(f"{'https' if h else 'http'}://{ip}:{p}" for p, h in unique_endpoints)
+        )
+        print(f"[batch] {ip} all endpoints failed with {source} credentials")
 
     raise ConnectionError(
-        f"{last_err} — check Current PDU Password in the batch template"
+        f"{last_err} — verify Current PDU Password (must match Remote PDU login)"
     ) from last_err
 
 
@@ -2804,6 +2860,9 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
     for ip in all_batch_ips:
         _batch_hold_ip(ip)
 
+    _pause_pdu_poller()
+    time.sleep(2)  # let any in-flight poll cycle finish
+
     try:
         for idx, pdu_info in enumerate(pdu_list):
             current_ip = pdu_info.get("ip", "")
@@ -3072,6 +3131,7 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
     finally:
         for ip in all_batch_ips:
             _batch_release_ip(ip)
+        _resume_pdu_poller()
 
     # Mark job complete
     with _batch_lock:
