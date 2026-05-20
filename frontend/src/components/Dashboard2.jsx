@@ -877,7 +877,7 @@ const Dashboard2 = () => {
                     {activePduFull.remote_host ? (
                       <>
                         <span className="material-icons-outlined text-amber-400 text-xs">cloud</span>
-                        <span className="text-xs font-mono text-amber-300">Remote: {activePduFull.remote_host}:{activePduFull.web_admin_port || 6662}</span>
+                        <span className="text-xs font-mono text-amber-300">Remote: {activePduFull.remote_host}:{activePduFull.web_admin_port || 80}</span>
                       </>
                     ) : (
                       <>

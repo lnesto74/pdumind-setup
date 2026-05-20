@@ -36,7 +36,7 @@ const StatusBadge = ({ ok, label }) => (
 
 const PDUSettingsPanel = ({ pdu }) => {
   const host = pdu?.remote_host || pdu?.ip;
-  const port = pdu?.web_admin_port || 6662;
+  const port = pdu?.web_admin_port || 80;
   const username = pdu?.web_admin_user || 'admin';
   const password = pdu?.web_admin_pass || 'admin';
 

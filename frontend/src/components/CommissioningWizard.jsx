@@ -1,4 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import PduSnmpSettingsForm from './PduSnmpSettingsForm';
+import PduNtpSettingsForm from './PduNtpSettingsForm';
+import {
+  DEFAULT_SNMP_TEMPLATE,
+  DEFAULT_NTP_TEMPLATE,
+  combineSntpServers,
+  splitSntpServers,
+} from '../constants/pduSettings';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -105,8 +113,8 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
     network: { ip_start: '', mask: '255.255.255.0', gateway: '', dns1: '', dns2: '' },
     system: { device_name: '', router_hostname: 'PDU-{seq}', sync_device_name: true },
     users: { admin_username: 'admin', admin_password: '' },
-    snmp: { read_community: 'public', write_community: 'private', snmpv1: true, snmpv2: true, trap_ip: '' },
-    ntp: { sntp_server: 'pool.ntp.org', timezone: '81' },
+    snmp: { ...DEFAULT_SNMP_TEMPLATE },
+    ntp: { ...DEFAULT_NTP_TEMPLATE },
     current_credentials: { username: 'admin', password: 'admin' },
   });
   const [batchStep, setBatchStep] = useState(0); // 0=scan, 1=template, 2=deploy, 3=report, 4=rack-assign
@@ -138,10 +146,19 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
         setEditSnmp({
           community_read: remoteSettings.snmp?.community_read || 'public',
           community_write: remoteSettings.snmp?.community_write || 'private',
+          read_community: remoteSettings.snmp?.community_read || 'public',
+          write_community: remoteSettings.snmp?.community_write || 'private',
           snmpv1: remoteSettings.snmp?.snmpv1_enabled || false,
           snmpv2: remoteSettings.snmp?.snmpv2_enabled || false,
+          snmpv3: remoteSettings.snmp?.snmpv3_enabled || false,
+          snmpv3_username: remoteSettings.snmp?.snmpv3_username || 'admin',
+          verify_protocol: remoteSettings.snmp?.verify_protocol || '2',
+          auth_key: '',
+          encrypt_protocol: remoteSettings.snmp?.encrypt_protocol || '0',
+          priv_key: '',
           trap_ip: remoteSettings.snmp?.trap_ip || '',
         });
+        const sntpParts = splitSntpServers(remoteSettings.time?.sntp_server || '');
         setEditTime({
           year: remoteSettings.time?.year || '',
           month: remoteSettings.time?.month || '',
@@ -149,11 +166,12 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
           hour: remoteSettings.time?.hour || '',
           minute: remoteSettings.time?.minute || '',
           second: remoteSettings.time?.second || '',
-          sntp_enabled: remoteSettings.time?.sntp_enabled || '',
-          sntp_server: remoteSettings.time?.sntp_server || '',
-          timezone: remoteSettings.time?.timezone || '',
-          update_interval: remoteSettings.time?.update_interval || '',
-          correction: remoteSettings.time?.correction || '',
+          sntp_enabled: remoteSettings.time?.sntp_enabled === 'true' || remoteSettings.time?.sntp_enabled === true,
+          sntp_server: sntpParts.primary,
+          sntp_server2: sntpParts.secondary,
+          timezone: remoteSettings.time?.timezone || '79',
+          update_interval: remoteSettings.time?.update_interval || '24',
+          correction: remoteSettings.time?.correction ?? '0',
         });
       }
     }
@@ -618,7 +636,22 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
       const res = await fetch(`${API_BASE}/api/pdu-admin/${remoteHost}/settings/snmp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...editSnmp, web_port: parseInt(remotePort) || 6662, username: remoteUser, password: remotePass })
+        body: JSON.stringify({
+          community_read: editSnmp.read_community ?? editSnmp.community_read,
+          community_write: editSnmp.write_community ?? editSnmp.community_write,
+          snmpv1: editSnmp.snmpv1,
+          snmpv2: editSnmp.snmpv2,
+          snmpv3: editSnmp.snmpv3,
+          snmpv3_username: editSnmp.snmpv3_username,
+          verify_protocol: editSnmp.verify_protocol,
+          auth_key: editSnmp.auth_key,
+          encrypt_protocol: editSnmp.encrypt_protocol,
+          priv_key: editSnmp.priv_key,
+          trap_ip: editSnmp.trap_ip,
+          web_port: parseInt(remotePort) || 6662,
+          username: remoteUser,
+          password: remotePass,
+        })
       });
       const data = await res.json();
       if (!data.success) setError(data.error || 'Failed to apply SNMP settings');
@@ -638,7 +671,22 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
       const res = await fetch(`${API_BASE}/api/pdu-admin/${remoteHost}/settings/time`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...editTime, web_port: parseInt(remotePort) || 6662, username: remoteUser, password: remotePass })
+        body: JSON.stringify({
+          year: editTime.year,
+          month: editTime.month,
+          day: editTime.day,
+          hour: editTime.hour,
+          minute: editTime.minute,
+          second: editTime.second,
+          sntp_enabled: editTime.sntp_enabled ? 'true' : '',
+          sntp_server: combineSntpServers(editTime.sntp_server, editTime.sntp_server2),
+          timezone: editTime.timezone,
+          update_interval: editTime.update_interval,
+          correction: editTime.correction,
+          web_port: parseInt(remotePort) || 6662,
+          username: remoteUser,
+          password: remotePass,
+        })
       });
       const data = await res.json();
       if (!data.success) setError(data.error || 'Failed to apply time settings');
@@ -1191,47 +1239,22 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider mb-2 flex items-center gap-1">
                           <span className="material-icons-outlined text-xs">vpn_key</span> SNMP
                         </p>
-                        <div className="grid grid-cols-3 gap-2">
-                          <div>
-                            <label className="text-[9px] text-slate-500 uppercase">Read Community</label>
-                            <input type="text" value={batchTemplate.snmp.read_community}
-                              onChange={e => setBatchTemplate(p => ({ ...p, snmp: { ...p.snmp, read_community: e.target.value } }))}
-                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]" />
-                          </div>
-                          <div>
-                            <label className="text-[9px] text-slate-500 uppercase">Write Community</label>
-                            <input type="text" value={batchTemplate.snmp.write_community}
-                              onChange={e => setBatchTemplate(p => ({ ...p, snmp: { ...p.snmp, write_community: e.target.value } }))}
-                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]" />
-                          </div>
-                          <div>
-                            <label className="text-[9px] text-slate-500 uppercase">Trap IP</label>
-                            <input type="text" value={batchTemplate.snmp.trap_ip}
-                              onChange={e => setBatchTemplate(p => ({ ...p, snmp: { ...p.snmp, trap_ip: e.target.value } }))}
-                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]" />
-                          </div>
-                        </div>
+                        <PduSnmpSettingsForm
+                          compact
+                          value={batchTemplate.snmp}
+                          onChange={snmp => setBatchTemplate(p => ({ ...p, snmp }))}
+                        />
                       </div>
                       {/* NTP */}
                       <div className="p-3 rounded-lg bg-[#0B1120] border border-[#233544]">
                         <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider mb-2 flex items-center gap-1">
-                          <span className="material-icons-outlined text-xs">schedule</span> NTP
+                          <span className="material-icons-outlined text-xs">schedule</span> Time &amp; SNTP
                         </p>
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="text-[9px] text-slate-500 uppercase">SNTP Server</label>
-                            <input type="text" value={batchTemplate.ntp.sntp_server}
-                              onChange={e => setBatchTemplate(p => ({ ...p, ntp: { ...p.ntp, sntp_server: e.target.value } }))}
-                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]" />
-                          </div>
-                          <div>
-                            <label className="text-[9px] text-slate-500 uppercase">Timezone (UTC offset)</label>
-                            <input type="text" value={batchTemplate.ntp.timezone}
-                              onChange={e => setBatchTemplate(p => ({ ...p, ntp: { ...p.ntp, timezone: e.target.value } }))}
-                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
-                              placeholder="81 = UTC+8" />
-                          </div>
-                        </div>
+                        <PduNtpSettingsForm
+                          compact
+                          value={batchTemplate.ntp}
+                          onChange={ntp => setBatchTemplate(p => ({ ...p, ntp }))}
+                        />
                       </div>
                       {/* Preview button */}
                       <button onClick={openBatchPreview} disabled={loading || batchSelected.size === 0}
@@ -1410,39 +1433,45 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                 .filter(([, v]) => v.rack_id === rack.rack_id)
                                 .map(([pduKey, v]) => ({ pduKey, slot: v.slot }));
                               const takenSlots = slotsUsedByBatch.map(s => s.slot);
-                              const freeSlots = (rack.open_slots || []).filter(s => !takenSlots.includes(s));
 
                               return (
-                                <div key={rack.rack_code} className={`p-3 rounded-lg border text-left transition-all ${
+                                <div key={rack.rack_code} className={`p-3 rounded-lg border text-left transition-all min-w-0 overflow-hidden ${
                                   slotsUsedByBatch.length > 0
                                     ? 'bg-emerald-500/5 border-emerald-500/30'
                                     : 'bg-[#0B1120] border-[#233544]'
                                 }`}>
-                                  <p className="text-xs font-mono font-bold text-white">{rack.rack_code}</p>
+                                  <p className="text-xs font-mono font-bold text-white truncate">{rack.rack_code}</p>
                                   <p className="text-[10px] text-slate-500 mt-0.5">
                                     Row {rack.row_index + 1}, Pos {rack.position_index + 1}
                                   </p>
 
-                                  {/* Slot buttons */}
-                                  <div className="flex gap-1 mt-2">
+                                  {/* Slot buttons — stacked vertically so long IPs + X stay inside the card */}
+                                  <div className="flex flex-col gap-1.5 mt-2 min-w-0">
                                     {(rack.open_slots || []).map(slot => {
                                       const usedBy = slotsUsedByBatch.find(s => s.slot === slot);
                                       const pduResult = usedBy ? batchProgress.results[usedBy.pduKey] : null;
+                                      const ip = pduResult?.new_ip || pduResult?.ip || '';
 
                                       if (usedBy) {
                                         return (
-                                          <div key={slot} className="flex items-center gap-0.5 bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded text-[9px] font-mono">
-                                            {slot}: {pduResult?.new_ip || pduResult?.ip || '?'}
-                                            <span onClick={() => setBatchRackMap(p => { const n = { ...p }; delete n[usedBy.pduKey]; return n; })}
-                                              className="hover:text-red-400 cursor-pointer ml-0.5">
-                                              <span className="material-icons-outlined" style={{ fontSize: '10px' }}>close</span>
-                                            </span>
+                                          <div key={slot}
+                                            className="w-full min-w-0 rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-1">
+                                            <div className="flex items-center justify-between gap-1 min-w-0">
+                                              <span className="text-[9px] font-bold text-emerald-300 shrink-0">{slot}</span>
+                                              <button type="button"
+                                                title="Unassign"
+                                                onClick={() => setBatchRackMap(p => { const n = { ...p }; delete n[usedBy.pduKey]; return n; })}
+                                                className="shrink-0 w-4 h-4 flex items-center justify-center rounded hover:bg-red-500/20 text-slate-400 hover:text-red-400">
+                                                <span className="material-icons-outlined" style={{ fontSize: '12px' }}>close</span>
+                                              </button>
+                                            </div>
+                                            <p className="text-[8px] font-mono text-emerald-200 truncate" title={ip}>{ip}</p>
                                           </div>
                                         );
                                       }
 
                                       return (
-                                        <button key={slot}
+                                        <button key={slot} type="button"
                                           disabled={!dragPdu || !!batchRackMap[dragPdu]}
                                           onClick={() => {
                                             if (dragPdu && !batchRackMap[dragPdu]) {
@@ -1450,11 +1479,11 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                               setDragPdu(null);
                                             }
                                           }}
-                                          className={`px-1.5 py-0.5 rounded text-[9px] font-mono transition-all ${
+                                          className={`w-full px-1.5 py-1 rounded text-[9px] font-mono transition-all ${
                                             dragPdu && !batchRackMap[dragPdu]
                                               ? 'bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/50 cursor-pointer hover:bg-[#00E5FF]/30'
                                               : 'bg-[#161E2E] text-slate-500 border border-[#233544]'
-                                          }`}>{slot}</button>
+                                          }`}>{slot} — empty</button>
                                       );
                                     })}
                                   </div>
@@ -1722,41 +1751,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         {loading ? 'Applying...' : 'Apply to PDU'}
                       </button>
                     </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="text-[9px] text-slate-500 uppercase">Read Community</label>
-                        <input type="text" value={editSnmp.community_read || ''}
-                          onChange={e => setEditSnmp(prev => ({ ...prev, community_read: e.target.value }))}
-                          className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[9px] text-slate-500 uppercase">Write Community</label>
-                        <input type="text" value={editSnmp.community_write || ''}
-                          onChange={e => setEditSnmp(prev => ({ ...prev, community_write: e.target.value }))}
-                          className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[9px] text-slate-500 uppercase">Trap Destination IP</label>
-                        <input type="text" value={editSnmp.trap_ip || ''}
-                          onChange={e => setEditSnmp(prev => ({ ...prev, trap_ip: e.target.value }))}
-                          className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
-                        />
-                      </div>
-                      <div className="flex items-end gap-3 pb-1">
-                        <label className="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer">
-                          <input type="checkbox" checked={editSnmp.snmpv1 || false}
-                            onChange={e => setEditSnmp(prev => ({ ...prev, snmpv1: e.target.checked }))}
-                            className="accent-[#00E5FF]" /> v1
-                        </label>
-                        <label className="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer">
-                          <input type="checkbox" checked={editSnmp.snmpv2 || false}
-                            onChange={e => setEditSnmp(prev => ({ ...prev, snmpv2: e.target.checked }))}
-                            className="accent-[#00E5FF]" /> v2c
-                        </label>
-                      </div>
-                    </div>
+                    <PduSnmpSettingsForm value={editSnmp} onChange={setEditSnmp} />
                   </div>
 
                   {/* Time / SNTP Settings */}
@@ -1770,50 +1765,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         {loading ? 'Applying...' : 'Apply to PDU'}
                       </button>
                     </div>
-                    <div className="grid grid-cols-3 gap-2 mb-2">
-                      {[
-                        { key: 'year', label: 'Year' }, { key: 'month', label: 'Month' }, { key: 'day', label: 'Day' },
-                        { key: 'hour', label: 'Hour' }, { key: 'minute', label: 'Min' }, { key: 'second', label: 'Sec' },
-                      ].map(f => (
-                        <div key={f.key}>
-                          <label className="text-[9px] text-slate-500 uppercase">{f.label}</label>
-                          <input type="text" value={editTime[f.key] || ''}
-                            onChange={e => setEditTime(prev => ({ ...prev, [f.key]: e.target.value }))}
-                            className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
-                          />
-                        </div>
-                      ))}
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="text-[9px] text-slate-500 uppercase">SNTP Server</label>
-                        <input type="text" value={editTime.sntp_server || ''}
-                          onChange={e => setEditTime(prev => ({ ...prev, sntp_server: e.target.value }))}
-                          className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[9px] text-slate-500 uppercase">Timezone</label>
-                        <input type="text" value={editTime.timezone || ''}
-                          onChange={e => setEditTime(prev => ({ ...prev, timezone: e.target.value }))}
-                          className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[9px] text-slate-500 uppercase">Update Interval (h)</label>
-                        <input type="text" value={editTime.update_interval || ''}
-                          onChange={e => setEditTime(prev => ({ ...prev, update_interval: e.target.value }))}
-                          className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[9px] text-slate-500 uppercase">Correction</label>
-                        <input type="text" value={editTime.correction || ''}
-                          onChange={e => setEditTime(prev => ({ ...prev, correction: e.target.value }))}
-                          className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
-                        />
-                      </div>
-                    </div>
+                    <PduNtpSettingsForm value={editTime} onChange={setEditTime} showManualTime />
                   </div>
                 </>
               ) : (
@@ -2222,7 +2174,9 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
               </div>
               <div className="p-2 rounded bg-[#0B1120] border border-[#1a2638]">
                 <p className="text-slate-500 text-[9px] uppercase">NTP</p>
-                <p className="font-mono text-white truncate">{batchTemplate.ntp?.sntp_server || '—'}</p>
+                <p className="font-mono text-white truncate">
+                  {combineSntpServers(batchTemplate.ntp?.sntp_server, batchTemplate.ntp?.sntp_server2) || '—'}
+                </p>
               </div>
               <div className="p-2 rounded bg-[#0B1120] border border-[#1a2638]">
                 <p className="text-slate-500 text-[9px] uppercase">Admin Password</p>

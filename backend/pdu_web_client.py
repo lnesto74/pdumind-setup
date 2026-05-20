@@ -104,7 +104,9 @@ class PDUWebClient:
                 if self.login():
                     return
                 _time.sleep(1.0 * (attempt + 1))
-            raise ConnectionError("PDU login failed after 5 retries")
+            raise ConnectionError(
+                f"PDU login failed after 5 retries ({self.base_url}, user={self.username})"
+            )
 
     def _get_cgi(self, path: str) -> List[str]:
         with self._lock:
@@ -283,6 +285,9 @@ class PDUWebClient:
                     return "true" if cur_val else ""
                 return "true" if new else ""
 
+            def _field(new, cur_val):
+                return cur_val if new is None else new
+
             resp = self._post_cgi(
                 "snmp_set.cgi",
                 {
@@ -290,14 +295,14 @@ class PDUWebClient:
                     "SNMPStatu_Ver1": _bool_val(snmpv1, cur["snmpv1_enabled"]),
                     "SNMPStatu_Ver2": _bool_val(snmpv2, cur["snmpv2_enabled"]),
                     "SNMPStatu_Ver3": _bool_val(snmpv3, cur["snmpv3_enabled"]),
-                    "SNMPStatu_Community_Read": read_community or cur["community_read"],
-                    "SNMPStatu_Community_Write": write_community or cur["community_write"],
-                    "SNMPStatu_User_Name": snmpv3_username or cur["snmpv3_username"],
-                    "SNMPStatu_VerifyProtocol": verify_protocol or cur["verify_protocol"],
-                    "SNMPStatu_AUTH_KEY": auth_key or cur["auth_key"],
-                    "SNMPStatu_EncrypyProtocol": encrypt_protocol or cur["encrypt_protocol"],
-                    "SNMPStatu_PRIV_KEY": priv_key or cur["priv_key"],
-                    "SNMPStatu_TrapManageIP1": trap_ip or cur["trap_ip"],
+                    "SNMPStatu_Community_Read": _field(read_community, cur["community_read"]),
+                    "SNMPStatu_Community_Write": _field(write_community, cur["community_write"]),
+                    "SNMPStatu_User_Name": _field(snmpv3_username, cur["snmpv3_username"]),
+                    "SNMPStatu_VerifyProtocol": _field(verify_protocol, cur["verify_protocol"]),
+                    "SNMPStatu_AUTH_KEY": _field(auth_key, cur["auth_key"]),
+                    "SNMPStatu_EncrypyProtocol": _field(encrypt_protocol, cur["encrypt_protocol"]),
+                    "SNMPStatu_PRIV_KEY": _field(priv_key, cur["priv_key"]),
+                    "SNMPStatu_TrapManageIP1": _field(trap_ip, cur["trap_ip"]),
                 },
             )
             return "404" not in resp
@@ -727,18 +732,17 @@ class PDUWebClient:
         with self._lock:
             cur = self.get_users()
             csrf = cur["csrf_token"]
-            resp = self._post_cgi(
-                "User_set.cgi",
-                {
-                    "switch_userset_csrftoken1": csrf,
-                    "Meter_admin_User": admin_username or cur["admin_username"],
-                    "Meter_admin_password": admin_password or "",
-                    "Meter_User2": user1_username or cur["user1_username"],
-                    "Meter_password2": user1_password or "",
-                    "Meter_User3": user2_username or cur["user2_username"],
-                    "Meter_password3": user2_password or "",
-                },
-            )
+            fields: Dict[str, Any] = {
+                "switch_userset_csrftoken1": csrf,
+                "Meter_admin_User": admin_username or cur["admin_username"],
+                "Meter_User2": user1_username or cur["user1_username"],
+                "Meter_password2": user1_password or "",
+                "Meter_User3": user2_username or cur["user2_username"],
+                "Meter_password3": user2_password or "",
+            }
+            if admin_password is not None:
+                fields["Meter_admin_password"] = admin_password
+            resp = self._post_cgi("User_set.cgi", fields)
             return "404" not in resp
 
     # ------------------------------------------------------------------
@@ -776,11 +780,26 @@ class PDUWebClient:
             except Exception as e:
                 report["system"] = {"success": False, "error": str(e)}
 
-        # 3. User credentials
-        users = template.get("users", {})
-        if users:
+        # 3. User credentials — only push when the operator actually set a value.
+        users = template.get("users") or {}
+        admin_pw = (users.get("admin_password") or "").strip()
+        admin_user = (users.get("admin_username") or "").strip()
+        extra_users = any(
+            (users.get(k) or "").strip()
+            for k in ("user1_username", "user1_password", "user2_username", "user2_password")
+        )
+        if admin_pw or admin_user or extra_users:
             try:
-                ok = self.set_users(**users)
+                user_kwargs: Dict[str, Any] = {}
+                if admin_user:
+                    user_kwargs["admin_username"] = admin_user
+                if admin_pw:
+                    user_kwargs["admin_password"] = admin_pw
+                for k in ("user1_username", "user1_password", "user2_username", "user2_password"):
+                    v = (users.get(k) or "").strip()
+                    if v:
+                        user_kwargs[k] = v
+                ok = self.set_users(**user_kwargs)
                 report["users"] = {"success": ok}
             except Exception as e:
                 report["users"] = {"success": False, "error": str(e)}
@@ -798,7 +817,18 @@ class PDUWebClient:
         ntp = template.get("ntp", {})
         if ntp:
             try:
-                ok = self.set_time(**ntp)
+                ntp_payload = dict(ntp)
+                # PDU accepts a single SNTPStatu_Server — join primary + secondary.
+                primary = (ntp_payload.pop("sntp_server", None) or "").strip()
+                secondary = (ntp_payload.pop("sntp_server2", None) or "").strip()
+                servers = [s for s in [primary, secondary] if s]
+                if servers:
+                    ntp_payload["sntp_server"] = ",".join(servers)
+                # Checkbox on PDU web UI: "true" when enabled, empty when off.
+                enabled = ntp_payload.get("sntp_enabled")
+                if isinstance(enabled, bool):
+                    ntp_payload["sntp_enabled"] = "true" if enabled else ""
+                ok = self.set_time(**ntp_payload)
                 report["ntp"] = {"success": ok}
             except Exception as e:
                 report["ntp"] = {"success": False, "error": str(e)}

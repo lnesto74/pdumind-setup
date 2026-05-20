@@ -588,10 +588,7 @@ def _poll_remote_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str
     panel open), skip this cycle and return cached results instead of blocking
     the entire poller thread."""
     ip = pdu["ip_address"]
-    host = pdu.get("remote_host") or ip
-    web_port = pdu.get("web_admin_port", 6662)
-    web_user = pdu.get("web_admin_user", "admin")
-    web_pass = pdu.get("web_admin_pass", "admin")
+    host, web_port, web_user, web_pass = _web_admin_creds_from_pdu(pdu)
 
     results = {}
     errors = {}
@@ -1944,6 +1941,43 @@ from pdu_web_client import PDUWebClient
 _pdu_clients: Dict[str, PDUWebClient] = {}
 _pdu_clients_lock = Lock()
 
+_DEFAULT_WEB_ADMIN_PORT = 80
+
+
+def _coalesce_credential(value: str | None, fallback: str = "admin") -> str:
+    """Treat None and blank strings as missing — .get(key, fallback) misses empty strings."""
+    if value is None:
+        return fallback
+    if isinstance(value, str) and not value.strip():
+        return fallback
+    return value.strip() if isinstance(value, str) else str(value)
+
+
+def _web_admin_creds_from_pdu(pdu: Dict[str, Any]) -> Tuple[str, int, str, str]:
+    host = pdu.get("remote_host") or pdu["ip_address"]
+    port = int(pdu.get("web_admin_port") or _DEFAULT_WEB_ADMIN_PORT)
+    user = _coalesce_credential(pdu.get("web_admin_user"))
+    password = _coalesce_credential(pdu.get("web_admin_pass"))
+    return host, port, user, password
+
+
+def _web_admin_creds_from_request(default_port: int = _DEFAULT_WEB_ADMIN_PORT) -> Tuple[int, str, str]:
+    port = int(request.args.get("port") or default_port)
+    username = _coalesce_credential(request.args.get("username"))
+    password = _coalesce_credential(request.args.get("password"))
+    return port, username, password
+
+
+def _evict_pdu_client(host: str, port: int) -> None:
+    key = f"{host}:{port}"
+    with _pdu_clients_lock:
+        client = _pdu_clients.pop(key, None)
+    if client:
+        try:
+            client.logout()
+        except Exception:
+            pass
+
 
 def _get_pdu_client(host: str, port: int = 6662,
                      username: str = "admin", password: str = "admin") -> PDUWebClient:
@@ -1970,9 +2004,9 @@ def pdu_admin_connect():
     try:
         data = request.get_json(force=True)
         host = data.get("host", "").strip()
-        port = int(data.get("port", 6662))
-        username = data.get("username", "admin")
-        password = data.get("password", "admin")
+        port = int(data.get("port") or _DEFAULT_WEB_ADMIN_PORT)
+        username = _coalesce_credential(data.get("username"))
+        password = _coalesce_credential(data.get("password"))
 
         if not host:
             return jsonify({"error": "host is required"}), 400
@@ -1998,9 +2032,7 @@ def pdu_admin_get_settings(host: str):
     """Read all settings from a PDU.  Retries once on timeout since the
     background poller may have just released the session."""
     try:
-        port = int(request.args.get("port", 6662))
-        username = request.args.get("username", "admin")
-        password = request.args.get("password", "admin")
+        port, username, password = _web_admin_creds_from_request()
         client = _get_pdu_client(host, port, username, password)
         last_err = None
         for attempt in range(2):
@@ -2484,8 +2516,26 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                             name_pattern, idx, new_ip, mac
                         )
                 pdu_template["system"] = sys_cfg
-            if template.get("users"):
-                pdu_template["users"] = template["users"]
+            users_cfg = template.get("users") or {}
+            cur_cred_user = _coalesce_credential(template.get("current_credentials", {}).get("username"))
+            new_admin_user = (users_cfg.get("admin_username") or "").strip()
+            new_admin_pass = (users_cfg.get("admin_password") or "").strip()
+            user_wants_rename = bool(new_admin_user and new_admin_user != cur_cred_user)
+            extra_users = any(
+                (users_cfg.get(k) or "").strip()
+                for k in ("user1_username", "user1_password", "user2_username", "user2_password")
+            )
+            if new_admin_pass or user_wants_rename or extra_users:
+                user_patch = {}
+                if user_wants_rename:
+                    user_patch["admin_username"] = new_admin_user
+                if new_admin_pass:
+                    user_patch["admin_password"] = new_admin_pass
+                for k in ("user1_username", "user1_password", "user2_username", "user2_password"):
+                    v = (users_cfg.get(k) or "").strip()
+                    if v:
+                        user_patch[k] = v
+                pdu_template["users"] = user_patch
             if template.get("snmp"):
                 pdu_template["snmp"] = template["snmp"]
             if template.get("ntp"):
@@ -2496,8 +2546,8 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
             with _batch_lock:
                 _BATCH_JOBS[job_id]["results"][pdu_key] = status
 
-            admin_user = template.get("current_credentials", {}).get("username", "admin")
-            admin_pass = template.get("current_credentials", {}).get("password", "admin")
+            admin_user = _coalesce_credential(template.get("current_credentials", {}).get("username"))
+            admin_pass = _coalesce_credential(template.get("current_credentials", {}).get("password"))
             client = _get_pdu_client(current_ip, web_port, admin_user, admin_pass)
 
             # Apply template
@@ -2544,6 +2594,9 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
             with _batch_lock:
                 _BATCH_JOBS[job_id]["results"][pdu_key] = status
 
+            effective_user = (new_admin_user if user_wants_rename else cur_cred_user)
+            effective_pass = new_admin_pass or admin_pass
+
             pdu_data = {
                 "label": template.get("system", {}).get("router_hostname", "") or template.get("system", {}).get("device_name", f"PDU-{new_ip}"),
                 "snmp_port": 161,
@@ -2553,10 +2606,14 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                 "mac_address": mac,
                 "hostname": pdu_template.get("system", {}).get("router_hostname", ""),
                 "web_admin_port": web_port,
-                "web_admin_user": template.get("users", {}).get("admin_username", "admin"),
-                "web_admin_pass": template.get("users", {}).get("admin_password", "admin"),
+                "web_admin_user": effective_user,
+                "web_admin_pass": effective_pass,
             }
             pdu_id = PDURepo.upsert(hall_id, new_ip, pdu_data)
+
+            _evict_pdu_client(current_ip, web_port)
+            if new_ip != current_ip:
+                _evict_pdu_client(new_ip, web_port)
 
             status["step"] = "done"
             status["success"] = True
@@ -2582,9 +2639,7 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
 def pdu_admin_telemetry(host: str):
     """Get live telemetry from a PDU via its web admin CGI."""
     try:
-        port = int(request.args.get("port", 6662))
-        username = request.args.get("username", "admin")
-        password = request.args.get("password", "admin")
+        port, username, password = _web_admin_creds_from_request()
         client = _get_pdu_client(host, port, username, password)
         telemetry = client.get_live_telemetry()
         return jsonify({"success": True, "telemetry": telemetry})
@@ -2597,9 +2652,7 @@ def pdu_admin_telemetry(host: str):
 def pdu_admin_logs(host: str):
     """Get event logs from a PDU."""
     try:
-        port = int(request.args.get("port", 6662))
-        username = request.args.get("username", "admin")
-        password = request.args.get("password", "admin")
+        port, username, password = _web_admin_creds_from_request()
         client = _get_pdu_client(host, port, username, password)
         logs = client.get_logs()
         return jsonify({"success": True, "logs": logs})
@@ -2612,9 +2665,7 @@ def pdu_admin_logs(host: str):
 def pdu_admin_get_alarm_thresholds(host: str):
     """Read alarm threshold settings from a PDU."""
     try:
-        port = int(request.args.get("port", 6662))
-        username = request.args.get("username", "admin")
-        password = request.args.get("password", "admin")
+        port, username, password = _web_admin_creds_from_request()
         client = _get_pdu_client(host, port, username, password)
         thresholds = client.get_alarm_thresholds()
         return jsonify({"success": True, "thresholds": thresholds})
@@ -2627,9 +2678,7 @@ def pdu_admin_get_alarm_thresholds(host: str):
 def pdu_admin_set_alarm_thresholds(host: str):
     """Write alarm threshold settings to a PDU."""
     try:
-        port = int(request.args.get("port", 6662))
-        username = request.args.get("username", "admin")
-        password = request.args.get("password", "admin")
+        port, username, password = _web_admin_creds_from_request()
         data = request.get_json(force=True) if request.data else {}
         client = _get_pdu_client(host, port, username, password)
         ok = client.set_alarm_thresholds(**data)
@@ -2992,6 +3041,43 @@ def update_pdu(pdu_id: int):
             PDURepo.rename(pdu_id, label.strip())
         return jsonify({"success": True, "id": pdu_id, "label": label})
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/pdus/<int:pdu_id>/web-credentials", methods=["PUT"])
+def update_pdu_web_credentials(pdu_id: int):
+    """Verify and persist web-admin credentials for an already-commissioned PDU."""
+    try:
+        data = request.get_json(force=True)
+        pdu = PDURepo.get(pdu_id)
+        if not pdu:
+            return jsonify({"error": "PDU not found"}), 404
+
+        host = pdu.get("remote_host") or pdu["ip_address"]
+        port = int(data.get("web_admin_port") or pdu.get("web_admin_port") or _DEFAULT_WEB_ADMIN_PORT)
+        username = _coalesce_credential(data.get("web_admin_user", pdu.get("web_admin_user")))
+        password = _coalesce_credential(data.get("web_admin_pass", pdu.get("web_admin_pass")))
+
+        client = PDUWebClient(host, port, username, password)
+        if not client.login():
+            return jsonify({
+                "error": f"Login failed for {host}:{port} (user={username}) — check credentials",
+            }), 401
+
+        PDURepo.upsert(
+            pdu["hall_id"],
+            pdu["ip_address"],
+            {
+                "web_admin_port": port,
+                "web_admin_user": username,
+                "web_admin_pass": password,
+            },
+        )
+        _evict_pdu_client(host, port)
+        return jsonify({"success": True, "ip_address": pdu["ip_address"]})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 
