@@ -474,6 +474,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
       ip: d.ip,
       mac: d.mac || '',
       web_admin_port: d.web_admin_port || 80,
+      web_admin_https: d.web_admin_https ? 1 : 0,
       snmp_version: d.snmp_version || '1',
     }));
     // Tell the backend the order in the payload is authoritative — we already

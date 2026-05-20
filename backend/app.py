@@ -2082,13 +2082,8 @@ def _get_pdu_client(host: str, port: int = 6662,
         return client
 
 
-def _batch_connect_credentials(ip: str, template: dict) -> Tuple[str, str, bool]:
-    """Credentials for batch login.
-
-    Already-commissioned PDUs may have a changed password and HTTPS enabled
-    from a prior batch — use stored DB credentials instead of the template's
-    stale "Current PDU Password" field.
-    """
+def _batch_credential_candidates(ip: str, template: dict) -> list[tuple[str, str, str]]:
+    """Ordered login attempts for batch deploy — template first, DB as fallback."""
     tpl_user = _coalesce_credential(template.get("current_credentials", {}).get("username"))
     tpl_pass_raw = template.get("current_credentials", {}).get("password")
     tpl_pass = (
@@ -2096,14 +2091,15 @@ def _batch_connect_credentials(ip: str, template: dict) -> Tuple[str, str, bool]
         if isinstance(tpl_pass_raw, str) and tpl_pass_raw.strip()
         else _coalesce_credential(tpl_pass_raw)
     )
-
+    candidates: list[tuple[str, str, str]] = [(tpl_user, tpl_pass, "template")]
     existing = PDURepo.get_by_ip(ip)
     if existing:
         db_pass = (existing.get("web_admin_pass") or "").strip()
         if db_pass:
             db_user = _coalesce_credential(existing.get("web_admin_user"), tpl_user)
-            return db_user, db_pass, True
-    return tpl_user, tpl_pass, False
+            if (db_user, db_pass) != (tpl_user, tpl_pass):
+                candidates.append((db_user, db_pass, "db"))
+    return candidates
 
 
 def _batch_hold_pdu_sessions(ip: str, web_port: int = 80) -> None:
@@ -2225,32 +2221,31 @@ def _wait_for_pdu_after_reboot(
 def _connect_batch_pdu_client(
     ip: str,
     port: int,
-    username: str,
-    password: str,
+    template: dict,
     *,
-    creds_from_db: bool = False,
+    web_https_hint: bool = False,
 ) -> Tuple[PDUWebClient, int, bool]:
-    """Connect for batch commissioning — delegates to shared HTTP/HTTPS probe."""
+    """Connect for batch commissioning — template password first, DB as fallback."""
+    prefer_https: bool | None = True if web_https_hint else None
     existing = PDURepo.get_by_ip(ip)
-    prefer_https = None
     if existing and _parse_use_https(existing.get("web_admin_https")):
         prefer_https = True
-    try:
-        return _connect_pdu_admin_probe(
-            ip, username, password, port=port, prefer_https=prefer_https
-        )
-    except ConnectionError as e:
-        if creds_from_db:
-            raise ConnectionError(
-                f"{e} — stored credentials may be stale; try Remote PDU or reset web credentials"
-            ) from e
-        existing = PDURepo.get_by_ip(ip)
-        if existing and _parse_use_https(existing.get("web_admin_https")):
-            raise ConnectionError(
-                f"{e} — PDU may still be on HTTP despite DB HTTPS flag; "
-                "try Remote PDU with HTTP port 80"
-            ) from e
-        raise
+
+    last_err: ConnectionError | None = None
+    for user, password, source in _batch_credential_candidates(ip, template):
+        try:
+            client, connect_port, connect_https = _connect_pdu_admin_probe(
+                ip, user, password, port=port, prefer_https=prefer_https
+            )
+            print(f"[batch] {ip} connected using {source} credentials as {user}")
+            return client, connect_port, connect_https
+        except ConnectionError as e:
+            last_err = e
+            print(f"[batch] {ip} login failed with {source} credentials")
+
+    raise ConnectionError(
+        f"{last_err} — check Current PDU Password in the batch template"
+    ) from last_err
 
 
 @app.route("/api/pdu-admin/connect", methods=["POST"])
@@ -2814,6 +2809,7 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
             current_ip = pdu_info.get("ip", "")
             mac = pdu_info.get("mac", "")
             web_port = pdu_info.get("web_admin_port", 80)
+            web_https_hint = _parse_use_https(pdu_info.get("web_admin_https"))
             pdu_key = mac or current_ip
 
             # Per-PDU status
@@ -2899,9 +2895,14 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                 with _batch_lock:
                     _BATCH_JOBS[job_id]["results"][pdu_key] = status
 
-                admin_user, admin_pass, creds_from_db = _batch_connect_credentials(current_ip, template)
-                if creds_from_db:
-                    print(f"[batch] {current_ip} using stored web-admin credentials from DB")
+                tpl_user = _coalesce_credential(template.get("current_credentials", {}).get("username"))
+                tpl_pass_raw = template.get("current_credentials", {}).get("password")
+                admin_user = tpl_user
+                admin_pass = (
+                    tpl_pass_raw.strip()
+                    if isinstance(tpl_pass_raw, str) and tpl_pass_raw.strip()
+                    else _coalesce_credential(tpl_pass_raw)
+                )
                 effective_user = (new_admin_user if user_wants_rename else admin_user)
                 effective_pass = new_admin_pass or admin_pass
                 needs_reboot = bool(pdu_template.get("network")) or web_access_enabled
@@ -2911,7 +2912,7 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
 
                 try:
                     client, connect_port, connect_https = _connect_batch_pdu_client(
-                        current_ip, web_port, admin_user, admin_pass, creds_from_db=creds_from_db
+                        current_ip, web_port, template, web_https_hint=web_https_hint
                     )
 
                     if web_access_enabled and not connect_https:
