@@ -173,17 +173,27 @@ class PDUWebClient:
         """Reboot using the active session — avoids re-login after long applies."""
         if not self._logged_in:
             self._ensure_session()
-        try:
-            resp = self._session.get(
-                f"{self.base_url}/reboot.cgi",
-                timeout=self.timeout,
-                verify=self._ssl_verify(),
-            )
-            self._logged_in = False
-            return resp.status_code == 200
-        except requests.exceptions.ConnectionError:
-            self._logged_in = False
-            return True  # PDU already rebooting
+        for path in ("reboot.cgi", "reboot.cgi?"):
+            try:
+                resp = self._session.get(
+                    f"{self.base_url}/{path}",
+                    timeout=self.timeout,
+                    verify=self._ssl_verify(),
+                )
+                print(
+                    f"[pdu] reboot {self.host} via {path} -> HTTP {resp.status_code}"
+                )
+                self._logged_in = False
+                if resp.status_code == 200:
+                    return True
+            except requests.exceptions.ConnectionError:
+                self._logged_in = False
+                print(f"[pdu] reboot {self.host} — connection dropped (device rebooting)")
+                return True
+            except Exception as e:
+                print(f"[pdu] reboot {self.host} via {path} failed: {e}")
+        self._logged_in = False
+        return False
 
     def wait_online(self, timeout: int = 90, poll_interval: int = 5) -> bool:
         """Block until the PDU responds to a login, or *timeout* seconds

@@ -2905,12 +2905,17 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                         try:
                             wa_cfg = client.get_web_access_config()
                             if str(wa_cfg.get("https_http", "0")) == "1":
-                                print(f"[batch] {current_ip} already configured for HTTPS — skipping web_access apply")
-                                web_access_enabled = False
+                                # HTTPS already written to device config but still
+                                # answering on HTTP — reboot never happened or failed.
+                                print(
+                                    f"[batch] {current_ip} HTTPS configured but still on HTTP "
+                                    "— reboot required (skipping web_access re-apply)"
+                                )
                                 pdu_template.pop("web_access", None)
+                                web_access_enabled = True  # keep for post-reboot verify
                                 post_web_port = int(wa_cfg.get("https_port") or 443)
                                 post_use_https = True
-                                needs_reboot = bool(pdu_template.get("network"))
+                                needs_reboot = True
                         except Exception:
                             pass
 
@@ -2923,6 +2928,27 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
 
                     report = client.apply_batch_template(pdu_template, reboot_after=needs_reboot)
                     status["sections"] = report
+                    reboot_ok = report.get("_reboot", {}).get("success", False)
+                    if needs_reboot:
+                        print(
+                            f"[batch] {current_ip} reboot requested — "
+                            f"{'OK' if reboot_ok else 'FAILED (no buzz expected)'}"
+                        )
+                        status["rebooted"] = reboot_ok
+                    else:
+                        print(f"[batch] {current_ip} config applied — no reboot needed")
+                        status["rebooted"] = False
+
+                    if needs_reboot and not reboot_ok:
+                        status["step"] = "reboot_failed"
+                        status["error"] = (
+                            f"Settings applied but reboot.cgi failed at {current_ip} — "
+                            "reboot manually from PDU web UI or power-cycle"
+                        )
+                        with _batch_lock:
+                            _BATCH_JOBS[job_id]["results"][pdu_key] = status
+                            _BATCH_JOBS[job_id]["completed"] += 1
+                        continue
 
                     if needs_reboot:
                         status["step"] = "verifying"
