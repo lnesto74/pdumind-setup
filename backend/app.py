@@ -582,7 +582,9 @@ MULTI_PDU_THREAD: Thread | None = None
 MULTI_PDU_STOP = False
 
 
-def _poll_remote_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+def _poll_remote_pdu(
+    pdu: Dict[str, Any], *, _allow_repair: bool = True
+) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Poll a remote PDU via its web admin CGI panel.
     Uses non-blocking lock acquisition: if the client is busy (e.g. settings
     panel open), skip this cycle and return cached results instead of blocking
@@ -675,6 +677,10 @@ def _poll_remote_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str
             client._lock.release()
 
     if last_err is not None and not results:
+        if _allow_repair and _repair_pdu_web_credentials(pdu):
+            fresh = PDURepo.get_by_ip(ip)
+            if fresh:
+                return _poll_remote_pdu(fresh, _allow_repair=False)
         return ip, results, errors
 
     return ip, results, errors
@@ -2233,6 +2239,47 @@ def _connect_pdu_admin_probe(
     raise ConnectionError(f"PDU login failed for {username} — tried {tried}")
 
 
+def _repair_pdu_web_credentials(
+    pdu: Dict[str, Any],
+    *,
+    username: str | None = None,
+    password: str | None = None,
+) -> bool:
+    """Re-probe a PDU and rewrite DB web-admin port/protocol/credentials."""
+    ip = pdu["ip_address"]
+    hall_id = pdu["hall_id"]
+    host = pdu.get("remote_host") or ip
+    user = (username or "").strip() or "admin"
+    pwd = password if password is not None and str(password).strip() else "admin"
+
+    _evict_all_pdu_clients_for_host(host)
+    try:
+        client, port, use_https = _connect_pdu_admin_probe(
+            host, user, pwd, port=_DEFAULT_WEB_ADMIN_PORT, prefer_https=None
+        )
+        try:
+            client.logout()
+        except Exception:
+            pass
+        PDURepo.upsert(
+            hall_id,
+            ip,
+            {
+                "web_admin_port": port,
+                "web_admin_https": use_https,
+                "web_admin_user": user,
+                "web_admin_pass": pwd,
+            },
+        )
+        _evict_all_pdu_clients_for_host(host)
+        scheme = "https" if use_https else "http"
+        print(f"[pdu-repair] {ip} -> {scheme}://{host}:{port} as {user}")
+        return True
+    except ConnectionError as exc:
+        print(f"[pdu-repair] {ip} failed: {exc}")
+        return False
+
+
 def _wait_for_pdu_after_reboot(
     host: str,
     username: str,
@@ -2270,12 +2317,12 @@ def _connect_batch_pdu_client(
 
     scan_port = int(port or _DEFAULT_WEB_ADMIN_PORT)
     endpoints: list[tuple[int, bool]] = []
-    if web_https_hint and scan_port == 443:
+    if web_https_hint or scan_port == 443:
         endpoints.append((443, True))
     endpoints.append((80, False))
-    if web_https_hint and scan_port != 443:
-        endpoints.append((scan_port, True))
-    elif not web_https_hint:
+    if scan_port not in (80, 443):
+        endpoints.append((scan_port, web_https_hint))
+    elif not any(h for _, h in endpoints):
         endpoints.append((443, True))
     # dedupe preserving order
     seen: set[tuple[int, bool]] = set()
@@ -3589,11 +3636,14 @@ def update_pdu_web_credentials(pdu_id: int):
         username = _coalesce_credential(data.get("web_admin_user", pdu.get("web_admin_user")))
         password = _coalesce_credential(data.get("web_admin_pass", pdu.get("web_admin_pass")))
 
-        client = PDUWebClient(host, port, username, password, use_https=use_https)
-        if not client.login():
-            return jsonify({
-                "error": f"Login failed for {'https' if use_https else 'http'}://{host}:{port} (user={username}) — check credentials",
-            }), 401
+        prefer_https = True if use_https else (False if "web_admin_https" in data else None)
+        client, port, use_https = _connect_pdu_admin_probe(
+            host, username, password, port=port, prefer_https=prefer_https
+        )
+        try:
+            client.logout()
+        except Exception:
+            pass
 
         PDURepo.upsert(
             pdu["hall_id"],
@@ -3607,6 +3657,39 @@ def update_pdu_web_credentials(pdu_id: int):
         )
         _evict_pdu_client(host, port, use_https)
         return jsonify({"success": True, "ip_address": pdu["ip_address"]})
+    except ConnectionError as e:
+        return jsonify({"error": str(e)}), 401
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/halls/<int:hall_id>/pdus/repair-web-access", methods=["POST"])
+def repair_hall_web_access(hall_id: int):
+    """Re-probe every commissioned PDU in a hall and fix stored web-admin credentials.
+
+    Body (optional): web_admin_user, web_admin_pass — defaults to admin/admin.
+    Use after batch commissioning stored wrong HTTPS/password values.
+    """
+    try:
+        data = request.get_json(force=True) if request.data else {}
+        user = data.get("web_admin_user") or data.get("username")
+        password = data.get("web_admin_pass") or data.get("password")
+        pdus = PDURepo.get_by_hall(hall_id)
+        results = []
+        for pdu in pdus:
+            if not pdu.get("web_admin_port"):
+                continue
+            ok = _repair_pdu_web_credentials(pdu, username=user, password=password)
+            results.append({"ip": pdu["ip_address"], "success": ok})
+        repaired = sum(1 for r in results if r["success"])
+        return jsonify({
+            "success": True,
+            "repaired": repaired,
+            "total": len(results),
+            "results": results,
+        })
     except Exception as e:
         import traceback
         traceback.print_exc()
