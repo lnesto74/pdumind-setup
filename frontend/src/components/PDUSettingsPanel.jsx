@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import PduNtpSettingsForm from './PduNtpSettingsForm';
+import { splitSntpServers } from '../constants/pduSettings';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -73,7 +75,14 @@ const PDUSettingsPanel = ({ pdu }) => {
       if (data.success || data.network) {
         setNetwork(data.network || {});
         setSnmp(data.snmp || {});
-        setTimeConfig(data.time || {});
+        const time = data.time || {};
+        const sntpParts = splitSntpServers(time.sntp_server || time.sntp_server_raw || '');
+        setTimeConfig({
+          ...time,
+          sntp_server: time.sntp_server || sntpParts.primary,
+          sntp_server2: time.sntp_server2 || sntpParts.secondary,
+          timezone: String(time.timezone ?? '79'),
+        });
         setDeviceInfo(data.device || {});
         setSystemConfig(data.system || {});
         setUsers(data.users || {});
@@ -566,35 +575,11 @@ const PDUSettingsPanel = ({ pdu }) => {
                   Apply to PDU
                 </button>
               </div>
-
-              <div className="grid grid-cols-3 gap-3 mb-4">
-                <InputField label="Year" value={timeConfig.year}
-                  onChange={v => setTimeConfig(p => ({ ...p, year: v }))} />
-                <InputField label="Month" value={timeConfig.month}
-                  onChange={v => setTimeConfig(p => ({ ...p, month: v }))} />
-                <InputField label="Day" value={timeConfig.day}
-                  onChange={v => setTimeConfig(p => ({ ...p, day: v }))} />
-                <InputField label="Hour" value={timeConfig.hour}
-                  onChange={v => setTimeConfig(p => ({ ...p, hour: v }))} />
-                <InputField label="Minute" value={timeConfig.minute}
-                  onChange={v => setTimeConfig(p => ({ ...p, minute: v }))} />
-                <InputField label="Second" value={timeConfig.second}
-                  onChange={v => setTimeConfig(p => ({ ...p, second: v }))} />
-              </div>
-
-              <div className="border-t border-[#233544] pt-4 mt-4">
-                <h4 className="text-xs font-bold text-slate-400 mb-3 uppercase">SNTP</h4>
-                <div className="grid grid-cols-2 gap-3">
-                  <InputField label="SNTP Server" value={timeConfig.sntp_server}
-                    onChange={v => setTimeConfig(p => ({ ...p, sntp_server: v }))} />
-                  <InputField label="Timezone" value={timeConfig.timezone}
-                    onChange={v => setTimeConfig(p => ({ ...p, timezone: v }))} />
-                  <InputField label="Update Interval" value={timeConfig.update_interval}
-                    onChange={v => setTimeConfig(p => ({ ...p, update_interval: v }))} />
-                  <InputField label="Correction" value={timeConfig.correction}
-                    onChange={v => setTimeConfig(p => ({ ...p, correction: v }))} />
-                </div>
-              </div>
+              <PduNtpSettingsForm
+                value={timeConfig}
+                onChange={setTimeConfig}
+                showManualTime
+              />
             </div>
           )}
 

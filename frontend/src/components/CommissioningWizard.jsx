@@ -7,6 +7,7 @@ import {
   DEFAULT_NTP_TEMPLATE,
   DEFAULT_WEB_ACCESS_TEMPLATE,
   combineSntpServers,
+  primarySntpServer,
   splitSntpServers,
 } from '../constants/pduSettings';
 
@@ -905,7 +906,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
           minute: editTime.minute,
           second: editTime.second,
           sntp_enabled: editTime.sntp_enabled ? 'true' : '',
-          sntp_server: combineSntpServers(editTime.sntp_server, editTime.sntp_server2),
+          sntp_server: primarySntpServer(editTime.sntp_server, editTime.sntp_server2),
           timezone: editTime.timezone,
           update_interval: editTime.update_interval,
           correction: editTime.correction,

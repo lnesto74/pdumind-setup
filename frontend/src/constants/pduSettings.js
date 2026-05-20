@@ -167,13 +167,28 @@ export const WEB_ACCESS_MODES = [
   { value: '1', label: 'HTTPS' },
 ];
 
-/** Join primary + secondary NTP into the single SNTPStatu_Server field the PDU accepts. */
-export function combineSntpServers(primary, secondary) {
-  return [primary, secondary].map(s => (s || '').trim()).filter(Boolean).join(',');
+/** Primary server written to the PDU (single SNTPStatu_Server field). */
+export function primarySntpServer(primary, secondary) {
+  return (primary || '').trim();
 }
 
-/** Split a combined SNTPStatu_Server value back into two UI fields. */
+/** Join primary + secondary NTP for display/preview only — NOT written to the PDU. */
+export function combineSntpServers(primary, secondary) {
+  const p = (primary || '').trim();
+  const s = (secondary || '').trim();
+  if (p && s) return `${p} (+ fallback ${s})`;
+  return p || s || '';
+}
+
+/** Split SNTPStatu_Server from the PDU (handles comma or URL-encoded comma garbage). */
 export function splitSntpServers(combined) {
-  const parts = String(combined || '').split(',').map(s => s.trim()).filter(Boolean);
+  let raw = String(combined || '');
+  try {
+    raw = decodeURIComponent(raw);
+  } catch {
+    /* keep raw */
+  }
+  raw = raw.replace(/%2C/gi, ',');
+  const parts = raw.split(',').map(s => s.trim()).filter(Boolean);
   return { primary: parts[0] || '', secondary: parts[1] || '' };
 }

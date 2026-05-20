@@ -421,8 +421,8 @@ class PDUWebClient:
 
             def _bool_val(new, cur_val):
                 if new is None:
-                    return "true" if cur_val else ""
-                return "true" if new else ""
+                    return "true" if cur_val else "false"
+                return "true" if new else "false"
 
             def _field(new, cur_val):
                 return cur_val if new is None else new
@@ -452,6 +452,9 @@ class PDUWebClient:
 
     def get_time_config(self) -> Dict[str, Any]:
         f = self._get_cgi("time_Onceload.cgi?")
+        raw_server = f[9] if len(f) > 9 else ""
+        primary, secondary = self.split_sntp_server_field(raw_server)
+        tz_raw = f[10] if len(f) > 10 else ""
         return {
             "year": f[2] if len(f) > 2 else "",
             "month": f[3] if len(f) > 3 else "",
@@ -460,12 +463,82 @@ class PDUWebClient:
             "minute": f[6] if len(f) > 6 else "",
             "second": f[7] if len(f) > 7 else "",
             "sntp_enabled": f[8] if len(f) > 8 else "",
-            "sntp_server": f[9] if len(f) > 9 else "",
-            "timezone": f[10] if len(f) > 10 else "",
+            "sntp_server": primary,
+            "sntp_server2": secondary,
+            "sntp_server_raw": raw_server,
+            "timezone": self.normalize_timezone_index(tz_raw),
             "update_interval": f[11] if len(f) > 11 else "",
             "correction": f[12] if len(f) > 12 else "",
             "csrf_token": f[14] if len(f) > 14 else "",
         }
+
+    @staticmethod
+    def split_sntp_server_field(raw: str) -> tuple[str, str]:
+        """Parse SNTPStatu_Server — PDU stores one hostname; comma/%2C is a mistaken join."""
+        from urllib.parse import unquote
+        decoded = unquote(raw or "").replace("%2C", ",").replace("%2c", ",")
+        parts = [p.strip() for p in decoded.split(",") if p.strip()]
+        return (parts[0] if parts else "", parts[1] if len(parts) > 1 else "")
+
+    @staticmethod
+    def normalize_timezone_index(raw: str) -> str:
+        """Return numeric SNTPStatu_TimeZone index (e.g. 79 = Bangkok)."""
+        s = str(raw or "").strip()
+        if s.isdigit():
+            return s
+        # Some firmware returns the label text — map Bangkok UTC+07.
+        lower = s.lower()
+        if "bangkok" in lower or "utc+07" in lower or "utc+7" in lower:
+            return "79"
+        return s or "79"
+
+    @staticmethod
+    def prepare_snmp_kwargs(snmp: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize batch/UI SNMP dict into explicit set_snmp() kwargs."""
+        if not snmp:
+            return {}
+        prepared = {
+            "read_community": snmp.get("read_community") or snmp.get("community_read"),
+            "write_community": snmp.get("write_community") or snmp.get("community_write"),
+            "snmpv1": bool(snmp.get("snmpv1", snmp.get("snmpv1_enabled", False))),
+            "snmpv2": bool(snmp.get("snmpv2", snmp.get("snmpv2_enabled", False))),
+            "snmpv3": bool(snmp.get("snmpv3", snmp.get("snmpv3_enabled", True))),
+            "snmpv3_username": snmp.get("snmpv3_username"),
+            "verify_protocol": snmp.get("verify_protocol"),
+            "auth_key": snmp.get("auth_key"),
+            "encrypt_protocol": snmp.get("encrypt_protocol"),
+            "priv_key": snmp.get("priv_key"),
+            "trap_ip": snmp.get("trap_ip", ""),
+        }
+        return prepared
+
+    @staticmethod
+    def prepare_time_kwargs(ntp: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize NTP dict — only primary SNTP hostname is written to the PDU."""
+        if not ntp:
+            return {}
+        payload = dict(ntp)
+        primary = (payload.pop("sntp_server", None) or "").strip()
+        payload.pop("sntp_server2", None)
+        payload.pop("sntp_server_raw", None)
+        for extra in (
+            "web_port", "web_admin_port", "username", "password",
+            "use_https", "web_admin_https", "host",
+        ):
+            payload.pop(extra, None)
+        if primary:
+            payload["sntp_server"] = primary
+        enabled = payload.get("sntp_enabled")
+        if isinstance(enabled, bool):
+            payload["sntp_enabled"] = "true" if enabled else ""
+        tz = payload.get("timezone")
+        if tz is not None:
+            payload["timezone"] = PDUWebClient.normalize_timezone_index(str(tz))
+        allowed = {
+            "year", "month", "day", "hour", "minute", "second",
+            "sntp_enabled", "sntp_server", "timezone", "update_interval", "correction",
+        }
+        return {k: v for k, v in payload.items() if k in allowed}
 
     def set_time(
         self,
@@ -1003,31 +1076,20 @@ class PDUWebClient:
             except Exception as e:
                 report["users"] = {"success": False, "error": str(e)}
 
-        # 4. SNMP
+        # 4. SNMP — always push explicit version flags + trap (empty clears trap IP).
         snmp = template.get("snmp", {})
         if snmp:
             try:
-                ok = self.set_snmp(**snmp)
+                ok = self.set_snmp(**self.prepare_snmp_kwargs(snmp))
                 report["snmp"] = {"success": ok}
             except Exception as e:
                 report["snmp"] = {"success": False, "error": str(e)}
 
-        # 5. NTP / Time
+        # 5. NTP / Time — primary SNTP server only (PDU has one field).
         ntp = template.get("ntp", {})
         if ntp:
             try:
-                ntp_payload = dict(ntp)
-                # PDU accepts a single SNTPStatu_Server — join primary + secondary.
-                primary = (ntp_payload.pop("sntp_server", None) or "").strip()
-                secondary = (ntp_payload.pop("sntp_server2", None) or "").strip()
-                servers = [s for s in [primary, secondary] if s]
-                if servers:
-                    ntp_payload["sntp_server"] = ",".join(servers)
-                # Checkbox on PDU web UI: "true" when enabled, empty when off.
-                enabled = ntp_payload.get("sntp_enabled")
-                if isinstance(enabled, bool):
-                    ntp_payload["sntp_enabled"] = "true" if enabled else ""
-                ok = self.set_time(**ntp_payload)
+                ok = self.set_time(**self.prepare_time_kwargs(ntp))
                 report["ntp"] = {"success": ok}
             except Exception as e:
                 report["ntp"] = {"success": False, "error": str(e)}

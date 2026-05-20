@@ -55,7 +55,7 @@ export default function PduNtpSettingsForm({ value, onChange, showManualTime = f
             className={fieldClass} />
         </div>
         <p className={`text-[9px] text-slate-600 ${compact ? '' : 'col-span-2'}`}>
-          Both servers are sent to the PDU as a comma-separated list in the single SNTP Server field.
+          Only the primary server is written to the PDU (one SNTP field). Keep a secondary here as your documented fallback if the primary is unreachable.
         </p>
         <div className={compact ? '' : 'col-span-2'}>
           <label className="text-[9px] text-slate-500 uppercase">SNTP Time Zone</label>

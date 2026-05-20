@@ -2691,19 +2691,7 @@ def pdu_admin_set_snmp(host: str):
         port, username, password, use_https = _web_admin_creds_from_json(data)
         client = _get_pdu_client(host, port, username, password, use_https=use_https)
 
-        ok = client.set_snmp(
-            read_community=data.get("community_read"),
-            write_community=data.get("community_write"),
-            snmpv1=data.get("snmpv1"),
-            snmpv2=data.get("snmpv2"),
-            snmpv3=data.get("snmpv3"),
-            trap_ip=data.get("trap_ip"),
-            snmpv3_username=data.get("snmpv3_username"),
-            verify_protocol=data.get("verify_protocol"),
-            auth_key=data.get("auth_key"),
-            encrypt_protocol=data.get("encrypt_protocol"),
-            priv_key=data.get("priv_key"),
-        )
+        ok = client.set_snmp(**PDUWebClient.prepare_snmp_kwargs(data))
         if ok:
             return jsonify({"success": True, "message": "SNMP settings applied"})
         return jsonify({"error": "Failed to apply SNMP settings"}), 500
@@ -2720,15 +2708,7 @@ def pdu_admin_set_time(host: str):
         port, username, password, use_https = _web_admin_creds_from_json(data)
         client = _get_pdu_client(host, port, username, password, use_https=use_https)
 
-        ok = client.set_time(
-            year=data.get("year"), month=data.get("month"), day=data.get("day"),
-            hour=data.get("hour"), minute=data.get("minute"), second=data.get("second"),
-            sntp_enabled=data.get("sntp_enabled"),
-            sntp_server=data.get("sntp_server"),
-            timezone=data.get("timezone"),
-            update_interval=data.get("update_interval"),
-            correction=data.get("correction"),
-        )
+        ok = client.set_time(**PDUWebClient.prepare_time_kwargs(data))
         if ok:
             return jsonify({"success": True, "message": "Time settings applied"})
         return jsonify({"error": "Failed to apply time settings"}), 500
