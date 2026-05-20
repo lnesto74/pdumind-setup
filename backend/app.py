@@ -2079,47 +2079,93 @@ def _connect_batch_pdu_client(
     username: str,
     password: str,
 ) -> Tuple[PDUWebClient, int, bool]:
-    """Connect for batch commissioning with HTTP→HTTPS auto-detection.
+    """Connect for batch commissioning with smart HTTP/HTTPS detection.
 
-    PDUs that already switched to HTTPS (e.g. after a partial batch run) only
-    accept HTTPS — retry on 443 when HTTP login fails.
+    - Tries HTTP first (unless DB already records HTTPS for this PDU).
+    - Retries login on HTTP to survive transient single-session conflicts.
+    - Falls back to HTTPS:443 only when HTTP is *unreachable*, not when
+      credentials are rejected (avoids misleading SSL errors on HTTP-only PDUs).
     """
+    http_port = int(port or _DEFAULT_WEB_ADMIN_PORT)
     existing = PDURepo.get_by_ip(ip)
+
     attempts: list[tuple[int, bool]] = []
     if existing and _parse_use_https(existing.get("web_admin_https")):
         attempts.append((int(existing.get("web_admin_port") or 443), True))
-    attempts.append((int(port or _DEFAULT_WEB_ADMIN_PORT), False))
-    if not any(h for p, h in attempts if h):
-        attempts.append((443, True))
+    attempts.append((http_port, False))
 
-    last_err: Exception | None = None
-    seen: set[tuple[int, bool]] = set()
-    for try_port, use_https in attempts:
-        key = (try_port, use_https)
-        if key in seen:
-            continue
-        seen.add(key)
+    def _try_login(try_port: int, use_https: bool) -> tuple[str, PDUWebClient | None, Exception | None]:
         _evict_pdu_client(ip, try_port, use_https)
         client = PDUWebClient(ip, try_port, username, password, use_https=use_https)
         with _pdu_clients_lock:
             _pdu_clients[_pdu_client_key(ip, try_port, use_https)] = client
-        try:
-            if client.login():
-                scheme = "https" if use_https else "http"
-                print(f"[batch] Connected to {scheme}://{ip}:{try_port} as {username}")
-                return client, try_port, use_https
-        except Exception as e:
-            last_err = e
+
+        saw_auth_reject = False
+        last_exc: Exception | None = None
+        for attempt in range(5):
+            try:
+                if client.login():
+                    scheme = "https" if use_https else "http"
+                    print(f"[batch] Connected to {scheme}://{ip}:{try_port} as {username}")
+                    return "ok", client, None
+                saw_auth_reject = True
+                time.sleep(1.0 * (attempt + 1))
+            except _requests_lib.exceptions.SSLError as e:
+                try:
+                    client.logout()
+                except Exception:
+                    pass
+                return "ssl", None, e
+            except (_requests_lib.exceptions.ConnectionError, _requests_lib.exceptions.Timeout) as e:
+                last_exc = e
+                time.sleep(1.0 * (attempt + 1))
+            except Exception as e:
+                last_exc = e
+                time.sleep(1.0 * (attempt + 1))
+
         try:
             client.logout()
         except Exception:
             pass
+        if saw_auth_reject and last_exc is None:
+            return "auth", None, None
+        return "unreachable", None, last_exc
 
-    scheme_port = ", ".join(
-        f"{'https' if h else 'http'}://{ip}:{p}" for p, h in sorted(seen)
+    http_status: str | None = None
+    http_exc: Exception | None = None
+    last_exc: Exception | None = None
+
+    for try_port, use_https in attempts:
+        status, client, exc = _try_login(try_port, use_https)
+        if status == "ok" and client is not None:
+            return client, try_port, use_https
+        if exc is not None:
+            last_exc = exc
+        if not use_https:
+            http_status = status
+            http_exc = exc
+
+    # Only probe HTTPS when HTTP could not be reached (e.g. PDU already HTTPS-only).
+    if http_status == "unreachable" and not any(h for _, h in attempts if h):
+        status, client, exc = _try_login(443, True)
+        if status == "ok" and client is not None:
+            return client, 443, True
+        if exc is not None:
+            last_exc = exc
+
+    if http_status == "auth":
+        raise ConnectionError(
+            f"PDU login failed for {username} at http://{ip}:{http_port} — "
+            "check Current PDU Password"
+        )
+
+    tried = ", ".join(
+        f"{'https' if h else 'http'}://{ip}:{p}" for p, h in attempts
     )
+    if http_status == "unreachable":
+        tried += f", https://{ip}:443"
     raise ConnectionError(
-        last_err or f"PDU login failed for {username} — tried {scheme_port}"
+        last_exc or f"PDU login failed for {username} — tried {tried}"
     )
 
 
@@ -2875,7 +2921,10 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
     with _batch_lock:
         _BATCH_JOBS[job_id]["status"] = "completed"
         _BATCH_JOBS[job_id]["finished_at"] = time.time()
-    print(f"[batch] Job {job_id} completed: {_BATCH_JOBS[job_id]['completed']}/{_BATCH_JOBS[job_id]['total']}")
+        results = _BATCH_JOBS[job_id]["results"]
+        ok = sum(1 for r in results.values() if r.get("success"))
+        fail = len(results) - ok
+    print(f"[batch] Job {job_id} completed: {ok} succeeded, {fail} failed of {_BATCH_JOBS[job_id]['total']}")
 
 
 @app.route("/api/pdu-admin/<host>/telemetry", methods=["GET"])
