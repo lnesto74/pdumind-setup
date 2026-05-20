@@ -3563,15 +3563,18 @@ def _http_probe_pdu(ip: str, ports: list[int] = None, connect_timeout: float = 1
         scheme = "https" if use_https else "http"
         body = ""
         try:
-            resp = _requests_lib.get(
+            from pdu_web_client import configure_pdu_session
+            session = configure_pdu_session(_requests_lib.Session(), use_https=use_https)
+            resp = session.get(
                 f"{scheme}://{ip}:{port}/",
                 timeout=http_timeout,
                 verify=False,
                 allow_redirects=True,
             )
             body = (resp.text or "")[:4096]
-        except _requests_lib.exceptions.SSLError:
-            # Common on PDUs with self-signed HTTPS — port is open, treat as found.
+        except _requests_lib.exceptions.SSLError as ssl_err:
+            # Retry once with explicit legacy context (should not happen after adapter fix).
+            print(f"[http-probe] {ip}:{port} SSL retry after {ssl_err}")
             if port in (443, 80, 6662, 8080):
                 return _http_scan_entry(ip, port, use_https=use_https)
             continue

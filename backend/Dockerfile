@@ -34,6 +34,9 @@ RUN pip install --upgrade pip && \
 
 COPY --chown=appuser:appuser backend .
 
+# PDUs use legacy SSL renegotiation on HTTPS — required for OpenSSL 3 in the container.
+ENV OPENSSL_CONF=/app/openssl-legacy.cnf
+
 USER appuser
 
 ENV PYTHONUNBUFFERED=1

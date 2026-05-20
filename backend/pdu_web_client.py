@@ -10,11 +10,13 @@ import hashlib
 import hmac
 import random
 import re
+import ssl
 import time as _time
 import threading
 from typing import Any, Dict, List, Optional
 
 import requests
+from requests.adapters import HTTPAdapter
 
 try:
     import urllib3
@@ -23,6 +25,34 @@ except Exception:
     pass
 
 _NONCE_CHARS = "ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678"
+
+# Embedded PDU HTTPS stacks often need OpenSSL "unsafe legacy renegotiation"
+# (disabled by default in OpenSSL 3 / Python 3.11+). Browsers still allow it.
+_LEGACY_RENEGOTIATION = getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
+
+
+def pdu_ssl_context() -> ssl.SSLContext:
+    """SSL context for legacy PDU web-admin HTTPS (self-signed + legacy renegotiation)."""
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.options |= _LEGACY_RENEGOTIATION
+    return ctx
+
+
+class _PduHttpsAdapter(HTTPAdapter):
+    """requests adapter that enables legacy SSL renegotiation for PDU HTTPS."""
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        pool_kwargs["ssl_context"] = pdu_ssl_context()
+        return super().init_poolmanager(connections, maxsize, block=block, **pool_kwargs)
+
+
+def configure_pdu_session(session: requests.Session, *, use_https: bool) -> requests.Session:
+    """Attach legacy-compatible HTTPS handling when talking to PDU web admin."""
+    if use_https:
+        session.mount("https://", _PduHttpsAdapter())
+    return session
 
 
 def _nonce(length: int = 20) -> str:
@@ -57,7 +87,7 @@ class PDUWebClient:
         self.username = username
         self.password = password
         self.timeout = timeout
-        self._session = requests.Session()
+        self._session = self._new_session()
         self._logged_in = False
         self._login_time: float = 0
         self._session_ttl = 15  # PDU times out after ~20 s; refresh at 15
@@ -67,6 +97,9 @@ class PDUWebClient:
     def _ssl_verify(self) -> bool:
         """PDUs ship with a default self-signed certificate when HTTPS is enabled."""
         return not self.use_https
+
+    def _new_session(self) -> requests.Session:
+        return configure_pdu_session(requests.Session(), use_https=self.use_https)
 
     # ------------------------------------------------------------------
     # Authentication
@@ -113,7 +146,7 @@ class PDUWebClient:
                 self._session.close()
             except Exception:
                 pass
-            self._session = requests.Session()
+            self._session = self._new_session()
             sha1_pass = hashlib.sha1(self.password.encode()).hexdigest()
             nonce = _nonce()
             hmac_val = hmac.new(
@@ -175,7 +208,7 @@ class PDUWebClient:
                 self._session.close()
             except Exception:
                 pass
-            self._session = requests.Session()
+            self._session = self._new_session()
             self._logged_in = False
 
     def _touch_session(self) -> None:
