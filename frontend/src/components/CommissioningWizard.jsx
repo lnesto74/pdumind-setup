@@ -133,6 +133,14 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
   const [batchRackMap, setBatchRackMap] = useState({}); // { pduKey: { rack_id, rack_code, slot } }
   const [dragPdu, setDragPdu] = useState(null); // currently dragged PDU key
 
+  // Web credential repair (uses hall DB + live probe — no manual curl)
+  const [repairPdus, setRepairPdus] = useState([]);
+  const [repairSelected, setRepairSelected] = useState(new Set());
+  const [repairUser, setRepairUser] = useState('admin');
+  const [repairPass, setRepairPass] = useState('admin');
+  const [repairResults, setRepairResults] = useState(null);
+  const [repairLoading, setRepairLoading] = useState(false);
+
   const currentStep = STEPS[step];
 
   // Fetch data when entering step 1 (Configure)
@@ -197,6 +205,74 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
       fetchAvailableRacks();
     }
   }, [step, hallId]);
+
+  const fetchRepairPdus = useCallback(async () => {
+    if (!hallId) return;
+    setRepairLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/halls/${hallId}/state`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load hall PDUs');
+      const pdus = (data.pdus || []).slice().sort((a, b) => compareIp(a.ip_address, b.ip_address));
+      setRepairPdus(pdus);
+      const webPdus = pdus.filter(p => p.web_admin_port);
+      setRepairSelected(new Set(webPdus.map(p => p.id)));
+      const firstWeb = webPdus[0];
+      if (firstWeb?.web_admin_user) setRepairUser(firstWeb.web_admin_user);
+      setRepairResults(null);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setRepairLoading(false);
+    }
+  }, [hallId]);
+
+  useEffect(() => {
+    if (step === 0 && scanMode === 'repair' && hallId) {
+      fetchRepairPdus();
+    }
+  }, [step, scanMode, hallId, fetchRepairPdus]);
+
+  const toggleRepairPdu = (pduId) => {
+    setRepairSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(pduId)) next.delete(pduId);
+      else next.add(pduId);
+      return next;
+    });
+  };
+
+  const runRepairWebAccess = async (pduIds = null) => {
+    if (!hallId) { setError('No data hall selected'); return; }
+    const ids = pduIds || [...repairSelected];
+    if (!ids.length) { setError('Select at least one PDU to repair'); return; }
+    if (!repairUser.trim()) { setError('Enter the web admin username'); return; }
+    if (!repairPass) { setError('Enter the web admin password that works in the browser'); return; }
+
+    setRepairLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/halls/${hallId}/pdus/repair-web-access`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          web_admin_user: repairUser.trim(),
+          web_admin_pass: repairPass,
+          pdu_ids: ids,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Repair failed');
+      setRepairResults(data);
+      await fetchRepairPdus();
+      if (data.repaired > 0 && onComplete) onComplete();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setRepairLoading(false);
+    }
+  };
 
   const fetchNextIp = async () => {
     try {
@@ -981,10 +1057,11 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   { id: 'subnet', label: 'Subnet Scan', icon: 'lan' },
                   { id: 'remote', label: 'Remote PDU', icon: 'cloud' },
                   { id: 'batch', label: 'Batch', icon: 'dynamic_feed' },
+                  { id: 'repair', label: 'Repair', icon: 'healing' },
                 ].map(m => (
                   <button
                     key={m.id}
-                    onClick={() => { setScanMode(m.id); setError(null); setDetectedDevice(null); setSubnetDevices([]); setRemoteSettings(null); setIsRemoteMode(false); }}
+                    onClick={() => { setScanMode(m.id); setError(null); setDetectedDevice(null); setSubnetDevices([]); setRemoteSettings(null); setIsRemoteMode(false); setRepairResults(null); }}
                     className={`flex-1 py-2 px-3 text-xs uppercase rounded-md flex items-center justify-center gap-1.5 transition-all ${
                       scanMode === m.id
                         ? 'bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/40'
@@ -1133,6 +1210,207 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   <p className="text-[10px] text-slate-600">
                     Connects to the PDU's web admin panel (CGI interface) using HMAC-SHA1 authentication.
                     Reads device info, network config, and SNMP settings.
+                  </p>
+                </div>
+              )}
+
+              {/* REPAIR WEB ACCESS — uses this hall's PDUs from the app DB */}
+              {scanMode === 'repair' && (
+                <div className="space-y-3">
+                  <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30">
+                    <p className="text-xs text-amber-200 leading-relaxed">
+                      Fixes telemetry and Remote PDU login when the database has the wrong HTTPS flag, port, or password after a partial batch run.
+                      Loads PDUs from <span className="font-semibold text-white">{hallName || `Hall #${hallId}`}</span> — no manual hall ID or IP list needed.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs text-slate-400">
+                      {repairPdus.length} PDU(s) in this hall
+                      {repairPdus.filter(p => p.web_admin_port).length !== repairPdus.length && (
+                        <span className="text-slate-500"> — {repairPdus.filter(p => !p.web_admin_port).length} SNMP-only (skipped)</span>
+                      )}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={fetchRepairPdus}
+                      disabled={repairLoading}
+                      className="text-[10px] text-[#00E5FF] hover:text-[#00E5FF]/80 flex items-center gap-1"
+                    >
+                      <span className={`material-icons-outlined text-xs ${repairLoading ? 'animate-spin' : ''}`}>refresh</span>
+                      Reload from hall
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[9px] text-slate-500 uppercase">Username (try on each PDU)</label>
+                      <input
+                        type="text"
+                        value={repairUser}
+                        onChange={e => setRepairUser(e.target.value)}
+                        className="w-full bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
+                        placeholder="admin"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[9px] text-slate-500 uppercase">Password (must work in browser now)</label>
+                      <input
+                        type="password"
+                        value={repairPass}
+                        onChange={e => setRepairPass(e.target.value)}
+                        className="w-full bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
+                        placeholder="admin"
+                      />
+                    </div>
+                  </div>
+                  {batchTemplate.current_credentials?.password && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRepairUser(batchTemplate.current_credentials.username || 'admin');
+                        setRepairPass(batchTemplate.current_credentials.password);
+                      }}
+                      className="text-[10px] text-slate-400 hover:text-[#00E5FF]"
+                    >
+                      Use batch template password ({batchTemplate.current_credentials.username || 'admin'})
+                    </button>
+                  )}
+
+                  {repairPdus.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[10px] text-slate-500 uppercase tracking-wider">Stored in database today</p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const webIds = repairPdus.filter(p => p.web_admin_port).map(p => p.id);
+                            setRepairSelected(prev => (prev.size === webIds.length ? new Set() : new Set(webIds)));
+                          }}
+                          className="text-[10px] text-[#00E5FF] hover:text-[#00E5FF]/80"
+                        >
+                          {repairSelected.size === repairPdus.filter(p => p.web_admin_port).length ? 'Deselect all' : 'Select all web PDUs'}
+                        </button>
+                      </div>
+                      <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
+                        {repairPdus.map(pdu => {
+                          const result = repairResults?.results?.find(r => r.id === pdu.id);
+                          const canRepair = !!pdu.web_admin_port;
+                          const storedScheme = pdu.web_admin_https ? 'https' : 'http';
+                          const storedPort = pdu.web_admin_port || '—';
+                          return (
+                            <div
+                              key={pdu.id}
+                              className={`p-3 rounded-lg border ${
+                                !canRepair
+                                  ? 'bg-[#0a1222] border-[#1f2a3a] opacity-60'
+                                  : repairSelected.has(pdu.id)
+                                    ? 'bg-emerald-500/10 border-emerald-500/40'
+                                    : 'bg-[#0B1120] border-[#233544]'
+                              }`}
+                            >
+                              <div className="flex items-start gap-3">
+                                {canRepair ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleRepairPdu(pdu.id)}
+                                    className={`mt-0.5 w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
+                                      repairSelected.has(pdu.id) ? 'border-emerald-400 bg-emerald-500/20' : 'border-slate-600'
+                                    }`}
+                                  >
+                                    {repairSelected.has(pdu.id) && (
+                                      <span className="material-icons-outlined text-emerald-400 text-xs">check</span>
+                                    )}
+                                  </button>
+                                ) : (
+                                  <span className="material-icons-outlined text-slate-600 text-sm mt-0.5">block</span>
+                                )}
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="font-mono text-white text-sm">{pdu.ip_address}</span>
+                                    {pdu.label && <span className="text-[10px] text-slate-500 truncate">{pdu.label}</span>}
+                                    {canRepair ? (
+                                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                                        DB: {storedScheme}:{storedPort} / {pdu.web_admin_user || 'admin'}
+                                      </span>
+                                    ) : (
+                                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-700/40 text-slate-400">SNMP only</span>
+                                    )}
+                                    {result && (
+                                      <span className={`text-[9px] px-1.5 py-0.5 rounded border ${
+                                        result.success
+                                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                                          : result.skipped
+                                            ? 'bg-slate-700/40 text-slate-400 border-slate-600/40'
+                                            : 'bg-red-500/20 text-red-300 border-red-500/30'
+                                      }`}>
+                                        {result.success
+                                          ? `Fixed → ${result.after?.web_admin_https ? 'https' : 'http'}:${result.after?.web_admin_port}`
+                                          : result.skipped ? 'Skipped' : 'Login failed'}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {result?.after && result.before && (
+                                    <p className="text-[10px] text-slate-500 mt-1 font-mono">
+                                      {result.before.web_admin_https ? 'https' : 'http'}:{result.before.web_admin_port}
+                                      {' → '}
+                                      {result.after.web_admin_https ? 'https' : 'http'}:{result.after.web_admin_port}
+                                    </p>
+                                  )}
+                                </div>
+                                {canRepair && (
+                                  <button
+                                    type="button"
+                                    onClick={() => runRepairWebAccess([pdu.id])}
+                                    disabled={repairLoading}
+                                    className="text-[10px] text-[#00E5FF] hover:text-white shrink-0 disabled:opacity-40"
+                                  >
+                                    Repair one
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {repairPdus.length === 0 && !repairLoading && (
+                    <p className="text-xs text-slate-500 text-center py-6">No PDUs in this hall yet. Commission PDUs first, then use Repair if telemetry breaks.</p>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => runRepairWebAccess()}
+                    disabled={repairLoading || repairSelected.size === 0}
+                    className="w-full px-5 py-2.5 bg-emerald-500/20 border border-emerald-500/50 hover:bg-emerald-500/30 disabled:opacity-50 text-emerald-300 rounded-lg flex items-center justify-center gap-2 transition-all text-sm"
+                  >
+                    {repairLoading ? (
+                      <span className="material-icons-outlined text-sm animate-spin">sync</span>
+                    ) : (
+                      <span className="material-icons-outlined text-sm">healing</span>
+                    )}
+                    Repair {repairSelected.size || 0} selected PDU{repairSelected.size === 1 ? '' : 's'}
+                  </button>
+
+                  {repairResults && (
+                    <div className={`p-3 rounded-lg border text-xs ${
+                      repairResults.repaired === repairResults.total && repairResults.total > 0
+                        ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200'
+                        : 'bg-amber-500/10 border-amber-500/40 text-amber-200'
+                    }`}>
+                      Repaired {repairResults.repaired} of {repairResults.total} attempted in {repairResults.hall_name || hallName}.
+                      {repairResults.repaired < repairResults.total && (
+                        <span className="block mt-1 text-amber-100/90">
+                          Failed units may still use a different password — try the password that works in Chrome for that IP.
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  <p className="text-[10px] text-slate-600 leading-relaxed">
+                    Probes HTTP port 80 and HTTPS port 443 on each selected PDU. On success, updates this hall&apos;s database so telemetry and Remote PDU use the correct protocol and credentials.
                   </p>
                 </div>
               )}

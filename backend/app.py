@@ -3667,27 +3667,70 @@ def update_pdu_web_credentials(pdu_id: int):
 
 @app.route("/api/halls/<int:hall_id>/pdus/repair-web-access", methods=["POST"])
 def repair_hall_web_access(hall_id: int):
-    """Re-probe every commissioned PDU in a hall and fix stored web-admin credentials.
+    """Re-probe commissioned PDUs in a hall and fix stored web-admin credentials.
 
-    Body (optional): web_admin_user, web_admin_pass — defaults to admin/admin.
-    Use after batch commissioning stored wrong HTTPS/password values.
+    Body (optional):
+      web_admin_user, web_admin_pass — credentials to try on each PDU (default admin/admin)
+      pdu_ids — list of PDU database ids; omit to repair all web-enabled PDUs in the hall
     """
     try:
+        hall = HallRepo.get(hall_id)
+        if not hall:
+            return jsonify({"error": "Hall not found"}), 404
+
         data = request.get_json(force=True) if request.data else {}
         user = data.get("web_admin_user") or data.get("username")
         password = data.get("web_admin_pass") or data.get("password")
+        pdu_ids = data.get("pdu_ids")
+        if pdu_ids is not None:
+            pdu_ids = {int(x) for x in pdu_ids}
+
         pdus = PDURepo.get_by_hall(hall_id)
         results = []
         for pdu in pdus:
+            if pdu_ids is not None and pdu["id"] not in pdu_ids:
+                continue
+            before = {
+                "web_admin_port": pdu.get("web_admin_port"),
+                "web_admin_https": bool(pdu.get("web_admin_https")),
+                "web_admin_user": pdu.get("web_admin_user"),
+            }
             if not pdu.get("web_admin_port"):
+                results.append({
+                    "id": pdu["id"],
+                    "ip": pdu["ip_address"],
+                    "label": pdu.get("label") or pdu.get("hostname"),
+                    "success": False,
+                    "skipped": True,
+                    "reason": "No web admin port stored — SNMP-only or not commissioned",
+                    "before": before,
+                })
                 continue
             ok = _repair_pdu_web_credentials(pdu, username=user, password=password)
-            results.append({"ip": pdu["ip_address"], "success": ok})
-        repaired = sum(1 for r in results if r["success"])
+            after = None
+            if ok:
+                refreshed = PDURepo.get(pdu["id"]) or pdu
+                after = {
+                    "web_admin_port": refreshed.get("web_admin_port"),
+                    "web_admin_https": bool(refreshed.get("web_admin_https")),
+                    "web_admin_user": refreshed.get("web_admin_user"),
+                }
+            results.append({
+                "id": pdu["id"],
+                "ip": pdu["ip_address"],
+                "label": pdu.get("label") or pdu.get("hostname"),
+                "success": ok,
+                "before": before,
+                "after": after,
+            })
+        attempted = [r for r in results if not r.get("skipped")]
+        repaired = sum(1 for r in attempted if r["success"])
         return jsonify({
             "success": True,
+            "hall_id": hall_id,
+            "hall_name": hall.get("name"),
             "repaired": repaired,
-            "total": len(results),
+            "total": len(attempted),
             "results": results,
         })
     except Exception as e:
