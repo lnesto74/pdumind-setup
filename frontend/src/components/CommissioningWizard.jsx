@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import PduSnmpSettingsForm from './PduSnmpSettingsForm';
 import PduNtpSettingsForm from './PduNtpSettingsForm';
+import PduWebAccessSettingsForm from './PduWebAccessSettingsForm';
 import {
   DEFAULT_SNMP_TEMPLATE,
   DEFAULT_NTP_TEMPLATE,
+  DEFAULT_WEB_ACCESS_TEMPLATE,
   combineSntpServers,
   splitSntpServers,
 } from '../constants/pduSettings';
@@ -77,7 +79,8 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
 
   // Remote PDU (web admin)
   const [remoteHost, setRemoteHost] = useState('');
-  const [remotePort, setRemotePort] = useState('6662');
+  const [remotePort, setRemotePort] = useState('80');
+  const [remoteUseHttps, setRemoteUseHttps] = useState(false);
   const [remoteUser, setRemoteUser] = useState('admin');
   const [remotePass, setRemotePass] = useState('admin');
   const [remoteSettings, setRemoteSettings] = useState(null); // full settings from PDU
@@ -93,6 +96,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
   const [editNetwork, setEditNetwork] = useState({});
   const [editSnmp, setEditSnmp] = useState({});
   const [editTime, setEditTime] = useState({});
+  const [editWebAccess, setEditWebAccess] = useState({ ...DEFAULT_WEB_ACCESS_TEMPLATE });
   const [ipConflict, setIpConflict] = useState(false);
   const [rebootStatus, setRebootStatus] = useState(null); // null | 'rebooting' | 'online' | 'failed'
 
@@ -115,6 +119,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
     users: { admin_username: 'admin', admin_password: '' },
     snmp: { ...DEFAULT_SNMP_TEMPLATE },
     ntp: { ...DEFAULT_NTP_TEMPLATE },
+    web_access: { ...DEFAULT_WEB_ACCESS_TEMPLATE },
     current_credentials: { username: 'admin', password: 'admin' },
   });
   const [batchStep, setBatchStep] = useState(0); // 0=scan, 1=template, 2=deploy, 3=report, 4=rack-assign
@@ -563,6 +568,16 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
           snmp_version: '2c',
         });
         setCommunity(data.snmp?.community_read || 'public');
+        if (data.web_access) {
+          setEditWebAccess({
+            https_http: data.web_access.https_http ?? '0',
+            http_port: data.web_access.http_port ?? '80',
+            https_port: data.web_access.https_port ?? '443',
+          });
+          const onHttps = String(data.web_access.https_http ?? '0') === '1';
+          setRemoteUseHttps(onHttps);
+          setRemotePort(String(onHttps ? (data.web_access.https_port ?? '443') : (data.web_access.http_port ?? remotePort)));
+        }
       } else {
         setError(data.error || 'Connection failed');
       }
@@ -614,6 +629,68 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                 return;
               }
             } catch { /* still offline */ }
+          }
+          setRebootStatus('failed');
+        };
+        poll();
+      } else {
+        setLoading(false);
+      }
+    } catch (e) {
+      setError(`Failed: ${e.message}`);
+      setLoading(false);
+    }
+  };
+
+  // Apply web access (HTTP/HTTPS) settings to remote PDU
+  const applyWebAccessSettings = async () => {
+    if (!isRemoteMode) return;
+    setLoading(true);
+    setError(null);
+    setRebootStatus(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/pdu-admin/${remoteHost}/settings/web-access`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...editWebAccess,
+          web_port: parseInt(remotePort) || 80,
+          use_https: remoteUseHttps ? 1 : 0,
+          username: remoteUser,
+          password: remotePass,
+          reboot: true,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        setError(data.error || 'Failed to apply web access settings');
+        setLoading(false);
+        return;
+      }
+
+      const targetHttps = String(editWebAccess.https_http) === '1';
+      const targetPort = targetHttps
+        ? String(editWebAccess.https_port || '443')
+        : String(editWebAccess.http_port || remotePort || '80');
+      setRemoteUseHttps(targetHttps);
+      setRemotePort(targetPort);
+
+      if (data.rebooting) {
+        setRebootStatus('rebooting');
+        setLoading(false);
+        const qp = `port=${targetPort}&use_https=${targetHttps ? '1' : '0'}&username=${encodeURIComponent(remoteUser)}&password=${encodeURIComponent(remotePass)}`;
+        const deadline = Date.now() + 90_000;
+        const poll = async () => {
+          while (Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, 5000));
+            try {
+              const pr = await fetch(`${API_BASE}/api/pdu-admin/${remoteHost}/ping?${qp}`);
+              const pd = await pr.json();
+              if (pd.online) {
+                setRebootStatus('online');
+                return;
+              }
+            } catch {}
           }
           setRebootStatus('failed');
         };
@@ -719,7 +796,8 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
     };
     if (isRemoteMode) {
       payload.remote_host = remoteHost;
-      payload.web_admin_port = parseInt(remotePort) || 6662;
+      payload.web_admin_port = parseInt(remotePort) || 80;
+      payload.web_admin_https = remoteUseHttps ? 1 : 0;
       payload.web_admin_user = remoteUser;
       payload.web_admin_pass = remotePass;
       payload.mac_address = detectedDevice?.mac || '';
@@ -1256,6 +1334,17 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                           onChange={ntp => setBatchTemplate(p => ({ ...p, ntp }))}
                         />
                       </div>
+                      {/* Web Access */}
+                      <div className="p-3 rounded-lg bg-[#0B1120] border border-[#233544]">
+                        <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider mb-2 flex items-center gap-1">
+                          <span className="material-icons-outlined text-xs">lock</span> Web Access
+                        </p>
+                        <PduWebAccessSettingsForm
+                          compact
+                          value={batchTemplate.web_access}
+                          onChange={web_access => setBatchTemplate(p => ({ ...p, web_access }))}
+                        />
+                      </div>
                       {/* Preview button */}
                       <button onClick={openBatchPreview} disabled={loading || batchSelected.size === 0}
                         className="w-full py-3 bg-emerald-500/20 border border-emerald-500/50 text-emerald-400 rounded-lg text-sm font-bold hover:bg-emerald-500/30 disabled:opacity-50 flex items-center justify-center gap-2">
@@ -1767,6 +1856,20 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     </div>
                     <PduNtpSettingsForm value={editTime} onChange={setEditTime} showManualTime />
                   </div>
+
+                  {/* Web Access */}
+                  <div className="p-4 rounded-xl bg-[#0B1120] border border-[#233544]">
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="text-xs font-bold text-[#00E5FF] uppercase tracking-wider flex items-center gap-1.5">
+                        <span className="material-icons-outlined text-sm">lock</span> Web Access
+                      </p>
+                      <button onClick={applyWebAccessSettings} disabled={loading}
+                        className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[10px] hover:bg-emerald-500/30 disabled:opacity-50 transition-all">
+                        {loading ? 'Applying...' : 'Apply & Reboot'}
+                      </button>
+                    </div>
+                    <PduWebAccessSettingsForm value={editWebAccess} onChange={setEditWebAccess} />
+                  </div>
                 </>
               ) : (
                 <>
@@ -2176,6 +2279,14 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                 <p className="text-slate-500 text-[9px] uppercase">NTP</p>
                 <p className="font-mono text-white truncate">
                   {combineSntpServers(batchTemplate.ntp?.sntp_server, batchTemplate.ntp?.sntp_server2) || '—'}
+                </p>
+              </div>
+              <div className="p-2 rounded bg-[#0B1120] border border-[#1a2638]">
+                <p className="text-slate-500 text-[9px] uppercase">Web Access</p>
+                <p className="font-mono text-white">
+                  {String(batchTemplate.web_access?.https_http) === '1'
+                    ? `HTTPS :${batchTemplate.web_access?.https_port || '443'} (reboot)`
+                    : `HTTP :${batchTemplate.web_access?.http_port || '80'}`}
                 </p>
               </div>
               <div className="p-2 rounded bg-[#0B1120] border border-[#1a2638]">

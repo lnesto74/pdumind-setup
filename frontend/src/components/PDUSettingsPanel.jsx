@@ -37,6 +37,7 @@ const StatusBadge = ({ ok, label }) => (
 const PDUSettingsPanel = ({ pdu }) => {
   const host = pdu?.remote_host || pdu?.ip;
   const port = pdu?.web_admin_port || 80;
+  const useHttps = !!(pdu?.web_admin_https);
   const username = pdu?.web_admin_user || 'admin';
   const password = pdu?.web_admin_pass || 'admin';
 
@@ -60,7 +61,7 @@ const PDUSettingsPanel = ({ pdu }) => {
 
   const telemetryTimer = useRef(null);
 
-  const queryParams = `port=${port}&username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
+  const queryParams = `port=${port}&use_https=${useHttps ? '1' : '0'}&username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
 
   const fetchSettings = useCallback(async () => {
     if (!host) return;
@@ -86,7 +87,27 @@ const PDUSettingsPanel = ({ pdu }) => {
     }
   }, [host, queryParams]);
 
-  useEffect(() => { fetchSettings(); }, [fetchSettings]);
+  // Pause background telemetry polling for this PDU while settings are open.
+  useEffect(() => {
+    if (!host) return undefined;
+    let cancelled = false;
+    const holdUrl = `${API_BASE}/api/pdu-admin/${host}/session/hold?port=${port}`;
+    const releaseUrl = `${API_BASE}/api/pdu-admin/${host}/session/release?port=${port}`;
+
+    (async () => {
+      try {
+        await fetch(holdUrl, { method: 'POST' });
+        if (!cancelled) await fetchSettings();
+      } catch (e) {
+        if (!cancelled) setError(`Connection failed: ${e.message}`);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      fetch(releaseUrl, { method: 'POST' }).catch(() => {});
+    };
+  }, [host, port, useHttps, fetchSettings]);
 
   // Auto-poll telemetry from the cached background poller (no direct PDU login)
   useEffect(() => {

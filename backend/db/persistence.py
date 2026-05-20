@@ -64,6 +64,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ("web_admin_port", "INTEGER"),
         ("web_admin_user", "TEXT"),
         ("web_admin_pass", "TEXT"),
+        ("web_admin_https", "INTEGER"),
     ]
     for col, typ in migrations:
         if col not in existing:
@@ -407,7 +408,8 @@ class PDURepo:
                            snmp_community_ref = ?, mac_address = ?, hostname = ?,
                            label = ?, location = ?, metadata_json = ?,
                            is_active = ?, remote_host = ?, web_admin_port = ?,
-                           web_admin_user = ?, web_admin_pass = ?, updated_at = ?
+                           web_admin_user = ?, web_admin_pass = ?, web_admin_https = ?,
+                           updated_at = ?
                            WHERE id = ?""",
                         (
                             data.get("rack_id"),
@@ -426,6 +428,7 @@ class PDURepo:
                             data.get("web_admin_port"),
                             data.get("web_admin_user"),
                             data.get("web_admin_pass"),
+                            1 if data.get("web_admin_https") else 0,
                             _utc_now(),
                             existing["id"]
                         )
@@ -438,8 +441,9 @@ class PDURepo:
                            (hall_id, rack_id, pdu_model_id, mount_position, ip_address,
                             snmp_port, snmp_version, snmp_community_ref, mac_address,
                             hostname, label, location, metadata_json, is_active,
-                            remote_host, web_admin_port, web_admin_user, web_admin_pass)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            remote_host, web_admin_port, web_admin_user, web_admin_pass,
+                            web_admin_https)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             hall_id,
                             data.get("rack_id"),
@@ -459,6 +463,7 @@ class PDURepo:
                             data.get("web_admin_port"),
                             data.get("web_admin_user"),
                             data.get("web_admin_pass"),
+                            1 if data.get("web_admin_https") else 0,
                         )
                     )
                     conn.commit()

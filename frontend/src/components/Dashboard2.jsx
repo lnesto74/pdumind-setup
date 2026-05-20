@@ -230,6 +230,7 @@ const Dashboard2 = () => {
             mac_address: pdu.mac_address || '',
             remote_host: pdu.remote_host || '',
             web_admin_port: pdu.web_admin_port,
+            web_admin_https: pdu.web_admin_https,
             web_admin_user: pdu.web_admin_user,
             web_admin_pass: pdu.web_admin_pass,
           }));
@@ -1865,7 +1866,7 @@ const Dashboard2 = () => {
           {activeTab === 'pdu-settings' && (
             <PDUSettingsPanel pdu={(() => {
               const p = hallPDUs.find(p => expandedPdu && (p.id === expandedPdu || p.dbId === expandedPdu));
-              return p ? { ip: p.ip, remote_host: p.remote_host, web_admin_port: p.web_admin_port, web_admin_user: p.web_admin_user, web_admin_pass: p.web_admin_pass } : null;
+              return p ? { ip: p.ip, remote_host: p.remote_host, web_admin_port: p.web_admin_port, web_admin_https: p.web_admin_https, web_admin_user: p.web_admin_user, web_admin_pass: p.web_admin_pass } : null;
             })()} />
           )}
         </main>

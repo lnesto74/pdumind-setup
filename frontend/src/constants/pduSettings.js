@@ -155,6 +155,18 @@ export const DEFAULT_NTP_TEMPLATE = {
   correction: '0',
 };
 
+/** Web access template matching sys_http.html (http_https_set.cgi). */
+export const DEFAULT_WEB_ACCESS_TEMPLATE = {
+  https_http: '0',   // 0=HTTP, 1=HTTPS
+  http_port: '80',
+  https_port: '443',
+};
+
+export const WEB_ACCESS_MODES = [
+  { value: '0', label: 'HTTP' },
+  { value: '1', label: 'HTTPS' },
+];
+
 /** Join primary + secondary NTP into the single SNTPStatu_Server field the PDU accepts. */
 export function combineSntpServers(primary, secondary) {
   return [primary, secondary].map(s => (s || '').trim()).filter(Boolean).join(',');

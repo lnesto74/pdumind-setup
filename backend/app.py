@@ -588,12 +588,18 @@ def _poll_remote_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str
     panel open), skip this cycle and return cached results instead of blocking
     the entire poller thread."""
     ip = pdu["ip_address"]
-    host, web_port, web_user, web_pass = _web_admin_creds_from_pdu(pdu)
+    host, web_port, web_user, web_pass, use_https = _web_admin_creds_from_pdu(pdu)
+
+    if is_pdu_admin_held(host, web_port, use_https):
+        print(f"[poll_remote] {ip} skipped — PDU Settings session active")
+        with MULTI_PDU_LOCK:
+            cached = MULTI_PDU_RESULTS.get(ip, {})
+        return ip, cached, {}
 
     results = {}
     errors = {}
 
-    client = _get_pdu_client(host, web_port, web_user, web_pass)
+    client = _get_pdu_client(host, web_port, web_user, web_pass, use_https=use_https)
 
     # Non-blocking: if another thread holds the lock (settings panel, etc.),
     # return cached results rather than blocking for 10-60+ seconds.
@@ -648,13 +654,13 @@ def _poll_remote_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str
             results = MULTI_PDU_RESULTS.get(ip, {})
         print(f"[poll_remote] {ip} error, returning cached data: {e}")
     finally:
-        client._lock.release()
-        # Always logout after polling to free the PDU's single-session slot
-        # so the settings panel / other clients can connect
+        # Logout before releasing the lock so another thread cannot login
+        # while this one is still tearing down the PDU's single web session.
         try:
             client.logout()
         except Exception:
             pass
+        client._lock.release()
 
     return ip, results, errors
 
@@ -1953,23 +1959,42 @@ def _coalesce_credential(value: str | None, fallback: str = "admin") -> str:
     return value.strip() if isinstance(value, str) else str(value)
 
 
-def _web_admin_creds_from_pdu(pdu: Dict[str, Any]) -> Tuple[str, int, str, str]:
+def _parse_use_https(value: Any) -> bool:
+    return str(value).lower() in ("1", "true", "yes", "on")
+
+
+def _web_admin_creds_from_pdu(pdu: Dict[str, Any]) -> Tuple[str, int, str, str, bool]:
     host = pdu.get("remote_host") or pdu["ip_address"]
-    port = int(pdu.get("web_admin_port") or _DEFAULT_WEB_ADMIN_PORT)
+    use_https = _parse_use_https(pdu.get("web_admin_https") or 0)
+    default_port = 443 if use_https else _DEFAULT_WEB_ADMIN_PORT
+    port = int(pdu.get("web_admin_port") or default_port)
     user = _coalesce_credential(pdu.get("web_admin_user"))
     password = _coalesce_credential(pdu.get("web_admin_pass"))
-    return host, port, user, password
+    return host, port, user, password, use_https
 
 
-def _web_admin_creds_from_request(default_port: int = _DEFAULT_WEB_ADMIN_PORT) -> Tuple[int, str, str]:
-    port = int(request.args.get("port") or default_port)
+def _web_admin_creds_from_request(default_port: int | None = None) -> Tuple[int, str, str, bool]:
+    use_https = _parse_use_https(request.args.get("use_https", "0"))
+    port = int(request.args.get("port") or (443 if use_https else (default_port or _DEFAULT_WEB_ADMIN_PORT)))
     username = _coalesce_credential(request.args.get("username"))
     password = _coalesce_credential(request.args.get("password"))
-    return port, username, password
+    return port, username, password, use_https
 
 
-def _evict_pdu_client(host: str, port: int) -> None:
-    key = f"{host}:{port}"
+def _web_admin_creds_from_json(data: Dict[str, Any]) -> Tuple[int, str, str, bool]:
+    use_https = _parse_use_https(data.get("use_https", data.get("web_admin_https", 0)))
+    port = int(
+        data.get("web_port")
+        or data.get("web_admin_port")
+        or (443 if use_https else _DEFAULT_WEB_ADMIN_PORT)
+    )
+    username = _coalesce_credential(data.get("username", data.get("web_admin_user")))
+    password = _coalesce_credential(data.get("password", data.get("web_admin_pass")))
+    return port, username, password, use_https
+
+
+def _evict_pdu_client(host: str, port: int, use_https: bool = False) -> None:
+    key = _pdu_client_key(host, port, use_https)
     with _pdu_clients_lock:
         client = _pdu_clients.pop(key, None)
     if client:
@@ -1979,21 +2004,65 @@ def _evict_pdu_client(host: str, port: int) -> None:
             pass
 
 
+_pdu_admin_holds: Dict[str, int] = {}
+_pdu_admin_holds_lock = Lock()
+
+
+def _pdu_client_key(host: str, port: int, use_https: bool = False) -> str:
+    scheme = "https" if use_https else "http"
+    return f"{scheme}:{host}:{port}"
+
+
+def hold_pdu_admin(host: str, port: int, use_https: bool = False) -> None:
+    """Pause background telemetry polling while the operator uses PDU Settings."""
+    key = _pdu_client_key(host, port, use_https)
+    with _pdu_admin_holds_lock:
+        _pdu_admin_holds[key] = _pdu_admin_holds.get(key, 0) + 1
+
+
+def release_pdu_admin(host: str, port: int, use_https: bool = False) -> None:
+    key = _pdu_client_key(host, port, use_https)
+    with _pdu_admin_holds_lock:
+        count = _pdu_admin_holds.get(key, 0)
+        if count <= 1:
+            _pdu_admin_holds.pop(key, None)
+        else:
+            _pdu_admin_holds[key] = count - 1
+
+
+def is_pdu_admin_held(host: str, port: int, use_https: bool = False) -> bool:
+    key = _pdu_client_key(host, port, use_https)
+    with _pdu_admin_holds_lock:
+        return _pdu_admin_holds.get(key, 0) > 0
+
+
+def _resolve_web_access_target(web_access: Dict[str, Any], fallback_port: int) -> Tuple[int, bool]:
+    """Return the post-reboot web-admin port and HTTPS flag from a template."""
+    if not web_access:
+        return int(fallback_port or _DEFAULT_WEB_ADMIN_PORT), False
+    use_https = str(web_access.get("https_http", "0")) == "1"
+    if use_https:
+        port = int(web_access.get("https_port") or 443)
+    else:
+        port = int(web_access.get("http_port") or fallback_port or _DEFAULT_WEB_ADMIN_PORT)
+    return port, use_https
+
+
 def _get_pdu_client(host: str, port: int = 6662,
-                     username: str = "admin", password: str = "admin") -> PDUWebClient:
-    key = f"{host}:{port}"
+                     username: str = "admin", password: str = "admin",
+                     use_https: bool = False) -> PDUWebClient:
+    key = _pdu_client_key(host, port, use_https)
     with _pdu_clients_lock:
         client = _pdu_clients.get(key)
         if client is None:
-            client = PDUWebClient(host, port, username, password)
+            client = PDUWebClient(host, port, username, password, use_https=use_https)
             _pdu_clients[key] = client
-        elif client.username != username or client.password != password:
-            # Credentials changed — recreate client
+        elif client.username != username or client.password != password or client.use_https != use_https:
             try:
                 client.logout()
             except Exception:
                 pass
-            client = PDUWebClient(host, port, username, password)
+            client = PDUWebClient(host, port, username, password, use_https=use_https)
             _pdu_clients[key] = client
         return client
 
@@ -2007,11 +2076,12 @@ def pdu_admin_connect():
         port = int(data.get("port") or _DEFAULT_WEB_ADMIN_PORT)
         username = _coalesce_credential(data.get("username"))
         password = _coalesce_credential(data.get("password"))
+        use_https = _parse_use_https(data.get("use_https", 0))
 
         if not host:
             return jsonify({"error": "host is required"}), 400
 
-        client = _get_pdu_client(host, port, username, password)
+        client = _get_pdu_client(host, port, username, password, use_https=use_https)
         # Use get_all_settings() which internally acquires the lock and
         # ensures a valid session – avoids racing with the background poller.
         try:
@@ -2027,23 +2097,53 @@ def pdu_admin_connect():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/pdu-admin/<host>/session/hold", methods=["POST"])
+def pdu_admin_session_hold(host: str):
+    """Pause background telemetry polling for this PDU while settings are open."""
+    try:
+        port, _, _, use_https = _web_admin_creds_from_request()
+        hold_pdu_admin(host, port, use_https)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/pdu-admin/<host>/session/release", methods=["POST"])
+def pdu_admin_session_release(host: str):
+    """Resume background telemetry polling after PDU Settings closes."""
+    try:
+        port, _, _, use_https = _web_admin_creds_from_request()
+        release_pdu_admin(host, port, use_https)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/pdu-admin/<host>/settings", methods=["GET"])
 def pdu_admin_get_settings(host: str):
     """Read all settings from a PDU.  Retries once on timeout since the
     background poller may have just released the session."""
     try:
-        port, username, password = _web_admin_creds_from_request()
-        client = _get_pdu_client(host, port, username, password)
+        port, username, password, use_https = _web_admin_creds_from_request()
+        client = _get_pdu_client(host, port, username, password, use_https=use_https)
         last_err = None
         for attempt in range(2):
+            acquired = client._lock.acquire(timeout=45)
+            if not acquired:
+                return jsonify({"error": "PDU is busy — try again in a few seconds"}), 503
             try:
+                # Clear any stale poller session before the bulk settings read.
+                client.logout()
+                time.sleep(0.5)
                 settings = client.get_all_settings()
                 break
-            except (_requests_lib.exceptions.ReadTimeout, _requests_lib.exceptions.ConnectionError) as e:
+            except (_requests_lib.exceptions.ReadTimeout, ConnectionError) as e:
                 last_err = e
                 if attempt == 0:
-                    print(f"[pdu-admin/settings] {host} timeout, retrying…")
+                    print(f"[pdu-admin/settings] {host} failed, retrying… ({e})")
                     time.sleep(2)
+            finally:
+                client._lock.release()
         else:
             raise last_err
         return jsonify({"success": True, **settings})
@@ -2058,10 +2158,8 @@ def pdu_admin_set_network(host: str):
     new settings take effect on the network interface."""
     try:
         data = request.get_json(force=True)
-        port = int(data.get("web_port", 6662))
-        username = data.get("username", "admin")
-        password = data.get("password", "admin")
-        client = _get_pdu_client(host, port, username, password)
+        port, username, password, use_https = _web_admin_creds_from_json(data)
+        client = _get_pdu_client(host, port, username, password, use_https=use_https)
 
         # If DHCP mode change requested, apply it first
         dhcp_mode = data.get("dhcp")
@@ -2106,12 +2204,10 @@ def pdu_admin_reboot(host: str):
     """Reboot a PDU.  Optionally wait for it to come back online."""
     try:
         data = request.get_json(force=True) if request.data else {}
-        port = int(data.get("web_port", 6662))
-        username = data.get("username", "admin")
-        password = data.get("password", "admin")
+        port, username, password, use_https = _web_admin_creds_from_json(data)
         wait = data.get("wait", False)
 
-        client = _get_pdu_client(host, port, username, password)
+        client = _get_pdu_client(host, port, username, password, use_https=use_https)
         client.reboot()
 
         if wait:
@@ -2133,7 +2229,7 @@ def pdu_admin_ping(host: str):
     """Quick check if PDU web panel is reachable (used to poll after reboot).
     Uses a lightweight TCP probe so we don't steal the PDU's single session."""
     try:
-        port = int(request.args.get("port", 6662))
+        port, _, _, use_https = _web_admin_creds_from_request()
         import socket
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(5)
@@ -2149,10 +2245,8 @@ def pdu_admin_set_snmp(host: str):
     """Change SNMP settings on a PDU."""
     try:
         data = request.get_json(force=True)
-        port = int(data.get("web_port", 6662))
-        username = data.get("username", "admin")
-        password = data.get("password", "admin")
-        client = _get_pdu_client(host, port, username, password)
+        port, username, password, use_https = _web_admin_creds_from_json(data)
+        client = _get_pdu_client(host, port, username, password, use_https=use_https)
 
         ok = client.set_snmp(
             read_community=data.get("community_read"),
@@ -2180,10 +2274,8 @@ def pdu_admin_set_time(host: str):
     """Change time/SNTP settings on a PDU."""
     try:
         data = request.get_json(force=True)
-        port = int(data.get("web_port", 6662))
-        username = data.get("username", "admin")
-        password = data.get("password", "admin")
-        client = _get_pdu_client(host, port, username, password)
+        port, username, password, use_https = _web_admin_creds_from_json(data)
+        client = _get_pdu_client(host, port, username, password, use_https=use_https)
 
         ok = client.set_time(
             year=data.get("year"), month=data.get("month"), day=data.get("day"),
@@ -2206,10 +2298,8 @@ def pdu_admin_set_time(host: str):
 def pdu_admin_get_system(host: str):
     """Get system/device settings (hostname, LCD, logout) from a PDU."""
     try:
-        port = int(request.args.get("port", 6662))
-        username = request.args.get("username", "admin")
-        password = request.args.get("password", "admin")
-        client = _get_pdu_client(host, port, username, password)
+        port, username, password, use_https = _web_admin_creds_from_request()
+        client = _get_pdu_client(host, port, username, password, use_https=use_https)
         cfg = client.get_system_config()
         users = client.get_users()
         return jsonify({"success": True, "system": cfg, "users": users})
@@ -2223,10 +2313,8 @@ def pdu_admin_set_system(host: str):
     """Set system/device settings on a PDU."""
     try:
         data = request.get_json(force=True)
-        port = int(data.get("web_port", 6662))
-        username = data.get("username", "admin")
-        password = data.get("password", "admin")
-        client = _get_pdu_client(host, port, username, password)
+        port, username, password, use_https = _web_admin_creds_from_json(data)
+        client = _get_pdu_client(host, port, username, password, use_https=use_https)
 
         ok = client.set_system_config(
             device_name=data.get("device_name"),
@@ -2277,10 +2365,8 @@ def pdu_admin_set_users(host: str):
     poller reconnects with the new credentials automatically."""
     try:
         data = request.get_json(force=True)
-        port = int(data.get("web_port", 6662))
-        username = data.get("username", "admin")
-        password = data.get("password", "admin")
-        client = _get_pdu_client(host, port, username, password)
+        port, username, password, use_https = _web_admin_creds_from_json(data)
+        client = _get_pdu_client(host, port, username, password, use_https=use_https)
 
         new_admin_user = data.get("admin_username")
         new_admin_pass = data.get("admin_password")
@@ -2316,13 +2402,50 @@ def pdu_admin_set_users(host: str):
                 except Exception as db_err:
                     print(f"[set_users] DB update warning: {db_err}")
 
-                # Flush cached client so poller creates a new one with new creds
-                key = f"{host}:{port}"
-                with _pdu_clients_lock:
-                    _pdu_clients.pop(key, None)
+                _evict_pdu_client(host, port, use_https)
 
             return jsonify({"success": True, "message": "User credentials applied"})
         return jsonify({"error": "Failed to apply user settings"}), 500
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/pdu-admin/<host>/settings/web-access", methods=["POST"])
+def pdu_admin_set_web_access(host: str):
+    """Switch PDU web admin between HTTP and HTTPS. Requires reboot."""
+    try:
+        data = request.get_json(force=True)
+        port, username, password, use_https = _web_admin_creds_from_json(data)
+        client = _get_pdu_client(host, port, username, password, use_https=use_https)
+
+        ok = client.set_web_access(
+            https_http=str(data.get("https_http", "0")),
+            http_port=str(data.get("http_port", "80")),
+            https_port=str(data.get("https_port", "443")),
+        )
+        if not ok:
+            return jsonify({"error": "Failed to apply web access settings"}), 500
+
+        target_port, target_https = _resolve_web_access_target(data, port)
+        need_reboot = data.get("reboot", True)
+        if need_reboot:
+            client.reboot()
+            return jsonify({
+                "success": True,
+                "rebooting": True,
+                "web_admin_port": target_port,
+                "web_admin_https": target_https,
+                "message": "Web access settings saved. PDU is rebooting (~60 s).",
+            })
+
+        return jsonify({
+            "success": True,
+            "rebooting": False,
+            "web_admin_port": target_port,
+            "web_admin_https": target_https,
+            "message": "Web access settings saved. Reboot required for changes to take effect.",
+        })
     except Exception as e:
         import traceback; traceback.print_exc()
         return jsonify({"error": str(e)}), 500
@@ -2540,6 +2663,14 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                 pdu_template["snmp"] = template["snmp"]
             if template.get("ntp"):
                 pdu_template["ntp"] = template["ntp"]
+            web_access_template = template.get("web_access") or {}
+            web_access_enabled = str(web_access_template.get("https_http", "0")) == "1"
+            if web_access_enabled:
+                pdu_template["web_access"] = web_access_template
+
+            post_web_port, post_use_https = _resolve_web_access_target(
+                web_access_template if web_access_enabled else {}, web_port
+            )
 
             # Connect to PDU
             status["step"] = "configuring"
@@ -2548,24 +2679,28 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
 
             admin_user = _coalesce_credential(template.get("current_credentials", {}).get("username"))
             admin_pass = _coalesce_credential(template.get("current_credentials", {}).get("password"))
+            effective_user = (new_admin_user if user_wants_rename else cur_cred_user)
+            effective_pass = new_admin_pass or admin_pass
             client = _get_pdu_client(current_ip, web_port, admin_user, admin_pass)
 
             # Apply template
             report = client.apply_batch_template(pdu_template)
             status["sections"] = report
 
-            # Reboot to apply network changes
-            if pdu_template.get("network"):
+            # Reboot to apply network or web-access changes
+            needs_reboot = bool(pdu_template.get("network")) or web_access_enabled
+            if needs_reboot:
                 status["step"] = "rebooting"
                 with _batch_lock:
                     _BATCH_JOBS[job_id]["results"][pdu_key] = status
                 client.reboot()
 
-                # Wait for PDU at new IP
+                # Wait for PDU at new IP / web port
                 status["step"] = "verifying"
                 with _batch_lock:
                     _BATCH_JOBS[job_id]["results"][pdu_key] = status
 
+                verify_port = post_web_port if web_access_enabled else web_port
                 online = False
                 deadline = time.time() + 90
                 while time.time() < deadline:
@@ -2573,7 +2708,7 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                     try:
                         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         sock.settimeout(3)
-                        if sock.connect_ex((new_ip, web_port)) == 0:
+                        if sock.connect_ex((new_ip, verify_port)) == 0:
                             online = True
                             sock.close()
                             break
@@ -2583,19 +2718,34 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
 
                 if not online:
                     status["step"] = "reboot_timeout"
-                    status["error"] = f"PDU did not come back at {new_ip} within 90s"
+                    status["error"] = f"PDU did not come back at {new_ip}:{verify_port} within 90s"
                     with _batch_lock:
                         _BATCH_JOBS[job_id]["results"][pdu_key] = status
                         _BATCH_JOBS[job_id]["completed"] += 1
                     continue
+
+                if web_access_enabled:
+                    _evict_pdu_client(current_ip, web_port, False)
+                    verify_client = PDUWebClient(
+                        new_ip, post_web_port, effective_user, effective_pass, use_https=post_use_https
+                    )
+                    if not verify_client.login():
+                        status["step"] = "verify_https_failed"
+                        status["error"] = (
+                            f"PDU rebooted but HTTPS login failed at {new_ip}:{post_web_port}"
+                        )
+                        with _batch_lock:
+                            _BATCH_JOBS[job_id]["results"][pdu_key] = status
+                            _BATCH_JOBS[job_id]["completed"] += 1
+                        continue
 
             # Commission into database
             status["step"] = "commissioning"
             with _batch_lock:
                 _BATCH_JOBS[job_id]["results"][pdu_key] = status
 
-            effective_user = (new_admin_user if user_wants_rename else cur_cred_user)
-            effective_pass = new_admin_pass or admin_pass
+            stored_web_port = post_web_port if web_access_enabled else web_port
+            stored_use_https = post_use_https if web_access_enabled else False
 
             pdu_data = {
                 "label": template.get("system", {}).get("router_hostname", "") or template.get("system", {}).get("device_name", f"PDU-{new_ip}"),
@@ -2605,15 +2755,16 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                 "is_active": True,
                 "mac_address": mac,
                 "hostname": pdu_template.get("system", {}).get("router_hostname", ""),
-                "web_admin_port": web_port,
+                "web_admin_port": stored_web_port,
+                "web_admin_https": stored_use_https,
                 "web_admin_user": effective_user,
                 "web_admin_pass": effective_pass,
             }
             pdu_id = PDURepo.upsert(hall_id, new_ip, pdu_data)
 
-            _evict_pdu_client(current_ip, web_port)
-            if new_ip != current_ip:
-                _evict_pdu_client(new_ip, web_port)
+            _evict_pdu_client(current_ip, web_port, False)
+            if new_ip != current_ip or stored_use_https:
+                _evict_pdu_client(new_ip, stored_web_port, stored_use_https)
 
             status["step"] = "done"
             status["success"] = True
@@ -2639,8 +2790,8 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
 def pdu_admin_telemetry(host: str):
     """Get live telemetry from a PDU via its web admin CGI."""
     try:
-        port, username, password = _web_admin_creds_from_request()
-        client = _get_pdu_client(host, port, username, password)
+        port, username, password, use_https = _web_admin_creds_from_request()
+        client = _get_pdu_client(host, port, username, password, use_https=use_https)
         telemetry = client.get_live_telemetry()
         return jsonify({"success": True, "telemetry": telemetry})
     except Exception as e:
@@ -2652,8 +2803,8 @@ def pdu_admin_telemetry(host: str):
 def pdu_admin_logs(host: str):
     """Get event logs from a PDU."""
     try:
-        port, username, password = _web_admin_creds_from_request()
-        client = _get_pdu_client(host, port, username, password)
+        port, username, password, use_https = _web_admin_creds_from_request()
+        client = _get_pdu_client(host, port, username, password, use_https=use_https)
         logs = client.get_logs()
         return jsonify({"success": True, "logs": logs})
     except Exception as e:
@@ -2665,8 +2816,8 @@ def pdu_admin_logs(host: str):
 def pdu_admin_get_alarm_thresholds(host: str):
     """Read alarm threshold settings from a PDU."""
     try:
-        port, username, password = _web_admin_creds_from_request()
-        client = _get_pdu_client(host, port, username, password)
+        port, username, password, use_https = _web_admin_creds_from_request()
+        client = _get_pdu_client(host, port, username, password, use_https=use_https)
         thresholds = client.get_alarm_thresholds()
         return jsonify({"success": True, "thresholds": thresholds})
     except Exception as e:
@@ -2880,11 +3031,12 @@ def _http_probe_pdu(ip: str, ports: list[int] = None, connect_timeout: float = 1
 
         return {
             "ip": ip,
-            "description": f"HTTP/{port} web admin",
+            "description": f"{'HTTPS' if port == 443 else 'HTTP'}/{port} web admin",
             "name": name,
             "snmp_version": "1",
             "community": "public",
             "web_admin_port": port,
+            "web_admin_https": 1 if port == 443 else 0,
             "discovery_method": "http",
         }
 
@@ -3054,14 +3206,18 @@ def update_pdu_web_credentials(pdu_id: int):
             return jsonify({"error": "PDU not found"}), 404
 
         host = pdu.get("remote_host") or pdu["ip_address"]
-        port = int(data.get("web_admin_port") or pdu.get("web_admin_port") or _DEFAULT_WEB_ADMIN_PORT)
+        use_https = _parse_use_https(
+            data.get("web_admin_https", pdu.get("web_admin_https", 0))
+        )
+        default_port = 443 if use_https else _DEFAULT_WEB_ADMIN_PORT
+        port = int(data.get("web_admin_port") or pdu.get("web_admin_port") or default_port)
         username = _coalesce_credential(data.get("web_admin_user", pdu.get("web_admin_user")))
         password = _coalesce_credential(data.get("web_admin_pass", pdu.get("web_admin_pass")))
 
-        client = PDUWebClient(host, port, username, password)
+        client = PDUWebClient(host, port, username, password, use_https=use_https)
         if not client.login():
             return jsonify({
-                "error": f"Login failed for {host}:{port} (user={username}) — check credentials",
+                "error": f"Login failed for {'https' if use_https else 'http'}://{host}:{port} (user={username}) — check credentials",
             }), 401
 
         PDURepo.upsert(
@@ -3069,11 +3225,12 @@ def update_pdu_web_credentials(pdu_id: int):
             pdu["ip_address"],
             {
                 "web_admin_port": port,
+                "web_admin_https": use_https,
                 "web_admin_user": username,
                 "web_admin_pass": password,
             },
         )
-        _evict_pdu_client(host, port)
+        _evict_pdu_client(host, port, use_https)
         return jsonify({"success": True, "ip_address": pdu["ip_address"]})
     except Exception as e:
         import traceback
@@ -3139,6 +3296,7 @@ def add_pdu_to_hall(hall_id: int):
             "hostname": data.get("hostname"),
             "remote_host": data.get("remote_host"),
             "web_admin_port": data.get("web_admin_port"),
+            "web_admin_https": 1 if _parse_use_https(data.get("web_admin_https", 0)) else 0,
             "web_admin_user": data.get("web_admin_user") or "admin",
             "web_admin_pass": data.get("web_admin_pass") or "admin",
         }

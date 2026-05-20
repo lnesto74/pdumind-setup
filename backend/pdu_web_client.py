@@ -16,6 +16,12 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+try:
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+except Exception:
+    pass
+
 _NONCE_CHARS = "ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678"
 
 
@@ -41,8 +47,13 @@ class PDUWebClient:
         username: str = "admin",
         password: str = "admin",
         timeout: int = 10,
+        use_https: bool = False,
     ):
-        self.base_url = f"http://{host}:{port}"
+        self.host = host
+        self.port = port
+        self.use_https = use_https
+        scheme = "https" if use_https else "http"
+        self.base_url = f"{scheme}://{host}:{port}"
         self.username = username
         self.password = password
         self.timeout = timeout
@@ -51,6 +62,10 @@ class PDUWebClient:
         self._login_time: float = 0
         self._session_ttl = 15  # PDU times out after ~20 s; refresh at 15
         self._lock = threading.RLock()  # serialize all PDU interactions (reentrant)
+
+    def _ssl_verify(self) -> bool:
+        """PDUs ship with a default self-signed certificate when HTTPS is enabled."""
+        return not self.use_https
 
     # ------------------------------------------------------------------
     # Authentication
@@ -79,6 +94,7 @@ class PDUWebClient:
                 },
                 timeout=self.timeout,
                 allow_redirects=False,
+                verify=self._ssl_verify(),
             )
             if resp.status_code == 200 and "home0.html" in resp.text:
                 self._logged_in = True
@@ -98,6 +114,10 @@ class PDUWebClient:
             self._session = requests.Session()
             self._logged_in = False
 
+    def _touch_session(self) -> None:
+        """Keep the client-side session window alive while CGI calls are in flight."""
+        self._login_time = _time.time()
+
     def _ensure_session(self) -> None:
         if not self._logged_in or (_time.time() - self._login_time > self._session_ttl):
             for attempt in range(5):
@@ -112,18 +132,23 @@ class PDUWebClient:
         with self._lock:
             self._ensure_session()
             resp = self._session.get(
-                f"{self.base_url}/{path}", timeout=self.timeout
+                f"{self.base_url}/{path}", timeout=self.timeout, verify=self._ssl_verify()
             )
             resp.raise_for_status()
+            self._touch_session()
             return _parse_csv(resp.text)
 
     def _post_cgi(self, path: str, data: Dict[str, Any]) -> str:
         with self._lock:
             self._ensure_session()
             resp = self._session.post(
-                f"{self.base_url}/{path}", data=data, timeout=self.timeout
+                f"{self.base_url}/{path}",
+                data=data,
+                timeout=self.timeout,
+                verify=self._ssl_verify(),
             )
             resp.raise_for_status()
+            self._touch_session()
             return resp.text
 
     # ------------------------------------------------------------------
@@ -137,7 +162,9 @@ class PDUWebClient:
             self._ensure_session()
             try:
                 resp = self._session.get(
-                    f"{self.base_url}/reboot.cgi", timeout=self.timeout
+                    f"{self.base_url}/reboot.cgi",
+                    timeout=self.timeout,
+                    verify=self._ssl_verify(),
                 )
                 self._logged_in = False
                 return resp.status_code == 200
@@ -745,6 +772,45 @@ class PDUWebClient:
             resp = self._post_cgi("User_set.cgi", fields)
             return "404" not in resp
 
+            return "404" not in resp
+
+    # ------------------------------------------------------------------
+    # Web access (HTTP / HTTPS) — sys_http.html / http_https_set.cgi
+    # ------------------------------------------------------------------
+
+    def get_web_access_config(self) -> Dict[str, Any]:
+        """Read HTTP/HTTPS mode and ports from http_Onceload.cgi."""
+        f = self._get_cgi("http_Onceload.cgi?")
+        return {
+            "https_http": f[4] if len(f) > 4 else "0",  # 0=HTTP, 1=HTTPS
+            "http_port": f[5] if len(f) > 5 else "80",
+            "https_port": f[6] if len(f) > 6 else "443",
+            "default_cert": f[7] if len(f) > 7 else "",
+            "user_cert": f[8] if len(f) > 8 else "",
+            "csrf_token": f[10] if len(f) > 10 else f[9] if len(f) > 9 else "",
+        }
+
+    def set_web_access(
+        self,
+        https_http: str | None = None,
+        http_port: str | None = None,
+        https_port: str | None = None,
+    ) -> bool:
+        """Switch web admin between HTTP and HTTPS. Requires a PDU reboot."""
+        with self._lock:
+            cur = self.get_web_access_config()
+            csrf = cur["csrf_token"]
+            resp = self._post_cgi(
+                "http_https_set.cgi",
+                {
+                    "switch_netset_csrftoken3": csrf,
+                    "https_http": https_http if https_http is not None else cur["https_http"],
+                    "HTTPPort": http_port or cur["http_port"],
+                    "HTTPSPort": https_port or cur["https_port"],
+                },
+            )
+            return "404" not in resp
+
     # ------------------------------------------------------------------
     # Batch apply: push a full template in one go
     # ------------------------------------------------------------------
@@ -833,6 +899,19 @@ class PDUWebClient:
             except Exception as e:
                 report["ntp"] = {"success": False, "error": str(e)}
 
+        # 6. Web access (HTTP/HTTPS) — apply last while still on HTTP; needs reboot.
+        web = template.get("web_access") or {}
+        if web:
+            try:
+                ok = self.set_web_access(
+                    https_http=str(web.get("https_http", "0")),
+                    http_port=str(web.get("http_port", "80")),
+                    https_port=str(web.get("https_port", "443")),
+                )
+                report["web_access"] = {"success": ok, "needs_reboot": ok}
+            except Exception as e:
+                report["web_access"] = {"success": False, "error": str(e)}
+
         return report
 
     # ------------------------------------------------------------------
@@ -841,12 +920,18 @@ class PDUWebClient:
 
     def get_all_settings(self) -> Dict[str, Any]:
         with self._lock:
-            return {
-                "device": self.get_device_info(),
-                "network": self.get_network_config(),
-                "snmp": self.get_snmp_config(),
-                "time": self.get_time_config(),
-                "alarm_thresholds": self.get_alarm_thresholds(),
-                "system": self.get_system_config(),
-                "users": self.get_users(),
-            }
+            prev_ttl = self._session_ttl
+            self._session_ttl = 120  # bulk read can take 30-60 s over VPN
+            try:
+                return {
+                    "device": self.get_device_info(),
+                    "network": self.get_network_config(),
+                    "snmp": self.get_snmp_config(),
+                    "time": self.get_time_config(),
+                    "web_access": self.get_web_access_config(),
+                    "alarm_thresholds": self.get_alarm_thresholds(),
+                    "system": self.get_system_config(),
+                    "users": self.get_users(),
+                }
+            finally:
+                self._session_ttl = prev_ttl
