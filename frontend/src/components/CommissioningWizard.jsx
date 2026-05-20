@@ -1221,6 +1221,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     <p className="text-xs text-amber-200 leading-relaxed">
                       Fixes telemetry and Remote PDU login when the database has the wrong HTTPS flag, port, or password after a partial batch run.
                       Loads PDUs from <span className="font-semibold text-white">{hallName || `Hall #${hallId}`}</span> — no manual hall ID or IP list needed.
+                      <span className="block mt-1 text-amber-100/80">Close any open PDU tabs in Chrome before repairing — each PDU allows only one web session.</span>
                     </p>
                   </div>
 

@@ -97,10 +97,12 @@ class PDUWebClient:
                     allow_redirects=False,
                     verify=self._ssl_verify(),
                 )
-            except requests.exceptions.SSLError:
+            except requests.exceptions.SSLError as exc:
+                print(f"[pdu-login] {self.base_url} SSL error: {exc}")
                 self._logged_in = False
                 return False
-            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+                print(f"[pdu-login] {self.base_url} unreachable: {exc}")
                 self._logged_in = False
                 return False
 
@@ -108,6 +110,25 @@ class PDUWebClient:
                 self._logged_in = True
                 self._login_time = _time.time()
                 return True
+
+            # Some firmware / HTTPS setups redirect or embed a different landing marker.
+            body = resp.text or ""
+            location = (resp.headers.get("Location") or "").lower()
+            if resp.status_code in (200, 302) and (
+                "home_upload.cgi" in body.lower()
+                or "home0.html" in body.lower()
+                or "home" in location
+                or (resp.status_code == 302 and location)
+            ):
+                self._logged_in = True
+                self._login_time = _time.time()
+                return True
+
+            if resp.status_code == 200:
+                print(
+                    f"[pdu-login] {self.base_url} rejected user={self.username!r} "
+                    f"(HTTP {resp.status_code}, body[:120]={body[:120]!r})"
+                )
 
             self._logged_in = False
             return False

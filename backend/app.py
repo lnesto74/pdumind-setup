@@ -607,15 +607,27 @@ def _poll_remote_pdu(
     results = {}
     errors = {}
 
-    poll_plans: list[tuple[int, bool]] = [(web_port, use_https)]
-    if use_https:
-        poll_plans.append((_DEFAULT_WEB_ADMIN_PORT, False))
+    # Always probe both schemes — DB often has stale HTTP after HTTPS commissioning.
+    poll_plans: list[tuple[int, bool]] = []
+    seen_plans: set[tuple[int, bool]] = set()
+    for poll_port, poll_https in [
+        (443, True),
+        (_DEFAULT_WEB_ADMIN_PORT, False),
+        (web_port, use_https),
+    ]:
+        key = (int(poll_port), bool(poll_https))
+        if key in seen_plans:
+            continue
+        seen_plans.add(key)
+        poll_plans.append(key)
 
     last_err: Exception | None = None
+    winning_plan: tuple[int, bool] | None = None
     for poll_port, poll_https in poll_plans:
         client = _get_pdu_client(host, poll_port, web_user, web_pass, use_https=poll_https)
-        if poll_https != use_https:
-            print(f"[poll_remote] {ip} retrying on HTTP — DB HTTPS flag may be stale")
+        if poll_port != web_port or poll_https != use_https:
+            scheme = "HTTPS" if poll_https else "HTTP"
+            print(f"[poll_remote] {ip} trying {scheme}:{poll_port} — DB has {'HTTPS' if use_https else 'HTTP'}:{web_port}")
 
         if not client._lock.acquire(blocking=False):
             print(f"[poll_remote] {ip} skipped — client busy (settings/admin)")
@@ -661,6 +673,7 @@ def _poll_remote_pdu(
                 "value": str(len(alarm_flags)),
             }
             last_err = None
+            winning_plan = (poll_port, poll_https)
             break
 
         except Exception as e:
@@ -675,6 +688,15 @@ def _poll_remote_pdu(
             except Exception:
                 pass
             client._lock.release()
+
+    if winning_plan and (winning_plan[0] != web_port or winning_plan[1] != use_https):
+        wp, wh = winning_plan
+        print(f"[poll_remote] {ip} auto-corrected DB → {'https' if wh else 'http'}:{wp}")
+        PDURepo.upsert(
+            pdu["hall_id"],
+            ip,
+            {"web_admin_port": wp, "web_admin_https": wh},
+        )
 
     if last_err is not None and not results:
         if _allow_repair and _repair_pdu_web_credentials(pdu):
@@ -2221,7 +2243,8 @@ def _connect_pdu_admin_probe(
     elif prefer_https is False:
         attempts = [(http_port, False), (443, True)]
     else:
-        attempts = [(http_port, False), (443, True)]
+        # Default: HTTPS first — common after batch commissioning / factory HTTPS.
+        attempts = [(443, True), (http_port, False)]
 
     seen: set[tuple[int, bool]] = set()
     for try_port, use_https in attempts:
@@ -3687,42 +3710,48 @@ def repair_hall_web_access(hall_id: int):
 
         pdus = PDURepo.get_by_hall(hall_id)
         results = []
-        for pdu in pdus:
-            if pdu_ids is not None and pdu["id"] not in pdu_ids:
-                continue
-            before = {
-                "web_admin_port": pdu.get("web_admin_port"),
-                "web_admin_https": bool(pdu.get("web_admin_https")),
-                "web_admin_user": pdu.get("web_admin_user"),
-            }
-            if not pdu.get("web_admin_port"):
+        _pause_pdu_poller()
+        try:
+            for pdu in pdus:
+                if pdu_ids is not None and pdu["id"] not in pdu_ids:
+                    continue
+                _evict_all_pdu_clients_for_host(pdu.get("remote_host") or pdu["ip_address"])
+                before = {
+                    "web_admin_port": pdu.get("web_admin_port"),
+                    "web_admin_https": bool(pdu.get("web_admin_https")),
+                    "web_admin_user": pdu.get("web_admin_user"),
+                }
+                if not pdu.get("web_admin_port"):
+                    results.append({
+                        "id": pdu["id"],
+                        "ip": pdu["ip_address"],
+                        "label": pdu.get("label") or pdu.get("hostname"),
+                        "success": False,
+                        "skipped": True,
+                        "reason": "No web admin port stored — SNMP-only or not commissioned",
+                        "before": before,
+                    })
+                    continue
+                ok = _repair_pdu_web_credentials(pdu, username=user, password=password)
+                after = None
+                if ok:
+                    refreshed = PDURepo.get(pdu["id"]) or pdu
+                    after = {
+                        "web_admin_port": refreshed.get("web_admin_port"),
+                        "web_admin_https": bool(refreshed.get("web_admin_https")),
+                        "web_admin_user": refreshed.get("web_admin_user"),
+                    }
                 results.append({
                     "id": pdu["id"],
                     "ip": pdu["ip_address"],
                     "label": pdu.get("label") or pdu.get("hostname"),
-                    "success": False,
-                    "skipped": True,
-                    "reason": "No web admin port stored — SNMP-only or not commissioned",
+                    "success": ok,
                     "before": before,
+                    "after": after,
                 })
-                continue
-            ok = _repair_pdu_web_credentials(pdu, username=user, password=password)
-            after = None
-            if ok:
-                refreshed = PDURepo.get(pdu["id"]) or pdu
-                after = {
-                    "web_admin_port": refreshed.get("web_admin_port"),
-                    "web_admin_https": bool(refreshed.get("web_admin_https")),
-                    "web_admin_user": refreshed.get("web_admin_user"),
-                }
-            results.append({
-                "id": pdu["id"],
-                "ip": pdu["ip_address"],
-                "label": pdu.get("label") or pdu.get("hostname"),
-                "success": ok,
-                "before": before,
-                "after": after,
-            })
+                time.sleep(1.5)
+        finally:
+            _resume_pdu_poller()
         attempted = [r for r in results if not r.get("skipped")]
         repaired = sum(1 for r in attempted if r["success"])
         return jsonify({
