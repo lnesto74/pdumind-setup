@@ -221,7 +221,7 @@ const Dashboard2 = () => {
         if (data.pdus && data.pdus.length > 0) {
           const pdusWithStatus = data.pdus.map((pdu, idx) => ({
             id: pdu.id || `pdu-${pdu.ip_address}-${idx}`,
-            label: pdu.label || `PDU-${String(idx + 1).padStart(2, '0')}`,
+            label: pdu.hostname || pdu.label || pdu.device_name || `PDU-${String(idx + 1).padStart(2, '0')}`,
             ip: pdu.ip_address,
             port: pdu.snmp_port || '161',
             location: pdu.rack_code || 'Unknown',

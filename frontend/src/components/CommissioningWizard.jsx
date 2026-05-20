@@ -54,6 +54,25 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
   const [commissioned, setCommissioned] = useState(false);
   const [commissionResult, setCommissionResult] = useState(null);
 
+  // Batch commissioning
+  const [batchDevices, setBatchDevices] = useState([]);
+  const [batchSelected, setBatchSelected] = useState(new Set());
+  const [batchTemplate, setBatchTemplate] = useState({
+    network: { ip_start: '', mask: '255.255.255.0', gateway: '', dns1: '', dns2: '' },
+    system: { device_name: '', router_hostname: 'PDU-{seq}' },
+    users: { admin_username: 'admin', admin_password: '' },
+    snmp: { read_community: 'public', write_community: 'private', snmpv1: true, snmpv2: true, trap_ip: '' },
+    ntp: { sntp_server: 'pool.ntp.org', timezone: '81' },
+    current_credentials: { username: 'admin', password: 'admin' },
+  });
+  const [batchStep, setBatchStep] = useState(0); // 0=scan, 1=template, 2=deploy, 3=report, 4=rack-assign
+  const [batchScanMethod, setBatchScanMethod] = useState('snmp'); // 'snmp' | 'http' — HTTP is for VPN/firewalled networks where UDP/161 is blocked
+  const [batchJobId, setBatchJobId] = useState(null);
+  const [batchProgress, setBatchProgress] = useState(null);
+  const [batchRacks, setBatchRacks] = useState([]); // available racks for batch assignment
+  const [batchRackMap, setBatchRackMap] = useState({}); // { pduKey: { rack_id, rack_code, slot } }
+  const [dragPdu, setDragPdu] = useState(null); // currently dragged PDU key
+
   const currentStep = STEPS[step];
 
   // Fetch data when entering step 1 (Configure)
@@ -67,6 +86,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
           gateway: remoteSettings.network?.current_gateway || '',
           dns1: remoteSettings.network?.current_dns1 || '',
           dns2: remoteSettings.network?.current_dns2 || '',
+          dhcp: remoteSettings.network?.dhcp || 'OFF',
         });
         setEditSnmp({
           community_read: remoteSettings.snmp?.community_read || 'public',
@@ -148,6 +168,34 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
       const data = await res.json();
       if (data.found && data.device) {
         setDetectedDevice(data.device);
+        // Auto-detect web admin on factory default too
+        if (data.device.web_admin_port) {
+          try {
+            const waRes = await fetch(`${API_BASE}/api/pdu-admin/connect`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ host: data.device.ip, port: data.device.web_admin_port, username: 'admin', password: 'admin' })
+            });
+            const waData = await waRes.json();
+            if (waData.success) {
+              setIsRemoteMode(true);
+              setRemoteHost(data.device.ip);
+              setRemotePort(String(data.device.web_admin_port));
+              setRemoteUser('admin');
+              setRemotePass('admin');
+              setRemoteSettings(waData);
+              setDetectedDevice(prev => ({
+                ...prev,
+                name: waData.device?.name || prev.name,
+                firmware: waData.device?.firmware || '',
+                mac: waData.device?.mac || '',
+                description: `${waData.device?.name || 'PDU'} (FW ${waData.device?.firmware || '?'}) — SNMP v${data.device.snmp_version} + Web Admin :${data.device.web_admin_port}`,
+                web_admin_port: data.device.web_admin_port,
+              }));
+              if (waData.snmp?.community_read) setCommunity(waData.snmp.community_read);
+            }
+          } catch {}
+        }
       } else {
         setError(data.message || 'No PDU found at factory default IP');
       }
@@ -172,6 +220,34 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
       const data = await res.json();
       if (data.success) {
         setDetectedDevice(data);
+        // Auto-detect web admin: if found, connect to get full device info
+        if (data.web_admin_port) {
+          try {
+            const waRes = await fetch(`${API_BASE}/api/pdu-admin/connect`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ host: manualIp, port: data.web_admin_port, username: 'admin', password: 'admin' })
+            });
+            const waData = await waRes.json();
+            if (waData.success) {
+              setIsRemoteMode(true);
+              setRemoteHost(manualIp);
+              setRemotePort(String(data.web_admin_port));
+              setRemoteUser('admin');
+              setRemotePass('admin');
+              setRemoteSettings(waData);
+              setDetectedDevice(prev => ({
+                ...prev,
+                name: waData.device?.name || prev.name,
+                firmware: waData.device?.firmware || '',
+                mac: waData.device?.mac || '',
+                description: `${waData.device?.name || 'PDU'} (FW ${waData.device?.firmware || '?'}) — SNMP v${data.snmp_version} + Web Admin :${data.web_admin_port}`,
+                web_admin_port: data.web_admin_port,
+              }));
+              if (waData.snmp?.community_read) setCommunity(waData.snmp.community_read);
+            }
+          } catch {}
+        }
       } else {
         setError(data.error || 'No SNMP response');
       }
@@ -208,6 +284,147 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
   const selectSubnetDevice = (device) => {
     setDetectedDevice(device);
     setSubnetDevices([]);
+  };
+
+  // Batch: scan subnet for DHCP PDUs
+  // Supports two methods:
+  //   - 'snmp': classic SNMP UDP/161 sweep (fast, but blocked by many corporate VPNs/firewalls)
+  //   - 'http': TCP port-80 web-admin probe (works wherever the web UI is reachable, e.g. over VPN)
+  const batchScan = async () => {
+    setLoading(true);
+    setError(null);
+    setBatchDevices([]);
+    setBatchSelected(new Set());
+    try {
+      const endpoint = batchScanMethod === 'http'
+        ? '/api/network/scan/http'
+        : '/api/network/scan';
+      const body = batchScanMethod === 'http'
+        ? { subnet: subnet || '192.168.0.0/24', ports: [80, 6662, 8080, 443], connect_timeout: 1.5, http_timeout: 3 }
+        : { subnet: subnet || '192.168.0.0/24', community, timeout: 2 };
+      const res = await fetch(`${API_BASE}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (data.discovered && data.discovered.length > 0) {
+        // For each discovered PDU, try to auto-detect web admin
+        const enriched = [];
+        for (const d of data.discovered) {
+          const entry = { ...d, web_admin_port: null, mac: '', firmware: '' };
+          try {
+            const waRes = await fetch(`${API_BASE}/api/pdu-admin/connect`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ host: d.ip, port: 80, username: 'admin', password: 'admin' })
+            });
+            const waData = await waRes.json();
+            if (waData.success) {
+              entry.web_admin_port = 80;
+              entry.mac = waData.device?.mac || '';
+              entry.firmware = waData.device?.firmware || '';
+              entry.name = waData.device?.name || d.name;
+              entry.dhcp = waData.network?.dhcp || '';
+            }
+          } catch {}
+          enriched.push(entry);
+        }
+        setBatchDevices(enriched);
+        setBatchSelected(new Set(enriched.map(d => d.ip)));
+      } else {
+        setError('No PDUs found on this subnet');
+      }
+    } catch (e) {
+      setError(`Scan failed: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleBatchDevice = (ip) => {
+    setBatchSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(ip)) next.delete(ip); else next.add(ip);
+      return next;
+    });
+  };
+
+  const batchDeploy = async () => {
+    if (batchSelected.size === 0) { setError('No PDUs selected'); return; }
+    setLoading(true);
+    setError(null);
+    const selectedPdus = batchDevices.filter(d => batchSelected.has(d.ip)).map(d => ({
+      ip: d.ip,
+      mac: d.mac || '',
+      web_admin_port: d.web_admin_port || 80,
+      snmp_version: d.snmp_version || '1',
+    }));
+    try {
+      const res = await fetch(`${API_BASE}/api/batch/commission`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ template: batchTemplate, pdus: selectedPdus, hall_id: hallId })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setBatchJobId(data.job_id);
+        setBatchStep(2);
+        // Start polling progress
+        const pollInterval = setInterval(async () => {
+          try {
+            const pr = await fetch(`${API_BASE}/api/batch/commission/${data.job_id}`);
+            const pd = await pr.json();
+            setBatchProgress(pd);
+            if (pd.status === 'completed') {
+              clearInterval(pollInterval);
+              setBatchStep(3);
+              setLoading(false);
+            }
+          } catch {}
+        }, 3000);
+      } else {
+        setError(data.error || 'Failed to start batch job');
+        setLoading(false);
+      }
+    } catch (e) {
+      setError(`Batch deploy failed: ${e.message}`);
+      setLoading(false);
+    }
+  };
+
+  const fetchBatchRacks = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/halls/${hallId}/racks/available`);
+      const data = await res.json();
+      if (data.success) setBatchRacks(data.racks || []);
+    } catch {}
+  };
+
+  const saveBatchRackAssignments = async () => {
+    setLoading(true); setError(null);
+    const assignments = Object.entries(batchRackMap)
+      .filter(([, v]) => v.rack_id)
+      .map(([pduKey, v]) => {
+        const r = batchProgress?.results?.[pduKey];
+        return { pdu_ip: r?.new_ip || r?.ip || pduKey, rack_id: v.rack_id, mount_position: v.slot || 'A' };
+      });
+    if (assignments.length === 0) { setLoading(false); return; }
+    try {
+      const res = await fetch(`${API_BASE}/api/halls/${hallId}/pdus/bulk-rack-assign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assignments }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setBatchStep(0); setBatchDevices([]); setBatchSelected(new Set());
+        setBatchJobId(null); setBatchProgress(null); setBatchRackMap({});
+      } else {
+        setError(data.error || 'Failed to assign racks');
+      }
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
   };
 
   // Remote PDU connect via web admin
@@ -367,6 +584,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
       mount_position: mountPosition,
       snmp_community: isRemoteMode ? (editSnmp.community_read || community) : community,
       snmp_port: 161,
+      snmp_version: detectedDevice?.snmp_version || '2c',
     };
     if (isRemoteMode) {
       payload.remote_host = remoteHost;
@@ -486,6 +704,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   { id: 'manual', label: 'Manual IP', icon: 'edit' },
                   { id: 'subnet', label: 'Subnet Scan', icon: 'lan' },
                   { id: 'remote', label: 'Remote PDU', icon: 'cloud' },
+                  { id: 'batch', label: 'Batch', icon: 'dynamic_feed' },
                 ].map(m => (
                   <button
                     key={m.id}
@@ -624,6 +843,495 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                 </div>
               )}
 
+              {/* BATCH MODE */}
+              {scanMode === 'batch' && (
+                <div className="space-y-3">
+                  {batchStep === 0 && (
+                    <>
+                      <p className="text-xs text-slate-400">Scan a subnet for all DHCP-connected PDUs, then configure them all at once.</p>
+
+                      {/* Discovery method selector — HTTP mode is for VPN/firewalled networks where SNMP UDP/161 is blocked */}
+                      <div className="flex items-center gap-2 p-2 rounded-lg bg-[#0a1222] border border-[#233544]">
+                        <span className="text-[10px] uppercase tracking-wider text-slate-500 px-2">Discovery</span>
+                        <div className="flex gap-1 flex-1">
+                          <button
+                            onClick={() => setBatchScanMethod('snmp')}
+                            className={`flex-1 py-1.5 px-2 text-[11px] rounded transition-all flex items-center justify-center gap-1.5 ${
+                              batchScanMethod === 'snmp'
+                                ? 'bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/40'
+                                : 'text-slate-400 hover:text-white border border-transparent'
+                            }`}
+                            title="SNMP UDP/161 — fastest, requires SNMP to be reachable"
+                          >
+                            <span className="material-icons-outlined text-xs">router</span>
+                            SNMP (UDP/161)
+                          </button>
+                          <button
+                            onClick={() => setBatchScanMethod('http')}
+                            className={`flex-1 py-1.5 px-2 text-[11px] rounded transition-all flex items-center justify-center gap-1.5 ${
+                              batchScanMethod === 'http'
+                                ? 'bg-amber-400/20 text-amber-300 border border-amber-400/40'
+                                : 'text-slate-400 hover:text-white border border-transparent'
+                            }`}
+                            title="HTTP TCP/80 — use this when SNMP is blocked by VPN or corporate firewall"
+                          >
+                            <span className="material-icons-outlined text-xs">vpn_lock</span>
+                            HTTP (TCP/80) — VPN-safe
+                          </button>
+                        </div>
+                      </div>
+                      {batchScanMethod === 'http' && (
+                        <p className="text-[10px] text-amber-300/80 flex items-start gap-1.5 px-1">
+                          <span className="material-icons-outlined text-[12px] mt-0.5">info</span>
+                          HTTP mode probes port 80 (and 6662/8080/443) on each IP. Use this when single-IP scan works but subnet/range scan returns nothing — typically a sign that SNMP UDP/161 is blocked by the customer VPN or firewall.
+                        </p>
+                      )}
+
+                      <div className="flex gap-2">
+                        <input type="text" value={subnet} onChange={e => setSubnet(e.target.value)}
+                          className="flex-1 bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
+                          placeholder="10.106.76.206-223 or 192.168.0.0/24" />
+                        {batchScanMethod === 'snmp' && (
+                          <input type="text" value={community} onChange={e => setCommunity(e.target.value)}
+                            className="w-24 bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
+                            placeholder="public" />
+                        )}
+                        <button onClick={batchScan} disabled={loading}
+                          className="px-4 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 hover:bg-[#00E5FF]/30 disabled:opacity-50 text-[#00E5FF] rounded-lg text-sm flex items-center gap-1.5">
+                          {loading ? <span className="material-icons-outlined text-sm animate-spin">sync</span> :
+                            <span className="material-icons-outlined text-sm">radar</span>}
+                          Scan
+                        </button>
+                      </div>
+                      {batchDevices.length > 0 && (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs text-slate-400">Found {batchDevices.length} PDU(s) — select which to commission:</p>
+                            <button onClick={() => setBatchSelected(prev => prev.size === batchDevices.length ? new Set() : new Set(batchDevices.map(d => d.ip)))}
+                              className="text-[10px] text-[#00E5FF] hover:text-[#00E5FF]/80">
+                              {batchSelected.size === batchDevices.length ? 'Deselect All' : 'Select All'}
+                            </button>
+                          </div>
+                          <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
+                            {batchDevices.map(d => (
+                              <div key={d.ip} onClick={() => toggleBatchDevice(d.ip)}
+                                className={`p-3 rounded-lg border cursor-pointer transition-all ${
+                                  batchSelected.has(d.ip) ? 'bg-emerald-500/10 border-emerald-500/40' : 'bg-[#0B1120] border-[#233544] hover:border-slate-500'
+                                }`}>
+                                <div className="flex items-center gap-3">
+                                  <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
+                                    batchSelected.has(d.ip) ? 'border-emerald-400 bg-emerald-500/20' : 'border-slate-600'
+                                  }`}>
+                                    {batchSelected.has(d.ip) && <span className="material-icons-outlined text-emerald-400 text-xs">check</span>}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-mono text-white text-sm">{d.ip}</span>
+                                      {d.mac && <span className="text-[10px] text-slate-500 font-mono">{d.mac}</span>}
+                                      {d.dhcp === 'ON' && <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">DHCP</span>}
+                                      {d.web_admin_port && <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">Web:{d.web_admin_port}</span>}
+                                    </div>
+                                    {d.name && <p className="text-[10px] text-slate-500 truncate">{d.name} {d.firmware ? `(FW ${d.firmware})` : ''}</p>}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          <button onClick={() => setBatchStep(1)} disabled={batchSelected.size === 0}
+                            className="w-full py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 text-[#00E5FF] rounded-lg text-sm disabled:opacity-30 hover:bg-[#00E5FF]/30 flex items-center justify-center gap-2">
+                            <span className="material-icons-outlined text-sm">tune</span>
+                            Configure Template ({batchSelected.size} PDUs)
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {batchStep === 1 && (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-bold text-white">Batch Template</h4>
+                        <button onClick={() => setBatchStep(0)} className="text-[10px] text-slate-400 hover:text-white">
+                          <span className="material-icons-outlined text-xs mr-0.5">arrow_back</span> Back to scan
+                        </button>
+                      </div>
+                      {/* Network */}
+                      <div className="p-3 rounded-lg bg-[#0B1120] border border-[#233544]">
+                        <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider mb-2 flex items-center gap-1">
+                          <span className="material-icons-outlined text-xs">lan</span> Network
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[9px] text-slate-500 uppercase">Starting IP</label>
+                            <input type="text" value={batchTemplate.network.ip_start}
+                              onChange={e => setBatchTemplate(p => ({ ...p, network: { ...p.network, ip_start: e.target.value } }))}
+                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
+                              placeholder="192.168.1.101" />
+                            <p className="text-[9px] text-slate-600 mt-0.5">Auto-increments: .101, .102, .103...</p>
+                          </div>
+                          {['mask', 'gateway', 'dns1', 'dns2'].map(k => (
+                            <div key={k}>
+                              <label className="text-[9px] text-slate-500 uppercase">{k === 'mask' ? 'Subnet Mask' : k === 'dns1' ? 'DNS 1' : k === 'dns2' ? 'DNS 2' : 'Gateway'}</label>
+                              <input type="text" value={batchTemplate.network[k] || ''}
+                                onChange={e => setBatchTemplate(p => ({ ...p, network: { ...p.network, [k]: e.target.value } }))}
+                                className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]" />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      {/* System */}
+                      <div className="p-3 rounded-lg bg-[#0B1120] border border-[#233544]">
+                        <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider mb-2 flex items-center gap-1">
+                          <span className="material-icons-outlined text-xs">dns</span> System
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[9px] text-slate-500 uppercase">Device Name</label>
+                            <input type="text" value={batchTemplate.system.device_name}
+                              onChange={e => setBatchTemplate(p => ({ ...p, system: { ...p.system, device_name: e.target.value } }))}
+                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]" />
+                          </div>
+                          <div>
+                            <label className="text-[9px] text-slate-500 uppercase">Hostname Pattern</label>
+                            <input type="text" value={batchTemplate.system.router_hostname}
+                              onChange={e => setBatchTemplate(p => ({ ...p, system: { ...p.system, router_hostname: e.target.value } }))}
+                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
+                              placeholder="PDU-{seq}" />
+                            <div className="text-[9px] text-slate-600 mt-1 space-y-0.5">
+                              <p className="text-slate-500 font-medium">Variables (auto-replaced per PDU):</p>
+                              <p><span className="text-[#00E5FF] font-mono">{'{seq}'}</span> — sequence number: 001, 002, 003...</p>
+                              <p><span className="text-[#00E5FF] font-mono">{'{ip}'}</span> — assigned IP address (e.g. 192.168.0.101)</p>
+                              <p><span className="text-[#00E5FF] font-mono">{'{mac}'}</span> — last 6 chars of MAC address</p>
+                              <p><span className="text-[#00E5FF] font-mono">{'{idx}'}</span> — zero-based index: 0, 1, 2...</p>
+                              <p className="text-slate-500 mt-0.5">Example: <span className="font-mono text-white">Agoda-{'{seq}'}</span> → Agoda-001, Agoda-002...</p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      {/* Credentials */}
+                      <div className="p-3 rounded-lg bg-[#0B1120] border border-[#233544]">
+                        <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider mb-2 flex items-center gap-1">
+                          <span className="material-icons-outlined text-xs">manage_accounts</span> Credentials
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[9px] text-slate-500 uppercase">Current PDU Password</label>
+                            <input type="password" value={batchTemplate.current_credentials.password}
+                              onChange={e => setBatchTemplate(p => ({ ...p, current_credentials: { ...p.current_credentials, password: e.target.value } }))}
+                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
+                              placeholder="Current admin password" />
+                          </div>
+                          <div>
+                            <label className="text-[9px] text-slate-500 uppercase">New Admin Password</label>
+                            <input type="password" value={batchTemplate.users.admin_password}
+                              onChange={e => setBatchTemplate(p => ({ ...p, users: { ...p.users, admin_password: e.target.value } }))}
+                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
+                              placeholder="Leave blank to keep current" />
+                          </div>
+                        </div>
+                      </div>
+                      {/* SNMP */}
+                      <div className="p-3 rounded-lg bg-[#0B1120] border border-[#233544]">
+                        <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider mb-2 flex items-center gap-1">
+                          <span className="material-icons-outlined text-xs">vpn_key</span> SNMP
+                        </p>
+                        <div className="grid grid-cols-3 gap-2">
+                          <div>
+                            <label className="text-[9px] text-slate-500 uppercase">Read Community</label>
+                            <input type="text" value={batchTemplate.snmp.read_community}
+                              onChange={e => setBatchTemplate(p => ({ ...p, snmp: { ...p.snmp, read_community: e.target.value } }))}
+                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]" />
+                          </div>
+                          <div>
+                            <label className="text-[9px] text-slate-500 uppercase">Write Community</label>
+                            <input type="text" value={batchTemplate.snmp.write_community}
+                              onChange={e => setBatchTemplate(p => ({ ...p, snmp: { ...p.snmp, write_community: e.target.value } }))}
+                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]" />
+                          </div>
+                          <div>
+                            <label className="text-[9px] text-slate-500 uppercase">Trap IP</label>
+                            <input type="text" value={batchTemplate.snmp.trap_ip}
+                              onChange={e => setBatchTemplate(p => ({ ...p, snmp: { ...p.snmp, trap_ip: e.target.value } }))}
+                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]" />
+                          </div>
+                        </div>
+                      </div>
+                      {/* NTP */}
+                      <div className="p-3 rounded-lg bg-[#0B1120] border border-[#233544]">
+                        <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider mb-2 flex items-center gap-1">
+                          <span className="material-icons-outlined text-xs">schedule</span> NTP
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[9px] text-slate-500 uppercase">SNTP Server</label>
+                            <input type="text" value={batchTemplate.ntp.sntp_server}
+                              onChange={e => setBatchTemplate(p => ({ ...p, ntp: { ...p.ntp, sntp_server: e.target.value } }))}
+                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]" />
+                          </div>
+                          <div>
+                            <label className="text-[9px] text-slate-500 uppercase">Timezone (UTC offset)</label>
+                            <input type="text" value={batchTemplate.ntp.timezone}
+                              onChange={e => setBatchTemplate(p => ({ ...p, ntp: { ...p.ntp, timezone: e.target.value } }))}
+                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
+                              placeholder="81 = UTC+8" />
+                          </div>
+                        </div>
+                      </div>
+                      {/* Deploy button */}
+                      <button onClick={batchDeploy} disabled={loading}
+                        className="w-full py-3 bg-emerald-500/20 border border-emerald-500/50 text-emerald-400 rounded-lg text-sm font-bold hover:bg-emerald-500/30 disabled:opacity-50 flex items-center justify-center gap-2">
+                        <span className="material-icons-outlined text-sm">rocket_launch</span>
+                        Deploy to {batchSelected.size} PDUs
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Batch Deploy Progress */}
+                  {batchStep === 2 && batchProgress && (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-bold text-white">Deploying...</h4>
+                        <span className="text-xs text-slate-400 font-mono">{batchProgress.completed}/{batchProgress.total}</span>
+                      </div>
+                      <div className="w-full h-2 bg-[#0B1120] rounded-full overflow-hidden">
+                        <div className="h-full bg-[#00E5FF] transition-all rounded-full"
+                          style={{ width: `${(batchProgress.completed / batchProgress.total) * 100}%` }} />
+                      </div>
+                      <div className="max-h-48 overflow-y-auto space-y-1">
+                        {Object.entries(batchProgress.results || {}).map(([key, r]) => (
+                          <div key={key} className={`p-2 rounded text-xs flex items-center gap-2 ${
+                            r.step === 'done' ? 'bg-emerald-500/10 text-emerald-400' :
+                            r.step === 'error' || r.step === 'reboot_timeout' ? 'bg-red-500/10 text-red-400' :
+                            'bg-amber-500/10 text-amber-300'
+                          }`}>
+                            <span className="material-icons-outlined text-sm">
+                              {r.step === 'done' ? 'check_circle' : r.step === 'error' || r.step === 'reboot_timeout' ? 'error' : 'sync'}
+                            </span>
+                            <span className="font-mono">{r.ip}</span>
+                            {r.new_ip && r.new_ip !== r.ip && <span className="text-slate-500">→ {r.new_ip}</span>}
+                            <span className="text-slate-500">{r.step}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Batch Report */}
+                  {batchStep === 3 && batchProgress && (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-3">
+                        <div className="w-12 h-12 rounded-full bg-emerald-500/20 flex items-center justify-center">
+                          <span className="material-icons-outlined text-emerald-400 text-2xl">task_alt</span>
+                        </div>
+                        <div>
+                          <h4 className="text-sm font-bold text-white">Batch Commissioning Complete</h4>
+                          <p className="text-xs text-slate-400">
+                            {Object.values(batchProgress.results || {}).filter(r => r.success).length} succeeded,
+                            {' '}{Object.values(batchProgress.results || {}).filter(r => !r.success).length} failed
+                            {' '}of {batchProgress.total} PDUs
+                          </p>
+                        </div>
+                      </div>
+                      <div className="max-h-60 overflow-y-auto space-y-1.5">
+                        {Object.entries(batchProgress.results || {}).map(([key, r]) => (
+                          <div key={key} className={`p-3 rounded-lg border ${
+                            r.success ? 'bg-emerald-500/5 border-emerald-500/30' : 'bg-red-500/5 border-red-500/30'
+                          }`}>
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <span className={`material-icons-outlined text-sm ${r.success ? 'text-emerald-400' : 'text-red-400'}`}>
+                                  {r.success ? 'check_circle' : 'error'}
+                                </span>
+                                <span className="font-mono text-white text-xs">{r.ip}</span>
+                                {r.new_ip && r.new_ip !== r.ip && (
+                                  <span className="text-slate-500 text-xs">→ <span className="text-[#00E5FF] font-mono">{r.new_ip}</span></span>
+                                )}
+                                {r.mac && <span className="text-[10px] text-slate-600 font-mono">{r.mac}</span>}
+                              </div>
+                            </div>
+                            {r.error && <p className="text-[10px] text-red-400 mt-1">{r.error}</p>}
+                            {r.sections && Object.keys(r.sections).length > 0 && (
+                              <div className="flex gap-1 mt-1.5">
+                                {Object.entries(r.sections).map(([sec, res]) => (
+                                  <span key={sec} className={`text-[9px] px-1.5 py-0.5 rounded ${
+                                    res.success ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
+                                  }`}>{sec}</span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex gap-2">
+                        <button onClick={() => { setBatchStep(0); setBatchDevices([]); setBatchSelected(new Set()); setBatchJobId(null); setBatchProgress(null); }}
+                          className="flex-1 py-2.5 bg-[#0B1120] border border-[#233544] text-slate-400 rounded-lg text-sm hover:text-white">
+                          Start New Batch
+                        </button>
+                        <button onClick={() => { fetchBatchRacks(); setBatchStep(4); }}
+                          className="flex-1 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 text-[#00E5FF] rounded-lg text-sm font-bold hover:bg-[#00E5FF]/30 flex items-center justify-center gap-2">
+                          <span className="material-icons-outlined text-sm">view_in_ar</span>
+                          Assign to Racks
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Batch Rack Assignment — same pattern as single commissioning step 2 */}
+                  {batchStep === 4 && batchProgress && (() => {
+                    const successPdus = Object.entries(batchProgress.results || {}).filter(([, r]) => r.success);
+                    const activePduKey = dragPdu || successPdus.find(([k]) => !batchRackMap[k])?.[0] || null;
+                    return (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                          <span className="material-icons-outlined text-[#00E5FF] text-sm">view_in_ar</span>
+                          Assign PDUs to Racks
+                        </h4>
+                        <button onClick={() => setBatchStep(3)} className="text-[10px] text-slate-400 hover:text-white flex items-center gap-0.5">
+                          <span className="material-icons-outlined text-xs">arrow_back</span> Back to report
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-slate-500">
+                        Select a PDU, then click a rack slot to assign. Click the <span className="text-red-400">X</span> to unassign.
+                      </p>
+
+                      {/* PDU list — click to select which one to place */}
+                      <div>
+                        <p className="text-[9px] text-slate-500 uppercase tracking-wider mb-1">
+                          Commissioned PDUs ({successPdus.length})
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {successPdus.map(([key, r]) => {
+                            const assigned = batchRackMap[key];
+                            const isActive = dragPdu === key;
+                            return (
+                              <button key={key}
+                                onClick={() => setDragPdu(isActive ? null : key)}
+                                className={`px-2.5 py-1.5 rounded-lg border text-left transition-all flex items-center gap-1.5 ${
+                                  isActive
+                                    ? 'bg-[#00E5FF]/15 border-[#00E5FF]/60 ring-1 ring-[#00E5FF]/30'
+                                    : assigned
+                                      ? 'bg-emerald-500/10 border-emerald-500/30'
+                                      : 'bg-[#0B1120] border-[#233544] hover:border-slate-500'
+                                }`}>
+                                <span className="font-mono text-white text-[11px]">{r.new_ip || r.ip}</span>
+                                {assigned && (
+                                  <>
+                                    <span className="text-[9px] text-emerald-400">→ {assigned.rack_code}/{assigned.slot}</span>
+                                    <span onClick={(e) => { e.stopPropagation(); setBatchRackMap(p => { const n = { ...p }; delete n[key]; return n; }); }}
+                                      className="text-slate-600 hover:text-red-400 cursor-pointer ml-0.5">
+                                      <span className="material-icons-outlined" style={{ fontSize: '11px' }}>close</span>
+                                    </span>
+                                  </>
+                                )}
+                                {!assigned && !isActive && (
+                                  <span className="text-[9px] text-slate-600">unassigned</span>
+                                )}
+                                {isActive && !assigned && (
+                                  <span className="text-[9px] text-[#00E5FF] animate-pulse">selecting…</span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Rack grid — same layout as single commissioning */}
+                      <div>
+                        <p className="text-[9px] text-slate-500 uppercase tracking-wider mb-2">
+                          Available Racks ({batchRacks.length})
+                        </p>
+                        {batchRacks.length === 0 ? (
+                          <div className="text-center py-6 text-slate-500">
+                            <span className="material-icons-outlined text-3xl opacity-50 mb-2 block">view_in_ar</span>
+                            <p className="text-sm">No racks with open slots</p>
+                            <p className="text-xs mt-1">Save a hall layout in the Data Hall Designer first.</p>
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-4 gap-2 max-h-[300px] overflow-y-auto pr-1">
+                            {batchRacks.map(rack => {
+                              const slotsUsedByBatch = Object.entries(batchRackMap)
+                                .filter(([, v]) => v.rack_id === rack.rack_id)
+                                .map(([pduKey, v]) => ({ pduKey, slot: v.slot }));
+                              const takenSlots = slotsUsedByBatch.map(s => s.slot);
+                              const freeSlots = (rack.open_slots || []).filter(s => !takenSlots.includes(s));
+
+                              return (
+                                <div key={rack.rack_code} className={`p-3 rounded-lg border text-left transition-all ${
+                                  slotsUsedByBatch.length > 0
+                                    ? 'bg-emerald-500/5 border-emerald-500/30'
+                                    : 'bg-[#0B1120] border-[#233544]'
+                                }`}>
+                                  <p className="text-xs font-mono font-bold text-white">{rack.rack_code}</p>
+                                  <p className="text-[10px] text-slate-500 mt-0.5">
+                                    Row {rack.row_index + 1}, Pos {rack.position_index + 1}
+                                  </p>
+
+                                  {/* Slot buttons */}
+                                  <div className="flex gap-1 mt-2">
+                                    {(rack.open_slots || []).map(slot => {
+                                      const usedBy = slotsUsedByBatch.find(s => s.slot === slot);
+                                      const pduResult = usedBy ? batchProgress.results[usedBy.pduKey] : null;
+
+                                      if (usedBy) {
+                                        return (
+                                          <div key={slot} className="flex items-center gap-0.5 bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded text-[9px] font-mono">
+                                            {slot}: {pduResult?.new_ip || pduResult?.ip || '?'}
+                                            <span onClick={() => setBatchRackMap(p => { const n = { ...p }; delete n[usedBy.pduKey]; return n; })}
+                                              className="hover:text-red-400 cursor-pointer ml-0.5">
+                                              <span className="material-icons-outlined" style={{ fontSize: '10px' }}>close</span>
+                                            </span>
+                                          </div>
+                                        );
+                                      }
+
+                                      return (
+                                        <button key={slot}
+                                          disabled={!dragPdu || !!batchRackMap[dragPdu]}
+                                          onClick={() => {
+                                            if (dragPdu && !batchRackMap[dragPdu]) {
+                                              setBatchRackMap(p => ({ ...p, [dragPdu]: { rack_id: rack.rack_id, rack_code: rack.rack_code, slot } }));
+                                              setDragPdu(null);
+                                            }
+                                          }}
+                                          className={`px-1.5 py-0.5 rounded text-[9px] font-mono transition-all ${
+                                            dragPdu && !batchRackMap[dragPdu]
+                                              ? 'bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/50 cursor-pointer hover:bg-[#00E5FF]/30'
+                                              : 'bg-[#161E2E] text-slate-500 border border-[#233544]'
+                                          }`}>{slot}</button>
+                                      );
+                                    })}
+                                  </div>
+                                  <p className="text-[9px] text-slate-600 mt-1">
+                                    {rack.occupied + takenSlots.length}/{rack.total_slots} filled
+                                  </p>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Actions */}
+                      <div className="flex gap-2">
+                        <button onClick={() => { setBatchStep(0); setBatchDevices([]); setBatchSelected(new Set()); setBatchJobId(null); setBatchProgress(null); setBatchRackMap({}); setDragPdu(null); }}
+                          className="flex-1 py-2.5 bg-[#0B1120] border border-[#233544] text-slate-400 rounded-lg text-sm hover:text-white">
+                          Skip
+                        </button>
+                        <button onClick={saveBatchRackAssignments}
+                          disabled={loading || Object.keys(batchRackMap).length === 0}
+                          className="flex-1 py-2.5 bg-emerald-500/20 border border-emerald-500/50 text-emerald-400 rounded-lg text-sm font-bold hover:bg-emerald-500/30 disabled:opacity-30 flex items-center justify-center gap-2">
+                          {loading ? <span className="material-icons-outlined text-sm animate-spin">sync</span> :
+                            <span className="material-icons-outlined text-sm">save</span>}
+                          Save Assignments ({Object.keys(batchRackMap).length})
+                        </button>
+                      </div>
+                    </div>
+                    );
+                  })()}
+                </div>
+              )}
+
               {/* Subnet results list */}
               {subnetDevices.length > 0 && (
                 <div className="space-y-2 mt-3">
@@ -657,6 +1365,11 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                       <p className="text-sm font-bold text-emerald-300">PDU Detected</p>
                       <p className="text-xs text-slate-400 font-mono">{detectedDevice.ip}</p>
                     </div>
+                    {detectedDevice.web_admin_port && (
+                      <span className="px-2 py-0.5 rounded-full bg-cyan-500/20 border border-cyan-500/40 text-[10px] text-cyan-300 whitespace-nowrap">
+                        Web Admin :{detectedDevice.web_admin_port}
+                      </span>
+                    )}
                   </div>
                   <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                     <div className="bg-[#0B1120]/50 rounded-lg p-2">
@@ -765,14 +1478,49 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                       </div>
                     )}
 
+                    {/* DHCP / Static toggle */}
+                    <div className="mb-3 p-3 rounded-lg bg-[#161E2E] border border-[#233544]">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="material-icons-outlined text-sm text-slate-400">settings_ethernet</span>
+                          <span className="text-xs text-slate-300">IP Assignment</span>
+                        </div>
+                        <div className="flex rounded-lg overflow-hidden border border-[#233544]">
+                          <button
+                            onClick={() => setEditNetwork(prev => ({ ...prev, dhcp: 'OFF' }))}
+                            className={`px-3 py-1 text-[10px] font-bold transition-all ${
+                              editNetwork.dhcp !== 'ON'
+                                ? 'bg-[#00E5FF]/20 text-[#00E5FF] border-r border-[#00E5FF]/30'
+                                : 'bg-[#0B1120] text-slate-500 border-r border-[#233544] hover:text-slate-300'
+                            }`}
+                          >STATIC IP</button>
+                          <button
+                            onClick={() => setEditNetwork(prev => ({ ...prev, dhcp: 'ON' }))}
+                            className={`px-3 py-1 text-[10px] font-bold transition-all ${
+                              editNetwork.dhcp === 'ON'
+                                ? 'bg-amber-500/20 text-amber-400'
+                                : 'bg-[#0B1120] text-slate-500 hover:text-slate-300'
+                            }`}
+                          >DHCP</button>
+                        </div>
+                      </div>
+                      {editNetwork.dhcp === 'ON' && (
+                        <p className="text-[10px] text-amber-400 mt-2 flex items-center gap-1">
+                          <span className="material-icons-outlined text-xs">warning</span>
+                          DHCP is active — the PDU will get its IP from a DHCP server. Switch to Static to assign a fixed IP.
+                        </p>
+                      )}
+                    </div>
+
                     <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label className="text-[9px] text-slate-500 uppercase">IP Address</label>
                         <input type="text" value={editNetwork.ip || ''}
                           onChange={e => setEditNetwork(prev => ({ ...prev, ip: e.target.value }))}
+                          disabled={editNetwork.dhcp === 'ON'}
                           className={`w-full bg-[#161E2E] border rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none ${
                             ipConflict ? 'border-red-500/60 focus:border-red-500' : 'border-[#233544] focus:border-[#00E5FF]'
-                          }`}
+                          } ${editNetwork.dhcp === 'ON' ? 'opacity-50 cursor-not-allowed' : ''}`}
                         />
                       </div>
                       {[
@@ -785,7 +1533,8 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                           <label className="text-[9px] text-slate-500 uppercase">{f.label}</label>
                           <input type="text" value={editNetwork[f.key] || ''}
                             onChange={e => setEditNetwork(prev => ({ ...prev, [f.key]: e.target.value }))}
-                            className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
+                            disabled={editNetwork.dhcp === 'ON'}
+                            className={`w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF] ${editNetwork.dhcp === 'ON' ? 'opacity-50 cursor-not-allowed' : ''}`}
                           />
                         </div>
                       ))}
@@ -1073,13 +1822,20 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
 
               <div className="space-y-3">
                 {isRemoteMode && (
-                  <SummaryRow label="Remote Host" value={`${remoteHost}:${remotePort}`} icon="cloud" />
+                  <SummaryRow label="Web Admin" value={`${remoteHost}:${remotePort}`} icon="cloud" />
+                )}
+                {detectedDevice?.web_admin_port && (
+                  <div className="p-2 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-xs text-cyan-300 flex items-center gap-2">
+                    <span className="material-icons-outlined text-sm">auto_fix_high</span>
+                    <span>Web admin auto-detected on port {detectedDevice.web_admin_port} — IP changes will be applied directly to the device</span>
+                  </div>
                 )}
                 <SummaryRow label="Detected IP" value={detectedDevice?.ip || 'N/A'} icon="wifi_find" />
                 <SummaryRow label="Production IP" value={isRemoteMode ? (editNetwork.ip || remoteHost) : finalIp} icon="lan" highlight />
                 <SummaryRow label="Label" value={pduLabel || `PDU-${isRemoteMode ? (editNetwork.ip || remoteHost) : finalIp}`} icon="label" />
                 <SummaryRow label="Rack" value={selectedRack?.rack_code || 'Unassigned'} icon="view_in_ar" />
                 <SummaryRow label="Mount Position" value={selectedSlot || 'A'} icon="height" />
+                <SummaryRow label="SNMP Version" value={detectedDevice?.snmp_version || '2c'} icon="swap_vert" />
                 <SummaryRow label="SNMP Community" value={isRemoteMode ? (editSnmp.community_read || community) : community} icon="vpn_key" />
                 <SummaryRow label="Data Hall" value={hallName || `Hall #${hallId}`} icon="domain" />
                 {isRemoteMode && detectedDevice?.mac && (
@@ -1117,8 +1873,8 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
           )}
         </div>
 
-        {/* Footer Navigation */}
-        <div className="p-5 border-t border-[#233544] flex items-center justify-between bg-[#0a1222]">
+        {/* Footer Navigation (hidden in batch mode) */}
+        {scanMode !== 'batch' && <div className="p-5 border-t border-[#233544] flex items-center justify-between bg-[#0a1222]">
           {step > 0 && !commissioned ? (
             <button onClick={goBack}
               className="px-4 py-2.5 bg-[#161E2E] border border-[#233544] hover:border-[#00E5FF]/30 text-slate-300 rounded-lg flex items-center gap-2 transition-all text-sm">
@@ -1176,7 +1932,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
               </button>
             )}
           </div>
-        </div>
+        </div>}
       </div>
     </div>
   );

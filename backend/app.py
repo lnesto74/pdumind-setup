@@ -63,7 +63,7 @@ from polling import (
 # Import auth module
 from auth import register_auth_routes, ensure_default_admin
 
-def snmp_walk(ip: str, port: int, base_oid: str, timeout: int = OUTLET_BASE_TIMEOUT) -> dict[str, str]:
+def snmp_walk(ip: str, port: int, base_oid: str, timeout: int = OUTLET_BASE_TIMEOUT, snmp_version: str = "2c") -> dict[str, str]:
     """Walk an OID tree and return {full_oid: value} mapping. Uses numeric OIDs and prints
     value only for easier parsing while keeping the OID on each line ("-On -Ov").
     """
@@ -71,7 +71,7 @@ def snmp_walk(ip: str, port: int, base_oid: str, timeout: int = OUTLET_BASE_TIME
     try:
         cmd = [
             "snmpwalk",
-            "-v2c",
+            f"-v{snmp_version}",
             "-c", DEFAULT_COMMUNITY,
             "-t", str(timeout),
             "-r", str(OUTLET_MAX_RETRIES),
@@ -253,20 +253,19 @@ def test_parse_mib():
 
 
 # Optimised batch SNMP fetcher
-def snmp_get_batch(ip: str, port: int, oids: list[str], retries: int | None = None, timeout: int | None = None) -> dict[str, str | None]:
+def snmp_get_batch(ip: str, port: int, oids: list[str], retries: int | None = None, timeout: int | None = None, snmp_version: str = "2c") -> dict[str, str | None]:
     """Fetch a list of OIDs in a *single* snmpget process call to drastically
     reduce overhead. Returns a mapping of oid -> value (None on error).
     Optionally override timeout (seconds) and retries for this batch.
     """
     import subprocess, shlex
 
-    # Fallback to sensible defaults if not specified
     retry_count = retries if retries is not None else 3
     base_timeout = timeout if timeout is not None else 2
 
     cmd = [
         "snmpget",
-        "-v2c",
+        f"-v{snmp_version}",
         "-c", DEFAULT_COMMUNITY,
         "-t", str(base_timeout),
         "-r", str(retry_count),
@@ -297,18 +296,17 @@ def snmp_get_batch(ip: str, port: int, oids: list[str], retries: int | None = No
         return {oid: None for oid in oids}
 
 
-def snmp_get_outlets(ip: str, port: int, base_oid: str, timeout: int = 3) -> Dict[str, str]:
+def snmp_get_outlets(ip: str, port: int, base_oid: str, timeout: int = 3, snmp_version: str = "2c") -> Dict[str, str]:
     """Run snmpget for all outlet OIDs of a given type.
     Returns a mapping of OID to value.
     """
     import subprocess
     try:
-        # Build OIDs for all 24 outlets
         oids = [f"{base_oid}.{i}.0" for i in range(1, 25)]
         
         cmd = [
             "snmpget",
-            "-v2c",
+            f"-v{snmp_version}",
             "-c", "private",
             "-t", str(timeout),
             "-r", "2",
@@ -654,6 +652,12 @@ def _poll_remote_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str
         print(f"[poll_remote] {ip} error, returning cached data: {e}")
     finally:
         client._lock.release()
+        # Always logout after polling to free the PDU's single-session slot
+        # so the settings panel / other clients can connect
+        try:
+            client.logout()
+        except Exception:
+            pass
 
     return ip, results, errors
 
@@ -737,36 +741,34 @@ for _si in (1, 2, 3, 4):
 # Cache: per-IP which enterprise the PDU responds to ("23273", "23280", or None)
 _pdu_mib_family: Dict[str, str] = {}
 
-def _detect_mib_family(ip: str, port: int) -> str:
+def _detect_mib_family(ip: str, port: int, snmp_version: str = "2c") -> str:
     """Probe one OID from each enterprise to figure out which MIB the PDU supports."""
     cached = _pdu_mib_family.get(ip)
     if cached:
         return cached
-    # Try 23273 first (npdu-n-v2)
-    probe_23273 = snmp_get_batch(ip, port, [f"{_E23273}.2.1.0"], retries=1, timeout=2)
+    probe_23273 = snmp_get_batch(ip, port, [f"{_E23273}.2.1.0"], retries=1, timeout=2, snmp_version=snmp_version)
     val = probe_23273.get(f"{_E23273}.2.1.0")
     if val and not str(val).startswith("Error:") and str(val).strip():
         _pdu_mib_family[ip] = "23273"
         print(f"[MIB detect] {ip} → enterprise 23273 (npdu-n-v2)")
         return "23273"
-    # Try 23280 (PDUMIBV07)
-    probe_23280 = snmp_get_batch(ip, port, [f"{_E23280}.2.1.5.1"], retries=1, timeout=2)
+    probe_23280 = snmp_get_batch(ip, port, [f"{_E23280}.2.1.5.1"], retries=1, timeout=2, snmp_version=snmp_version)
     val = probe_23280.get(f"{_E23280}.2.1.5.1")
     if val and not str(val).startswith("Error:") and str(val).strip():
         _pdu_mib_family[ip] = "23280"
         print(f"[MIB detect] {ip} → enterprise 23280 (PDUMIBV07)")
         return "23280"
-    _pdu_mib_family[ip] = "23273"  # default fallback
+    _pdu_mib_family[ip] = "23273"
     print(f"[MIB detect] {ip} → no response from either probe, defaulting to 23273")
     return "23273"
 
 
 def _snmp_fetch_oids(ip: str, port: int, oid_list: List[Tuple[str, str]],
-                     results: Dict, errors: Dict, retries: int = 3, timeout: int = 3):
+                     results: Dict, errors: Dict, retries: int = 3, timeout: int = 3, snmp_version: str = "2c"):
     """Fetch a list of (name, oid) tuples via SNMP and populate results/errors."""
     if not oid_list:
         return
-    mapping = snmp_get_batch(ip, port, [oid for _, oid in oid_list], retries=retries, timeout=timeout)
+    mapping = snmp_get_batch(ip, port, [oid for _, oid in oid_list], retries=retries, timeout=timeout, snmp_version=snmp_version)
     for name, oid in oid_list:
         value = mapping.get(oid)
         if value is not None and not str(value).startswith("Error:"):
@@ -849,15 +851,15 @@ def poll_single_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str,
 
     ip = pdu["ip_address"]
     port = pdu.get("snmp_port", 161)
+    sv = pdu.get("snmp_version", "2c") or "2c"
 
     results: Dict[str, Any] = {}
     errors: Dict[str, Any] = {}
 
-    mib = _detect_mib_family(ip, port)
+    mib = _detect_mib_family(ip, port, snmp_version=sv)
 
     if mib == "23273":
-        # ---- npdu-n-v2 full telemetry ----
-        _snmp_fetch_oids(ip, port, _NPDU_TELEMETRY_OIDS, results, errors)
+        _snmp_fetch_oids(ip, port, _NPDU_TELEMETRY_OIDS, results, errors, snmp_version=sv)
         # Convenience aliases for the dashboard (expects TotalCurrent, TotalPower, etc.)
         _alias_map = {
             "TotalCurrent": "MasterCurrentP1",
@@ -887,15 +889,60 @@ def poll_single_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str,
                 results[cgi_key] = {"name": cgi_key, "oid": f"snmp:{cgi_key}", "value": results[src]["value"]}
 
     else:
-        # ---- PDUMIBV07 full telemetry ----
-        _snmp_fetch_oids(ip, port, _V07_DEVICE_OIDS, results, errors)
-        _snmp_fetch_oids(ip, port, _V07_PHASE_OIDS, results, errors)
-        _snmp_fetch_oids(ip, port, _V07_SENSOR_OIDS, results, errors)
+        _snmp_fetch_oids(ip, port, _V07_DEVICE_OIDS, results, errors, snmp_version=sv)
+        _snmp_fetch_oids(ip, port, _V07_PHASE_OIDS, results, errors, snmp_version=sv)
+        _snmp_fetch_oids(ip, port, _V07_SENSOR_OIDS, results, errors, snmp_version=sv)
+
+        # --- Scale raw integer values per PDUMIBV07.mib spec ---
+        # -1 means "not applicable / sensor absent" — replace with None
+        _V07_SCALE = {
+            # Device-level
+            "deviceStatusActivePower":        (1, "W"),     # Units: 1 W
+            "deviceStatusReactivePower":      (1, "VAR"),
+            "deviceStatusApparentPower":      (1, "VA"),
+            "deviceStatusPowerFactor":        (1000, ""),   # Units: 0.1% → raw 1000 = PF 1.000
+            "deviceStatusActiveEnergy":       (1000, "kWh"),  # Wh → kWh
+            "deviceStatusReactiveEnergy":     (1000, "kVARh"),
+            "deviceStatusFrequency":          (1000, "Hz"),  # Units: 0.001 Hz
+            "deviceStatusZeroLineCurrent":    (100, "A"),    # Units: 0.01 A
+            "deviceStatusThreePhaseUnbalance": (1, "%"),
+        }
+        for _ph in (1, 2, 3):
+            _pfx = f"phase{_ph}"
+            _V07_SCALE[f"{_pfx}Voltage"]        = (10, "V")      # Units: 0.1 V
+            _V07_SCALE[f"{_pfx}Current"]        = (100, "A")     # Units: 0.01 A
+            _V07_SCALE[f"{_pfx}ActivePower"]    = (1, "W")
+            _V07_SCALE[f"{_pfx}ReactivePower"]  = (1, "VAR")
+            _V07_SCALE[f"{_pfx}ApparentPower"]  = (1, "VA")
+            _V07_SCALE[f"{_pfx}PowerFactor"]    = (1000, "")     # Units: 0.1% → PF ratio
+            _V07_SCALE[f"{_pfx}ActiveEnergy"]   = (1000, "kWh")  # Wh → kWh
+            _V07_SCALE[f"{_pfx}ReactiveEnergy"] = (1000, "kVARh")
+
+        for key, (divisor, _unit) in _V07_SCALE.items():
+            if key in results:
+                try:
+                    raw = int(results[key]["value"])
+                    if raw == -1:
+                        # -1 = not applicable / not connected
+                        del results[key]
+                        continue
+                    scaled = raw / divisor if divisor > 1 else raw
+                    results[key]["value"] = str(round(scaled, 3))
+                except (ValueError, TypeError):
+                    pass
+
+        # Detect phase count (single-phase if phase2Voltage is absent or was -1)
+        phase_count = 1
+        if "phase2Voltage" in results:
+            phase_count = 3
+        results["_phase_count"] = {"name": "_phase_count", "oid": "meta", "value": str(phase_count)}
+
         # Map to dashboard-expected keys
         _v07_alias = {
             "TotalCurrent": "deviceStatusZeroLineCurrent",
             "TotalPower": "deviceStatusActivePower",
             "TotalEnergy": "deviceStatusActiveEnergy",
+            "Frequency": "deviceStatusFrequency",
             "MasterVoltageP1": "phase1Voltage",
             "MasterCurrentP1": "phase1Current",
             "MasterPowerP1": "phase1ActivePower",
@@ -905,22 +952,48 @@ def poll_single_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str,
         for alias, src in _v07_alias.items():
             if src in results and alias not in results:
                 results[alias] = {"name": alias, "oid": results[src]["oid"], "value": results[src]["value"]}
-        # CGI-compatible keys for consistent frontend
+
+        # For single-phase: totals = phase 1 values (device-level may be -1/absent)
+        if phase_count == 1:
+            _sp_fallbacks = {
+                "deviceStatusActivePower": "phase1ActivePower",
+                "deviceStatusReactivePower": "phase1ReactivePower",
+                "deviceStatusApparentPower": "phase1ApparentPower",
+                "deviceStatusActiveEnergy": "phase1ActiveEnergy",
+                "deviceStatusReactiveEnergy": "phase1ReactiveEnergy",
+                "deviceStatusZeroLineCurrent": "phase1Current",
+            }
+            for dev_key, phase_key in _sp_fallbacks.items():
+                if dev_key not in results and phase_key in results:
+                    results[dev_key] = {"name": dev_key, "oid": results[phase_key]["oid"], "value": results[phase_key]["value"]}
+
+        # CGI-compatible keys for consistent frontend display
         _v07_cgi = {
             "l1_voltage": "phase1Voltage", "l1_current": "phase1Current",
-            "l1_active_power": "phase1ActivePower", "l1_pf": "phase1PowerFactor",
-            "l1_active_energy": "phase1ActiveEnergy",
-            "l2_voltage": "phase2Voltage", "l2_current": "phase2Current",
-            "l2_active_power": "phase2ActivePower", "l2_pf": "phase2PowerFactor",
-            "l2_active_energy": "phase2ActiveEnergy",
-            "l3_voltage": "phase3Voltage", "l3_current": "phase3Current",
-            "l3_active_power": "phase3ActivePower", "l3_pf": "phase3PowerFactor",
-            "l3_active_energy": "phase3ActiveEnergy",
+            "l1_active_power": "phase1ActivePower", "l1_reactive_power": "phase1ReactivePower",
+            "l1_apparent_power": "phase1ApparentPower", "l1_pf": "phase1PowerFactor",
+            "l1_active_energy": "phase1ActiveEnergy", "l1_reactive_energy": "phase1ReactiveEnergy",
             "frequency": "deviceStatusFrequency",
             "neutral_current": "deviceStatusZeroLineCurrent",
+            "neutral_load_pct": "deviceStatusThreePhaseUnbalance",
             "total_active_power": "deviceStatusActivePower",
+            "total_reactive_power": "deviceStatusReactivePower",
+            "total_apparent_power": "deviceStatusApparentPower",
+            "total_pf": "deviceStatusPowerFactor",
             "total_active_energy": "deviceStatusActiveEnergy",
+            "total_reactive_energy": "deviceStatusReactiveEnergy",
         }
+        if phase_count == 3:
+            _v07_cgi.update({
+                "l2_voltage": "phase2Voltage", "l2_current": "phase2Current",
+                "l2_active_power": "phase2ActivePower", "l2_reactive_power": "phase2ReactivePower",
+                "l2_apparent_power": "phase2ApparentPower", "l2_pf": "phase2PowerFactor",
+                "l2_active_energy": "phase2ActiveEnergy", "l2_reactive_energy": "phase2ReactiveEnergy",
+                "l3_voltage": "phase3Voltage", "l3_current": "phase3Current",
+                "l3_active_power": "phase3ActivePower", "l3_reactive_power": "phase3ReactivePower",
+                "l3_apparent_power": "phase3ApparentPower", "l3_pf": "phase3PowerFactor",
+                "l3_active_energy": "phase3ActiveEnergy", "l3_reactive_energy": "phase3ReactiveEnergy",
+            })
         for cgi_key, src in _v07_cgi.items():
             if src in results and cgi_key not in results:
                 results[cgi_key] = {"name": cgi_key, "oid": f"snmp:{cgi_key}", "value": results[src]["value"]}
@@ -932,7 +1005,7 @@ def poll_single_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str,
         energy_oid = f"{OUTPUT_PREFIXES['Energy']}.{outlet}.0"
         name_oid = f"{OUTPUT_PREFIXES['Name']}.{outlet}.0"
 
-        outlet_mapping = snmp_get_batch(ip, port, [status_oid, current_oid, energy_oid, name_oid], retries=2, timeout=2)
+        outlet_mapping = snmp_get_batch(ip, port, [status_oid, current_oid, energy_oid, name_oid], retries=2, timeout=2, snmp_version=sv)
 
         for metric, oid in [
             (f"Output{outlet}Status", status_oid),
@@ -953,26 +1026,39 @@ def poll_single_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str,
 
 
 _REMOTE_PDU_POLL_INTERVAL = 30  # seconds between web admin polls (avoid session churn)
+_LOCAL_PDU_POLL_INTERVAL = 10   # seconds between SNMP polls for local PDUs
 _REMOTE_PDU_ERROR_BACKOFF = 90  # wait longer after a failure before retrying
 _remote_pdu_last_poll: Dict[str, float] = {}
 _remote_pdu_last_error: Dict[str, float] = {}  # track last failure time per IP
 
+_pdu_consecutive_failures: Dict[str, int] = {}
+_MAX_CONSECUTIVE_FAILURES = 5          # after 5 fails, back off to 5-minute intervals
+_UNREACHABLE_BACKOFF = 300             # 5 minutes for PDUs that keep failing
+
+
+def _is_ip_reachable(ip: str, timeout: float = 2.0) -> bool:
+    """Quick TCP probe on port 161 (SNMP) or ICMP-like check."""
+    import socket
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        result = sock.connect_ex((ip, 161))
+        sock.close()
+        return result == 0
+    except Exception:
+        return False
+
+
 def multi_pdu_poller():
-    """Background polling thread that polls ALL active PDUs from database.
-    Remote PDUs are polled at a slower cadence to avoid session exhaustion."""
+    """Background polling thread for active PDUs.
+    Only polls PDUs that are reachable and respects per-PDU intervals."""
     global MULTI_PDU_RESULTS, MULTI_PDU_ERRORS
     
     while not MULTI_PDU_STOP:
         try:
             all_pdus = PDURepo.get_all_active()
-
-            # When adaptive polling is active, only handle remote PDUs here
-            if USE_ADAPTIVE_POLLING:
-                pdus = [p for p in all_pdus if p.get("web_admin_port")]
-            else:
-                pdus = all_pdus
             
-            if not pdus:
+            if not all_pdus:
                 time.sleep(10)
                 continue
             
@@ -980,46 +1066,58 @@ def multi_pdu_poller():
             now = time.time()
 
             pdus_to_poll = []
-            for pdu in pdus:
+            for pdu in all_pdus:
                 ip = pdu.get("ip_address", "")
-                if pdu.get("web_admin_port"):
-                    last = _remote_pdu_last_poll.get(ip, 0)
-                    last_err = _remote_pdu_last_error.get(ip, 0)
+                if not ip:
+                    continue
+
+                last = _remote_pdu_last_poll.get(ip, 0)
+                last_err = _remote_pdu_last_error.get(ip, 0)
+                fails = _pdu_consecutive_failures.get(ip, 0)
+
+                # Determine polling interval based on PDU type and health
+                if fails >= _MAX_CONSECUTIVE_FAILURES:
+                    interval = _UNREACHABLE_BACKOFF
+                elif pdu.get("web_admin_port"):
                     interval = _REMOTE_PDU_ERROR_BACKOFF if last_err > last else _REMOTE_PDU_POLL_INTERVAL
-                    if now - max(last, last_err) < interval:
-                        continue
+                else:
+                    interval = _LOCAL_PDU_POLL_INTERVAL
+
+                if now - max(last, last_err) < interval:
+                    continue
                 pdus_to_poll.append(pdu)
 
             if not pdus_to_poll:
                 time.sleep(2)
                 continue
 
-            print(f"[multi_pdu_poller] Polling {len(pdus_to_poll)} PDUs (of {len(pdus)} total)...")
+            print(f"[multi_pdu_poller] Polling {len(pdus_to_poll)} PDUs (of {len(all_pdus)} active)...")
             
             with ThreadPoolExecutor(max_workers=min(len(pdus_to_poll), 8)) as executor:
                 futures = {executor.submit(poll_single_pdu, pdu): pdu for pdu in pdus_to_poll}
                 
-                for future in as_completed(futures):
+                for future in as_completed(futures, timeout=120):
+                    pdu_obj = futures[future]
+                    ip = pdu_obj.get("ip_address", "")
                     try:
-                        ip, results, errors = future.result()
+                        ip, results, errors = future.result(timeout=60)
                         with MULTI_PDU_LOCK:
                             if results:
                                 MULTI_PDU_RESULTS[ip] = results
                                 MULTI_PDU_ERRORS[ip] = errors
                             else:
-                                # Poll returned empty — keep previous good cache,
-                                # only update errors so the frontend knows.
                                 MULTI_PDU_ERRORS[ip] = errors
                                 if ip not in MULTI_PDU_RESULTS:
                                     MULTI_PDU_RESULTS[ip] = {}
                         
-                        pdu_obj = futures[future]
-                        if pdu_obj.get("web_admin_port"):
-                            _remote_pdu_last_poll[ip] = time.time()
-                            if errors:
-                                _remote_pdu_last_error[ip] = time.time()
-                            elif ip in _remote_pdu_last_error:
+                        _remote_pdu_last_poll[ip] = time.time()
+                        if errors and not results:
+                            _remote_pdu_last_error[ip] = time.time()
+                            _pdu_consecutive_failures[ip] = _pdu_consecutive_failures.get(ip, 0) + 1
+                        else:
+                            if ip in _remote_pdu_last_error:
                                 del _remote_pdu_last_error[ip]
+                            _pdu_consecutive_failures[ip] = 0
 
                         if results:
                             try:
@@ -1028,8 +1126,10 @@ def multi_pdu_poller():
                                 print(f"[multi_pdu_poller] Error storing snapshot for {ip}: {e}")
                                 
                     except Exception as e:
-                        pdu_obj = futures[future]
-                        print(f"[multi_pdu_poller] Error polling {pdu_obj.get('ip_address')}: {e}")
+                        print(f"[multi_pdu_poller] Error polling {ip}: {e}")
+                        _remote_pdu_last_poll[ip] = time.time()
+                        _remote_pdu_last_error[ip] = time.time()
+                        _pdu_consecutive_failures[ip] = _pdu_consecutive_failures.get(ip, 0) + 1
             
             elapsed = time.time() - cycle_start
             print(f"[multi_pdu_poller] Cycle finished in {elapsed:.2f}s for {len(pdus_to_poll)} PDUs")
@@ -1491,13 +1591,7 @@ def get_pdu_live_data_by_ip(ip_address: str):
                 "source": "web_admin",
             })
 
-        # --- Local PDU: use adaptive poller (SNMP) ---
-        if USE_ADAPTIVE_POLLING:
-            poller = _get_adaptive_poller()
-            if not poller._running:
-                _ensure_adaptive_polling()
-            return jsonify(poller.get_live_data(ip_address))
-        
+        # --- Local PDU: use multi_pdu_poller (same scaling as remote) ---
         ensure_multi_pdu_poller()
         
         with MULTI_PDU_LOCK:
@@ -1859,6 +1953,14 @@ def _get_pdu_client(host: str, port: int = 6662,
         if client is None:
             client = PDUWebClient(host, port, username, password)
             _pdu_clients[key] = client
+        elif client.username != username or client.password != password:
+            # Credentials changed — recreate client
+            try:
+                client.logout()
+            except Exception:
+                pass
+            client = PDUWebClient(host, port, username, password)
+            _pdu_clients[key] = client
         return client
 
 
@@ -1928,6 +2030,13 @@ def pdu_admin_set_network(host: str):
         username = data.get("username", "admin")
         password = data.get("password", "admin")
         client = _get_pdu_client(host, port, username, password)
+
+        # If DHCP mode change requested, apply it first
+        dhcp_mode = data.get("dhcp")
+        if dhcp_mode is not None:
+            dhcp_ok = client.set_dhcp(dhcp_mode == "ON" or dhcp_mode is True)
+            if not dhcp_ok:
+                return jsonify({"error": "Failed to change DHCP mode"}), 500
 
         ok = client.set_ipv4(
             ip=data["ip"],
@@ -2061,6 +2170,340 @@ def pdu_admin_set_time(host: str):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/pdu-admin/<host>/settings/system", methods=["GET"])
+def pdu_admin_get_system(host: str):
+    """Get system/device settings (hostname, LCD, logout) from a PDU."""
+    try:
+        port = int(request.args.get("port", 6662))
+        username = request.args.get("username", "admin")
+        password = request.args.get("password", "admin")
+        client = _get_pdu_client(host, port, username, password)
+        cfg = client.get_system_config()
+        users = client.get_users()
+        return jsonify({"success": True, "system": cfg, "users": users})
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/pdu-admin/<host>/settings/system", methods=["POST"])
+def pdu_admin_set_system(host: str):
+    """Set system/device settings on a PDU."""
+    try:
+        data = request.get_json(force=True)
+        port = int(data.get("web_port", 6662))
+        username = data.get("username", "admin")
+        password = data.get("password", "admin")
+        client = _get_pdu_client(host, port, username, password)
+
+        ok = client.set_system_config(
+            device_name=data.get("device_name"),
+            lcd_title=data.get("lcd_title"),
+            display_direction=data.get("display_direction"),
+            lcd_backlight_mode=data.get("lcd_backlight_mode"),
+            lcd_backlight_time=data.get("lcd_backlight_time"),
+            lcd_rest_brightness=data.get("lcd_rest_brightness"),
+            logout_enabled=data.get("logout_enabled"),
+            logout_time=data.get("logout_time"),
+            web_title_enabled=data.get("web_title_enabled"),
+            router_hostname=data.get("router_hostname"),
+        )
+        if ok:
+            # Sync label/hostname back to DB — Router Hostname is the PDU label
+            new_name = data.get("router_hostname") or data.get("device_name")
+            new_hostname = data.get("router_hostname")
+            if new_name or new_hostname:
+                try:
+                    import sqlite3
+                    db_path = os.path.join(os.path.dirname(__file__), "data", "pdumind.db")
+                    conn = sqlite3.connect(db_path)
+                    updates, params = [], []
+                    if new_name:
+                        updates.append("label = ?")
+                        params.append(new_name)
+                    if new_hostname:
+                        updates.append("hostname = ?")
+                        params.append(new_hostname)
+                    if updates:
+                        params.append(host)
+                        conn.execute(f"UPDATE pdus SET {', '.join(updates)} WHERE ip_address = ?", params)
+                        conn.commit()
+                    conn.close()
+                except Exception as db_err:
+                    print(f"[set_system] DB update warning: {db_err}")
+            return jsonify({"success": True, "message": "System settings applied"})
+        return jsonify({"error": "Failed to apply system settings"}), 500
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/pdu-admin/<host>/settings/users", methods=["POST"])
+def pdu_admin_set_users(host: str):
+    """Set user credentials on a PDU.
+    After applying, updates the DB and flushes the cached client so the
+    poller reconnects with the new credentials automatically."""
+    try:
+        data = request.get_json(force=True)
+        port = int(data.get("web_port", 6662))
+        username = data.get("username", "admin")
+        password = data.get("password", "admin")
+        client = _get_pdu_client(host, port, username, password)
+
+        new_admin_user = data.get("admin_username")
+        new_admin_pass = data.get("admin_password")
+
+        ok = client.set_users(
+            admin_username=new_admin_user,
+            admin_password=new_admin_pass,
+            user1_username=data.get("user1_username"),
+            user1_password=data.get("user1_password"),
+            user2_username=data.get("user2_username"),
+            user2_password=data.get("user2_password"),
+        )
+        if ok:
+            # Persist new admin credentials to DB so the poller uses them
+            if new_admin_user or new_admin_pass:
+                try:
+                    import sqlite3
+                    db_path = os.path.join(os.path.dirname(__file__), "data", "pdumind.db")
+                    conn = sqlite3.connect(db_path)
+                    updates = []
+                    params = []
+                    if new_admin_user:
+                        updates.append("web_admin_user = ?")
+                        params.append(new_admin_user)
+                    if new_admin_pass:
+                        updates.append("web_admin_pass = ?")
+                        params.append(new_admin_pass)
+                    if updates:
+                        params.append(host)
+                        conn.execute(f"UPDATE pdus SET {', '.join(updates)} WHERE ip_address = ?", params)
+                        conn.commit()
+                    conn.close()
+                except Exception as db_err:
+                    print(f"[set_users] DB update warning: {db_err}")
+
+                # Flush cached client so poller creates a new one with new creds
+                key = f"{host}:{port}"
+                with _pdu_clients_lock:
+                    _pdu_clients.pop(key, None)
+
+            return jsonify({"success": True, "message": "User credentials applied"})
+        return jsonify({"error": "Failed to apply user settings"}), 500
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+# ======================================================================
+# Batch Commissioning
+# ======================================================================
+
+_BATCH_JOBS: Dict[str, Dict[str, Any]] = {}  # job_id -> job state
+_batch_lock = Lock()
+
+
+@app.route("/api/batch/commission", methods=["POST"])
+def batch_commission():
+    """Start a batch commissioning job. Accepts a template and a list of PDUs."""
+    import uuid
+    try:
+        data = request.get_json(force=True)
+        template = data.get("template", {})
+        pdu_list = data.get("pdus", [])
+        hall_id = data.get("hall_id")
+
+        if not pdu_list:
+            return jsonify({"error": "No PDUs selected"}), 400
+        if not hall_id:
+            return jsonify({"error": "Data hall ID required"}), 400
+
+        job_id = str(uuid.uuid4())[:8]
+        job = {
+            "id": job_id,
+            "status": "running",
+            "template": template,
+            "hall_id": hall_id,
+            "total": len(pdu_list),
+            "completed": 0,
+            "results": {},
+            "started_at": time.time(),
+        }
+        with _batch_lock:
+            _BATCH_JOBS[job_id] = job
+
+        # Run in background thread
+        t = Thread(
+            target=_run_batch_commission,
+            args=(job_id, template, pdu_list, hall_id),
+            daemon=True,
+        )
+        t.start()
+
+        return jsonify({"success": True, "job_id": job_id, "total": len(pdu_list)})
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/batch/commission/<job_id>", methods=["GET"])
+def batch_commission_status(job_id: str):
+    """Get the status/progress of a batch commissioning job."""
+    with _batch_lock:
+        job = _BATCH_JOBS.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify(job)
+
+
+def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: int):
+    """Execute batch commissioning in background thread."""
+    import socket
+
+    ip_start = template.get("network", {}).get("ip_start", "")
+    ip_parts = ip_start.split(".") if ip_start else []
+
+    for idx, pdu_info in enumerate(pdu_list):
+        current_ip = pdu_info.get("ip", "")
+        mac = pdu_info.get("mac", "")
+        web_port = pdu_info.get("web_admin_port", 80)
+        pdu_key = mac or current_ip
+
+        # Per-PDU status
+        status = {
+            "ip": current_ip,
+            "mac": mac,
+            "step": "connecting",
+            "success": False,
+            "sections": {},
+            "new_ip": "",
+            "error": None,
+        }
+        with _batch_lock:
+            _BATCH_JOBS[job_id]["results"][pdu_key] = status
+
+        try:
+            # Calculate the target IP for this PDU
+            new_ip = current_ip
+            if len(ip_parts) == 4:
+                new_ip = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}.{int(ip_parts[3]) + idx}"
+            status["new_ip"] = new_ip
+
+            # Build per-PDU template with resolved IP
+            pdu_template = {}
+            if template.get("network"):
+                pdu_template["network"] = {
+                    **template["network"],
+                    "ip": new_ip,
+                    "dhcp": "OFF",
+                }
+            if template.get("system"):
+                sys_cfg = dict(template["system"])
+                hostname_pattern = sys_cfg.get("router_hostname", "")
+                if hostname_pattern:
+                    sys_cfg["router_hostname"] = (
+                        hostname_pattern
+                        .replace("{seq}", str(idx + 1).zfill(3))
+                        .replace("{ip}", new_ip)
+                        .replace("{mac}", mac[-6:] if mac else "")
+                        .replace("{idx}", str(idx))
+                    )
+                pdu_template["system"] = sys_cfg
+            if template.get("users"):
+                pdu_template["users"] = template["users"]
+            if template.get("snmp"):
+                pdu_template["snmp"] = template["snmp"]
+            if template.get("ntp"):
+                pdu_template["ntp"] = template["ntp"]
+
+            # Connect to PDU
+            status["step"] = "configuring"
+            with _batch_lock:
+                _BATCH_JOBS[job_id]["results"][pdu_key] = status
+
+            admin_user = template.get("current_credentials", {}).get("username", "admin")
+            admin_pass = template.get("current_credentials", {}).get("password", "admin")
+            client = _get_pdu_client(current_ip, web_port, admin_user, admin_pass)
+
+            # Apply template
+            report = client.apply_batch_template(pdu_template)
+            status["sections"] = report
+
+            # Reboot to apply network changes
+            if pdu_template.get("network"):
+                status["step"] = "rebooting"
+                with _batch_lock:
+                    _BATCH_JOBS[job_id]["results"][pdu_key] = status
+                client.reboot()
+
+                # Wait for PDU at new IP
+                status["step"] = "verifying"
+                with _batch_lock:
+                    _BATCH_JOBS[job_id]["results"][pdu_key] = status
+
+                online = False
+                deadline = time.time() + 90
+                while time.time() < deadline:
+                    time.sleep(5)
+                    try:
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock.settimeout(3)
+                        if sock.connect_ex((new_ip, web_port)) == 0:
+                            online = True
+                            sock.close()
+                            break
+                        sock.close()
+                    except Exception:
+                        pass
+
+                if not online:
+                    status["step"] = "reboot_timeout"
+                    status["error"] = f"PDU did not come back at {new_ip} within 90s"
+                    with _batch_lock:
+                        _BATCH_JOBS[job_id]["results"][pdu_key] = status
+                        _BATCH_JOBS[job_id]["completed"] += 1
+                    continue
+
+            # Commission into database
+            status["step"] = "commissioning"
+            with _batch_lock:
+                _BATCH_JOBS[job_id]["results"][pdu_key] = status
+
+            pdu_data = {
+                "label": template.get("system", {}).get("router_hostname", "") or template.get("system", {}).get("device_name", f"PDU-{new_ip}"),
+                "snmp_port": 161,
+                "snmp_community_ref": template.get("snmp", {}).get("read_community", "public"),
+                "snmp_version": pdu_info.get("snmp_version", "2c"),
+                "is_active": True,
+                "mac_address": mac,
+                "hostname": pdu_template.get("system", {}).get("router_hostname", ""),
+                "web_admin_port": web_port,
+                "web_admin_user": template.get("users", {}).get("admin_username", "admin"),
+                "web_admin_pass": template.get("users", {}).get("admin_password", "admin"),
+            }
+            pdu_id = PDURepo.upsert(hall_id, new_ip, pdu_data)
+
+            status["step"] = "done"
+            status["success"] = True
+            status["pdu_id"] = pdu_id
+
+        except Exception as e:
+            status["step"] = "error"
+            status["error"] = str(e)
+            import traceback; traceback.print_exc()
+
+        with _batch_lock:
+            _BATCH_JOBS[job_id]["results"][pdu_key] = status
+            _BATCH_JOBS[job_id]["completed"] += 1
+
+    # Mark job complete
+    with _batch_lock:
+        _BATCH_JOBS[job_id]["status"] = "completed"
+        _BATCH_JOBS[job_id]["finished_at"] = time.time()
+    print(f"[batch] Job {job_id} completed: {_BATCH_JOBS[job_id]['completed']}/{_BATCH_JOBS[job_id]['total']}")
+
+
 @app.route("/api/pdu-admin/<host>/telemetry", methods=["GET"])
 def pdu_admin_telemetry(host: str):
     """Get live telemetry from a PDU via its web admin CGI."""
@@ -2139,49 +2582,73 @@ def scan_network():
         community = data.get("community", "public")
         timeout = data.get("timeout", 1)
         
-        # Parse subnet
+        # Parse subnet — supports CIDR (192.168.0.0/24), range (192.168.0.160-170),
+        # or dash-separated full IPs (192.168.0.160-192.168.0.170)
+        ip_list = []
         try:
-            network = ipaddress.ip_network(subnet, strict=False)
+            if "-" in subnet and "/" not in subnet:
+                parts = subnet.split("-")
+                base = parts[0].strip()
+                end_part = parts[1].strip()
+                base_octets = base.split(".")
+                if "." in end_part:
+                    end_octets = end_part.split(".")
+                    start_ip = ipaddress.IPv4Address(base)
+                    end_ip = ipaddress.IPv4Address(end_part)
+                else:
+                    start_ip = ipaddress.IPv4Address(base)
+                    end_octets = base_octets[:3] + [end_part]
+                    end_ip = ipaddress.IPv4Address(".".join(end_octets))
+                if int(end_ip) < int(start_ip):
+                    return jsonify({"error": "End IP must be >= start IP"}), 400
+                count = int(end_ip) - int(start_ip) + 1
+                if count > 1024:
+                    return jsonify({"error": "Range too large. Max 1024 addresses"}), 400
+                ip_list = [str(ipaddress.IPv4Address(int(start_ip) + i)) for i in range(count)]
+            else:
+                network = ipaddress.ip_network(subnet, strict=False)
+                if network.num_addresses > 1024:
+                    return jsonify({"error": "Subnet too large. Max /22 (1024 addresses)"}), 400
+                ip_list = [str(ip) for ip in network.hosts()]
         except ValueError as e:
-            return jsonify({"error": f"Invalid subnet: {e}"}), 400
+            return jsonify({"error": f"Invalid subnet/range: {e}"}), 400
         
-        # Limit scan size
-        if network.num_addresses > 1024:
-            return jsonify({"error": "Subnet too large. Max /22 (1024 addresses)"}), 400
+        if not ip_list:
+            return jsonify({"error": "No addresses to scan"}), 400
         
         discovered = []
         
         def check_snmp(ip_str):
-            """Check if IP responds to SNMP."""
-            try:
-                result = subprocess.run(
-                    ["snmpget", "-v2c", "-c", community, "-t", str(timeout), "-r", "0",
-                     "-Oqv", f"{ip_str}:161", ".1.3.6.1.2.1.1.1.0"],
-                    capture_output=True, text=True, timeout=timeout + 1
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    # Get device name
-                    name_result = subprocess.run(
-                        ["snmpget", "-v2c", "-c", community, "-t", str(timeout), "-r", "0",
-                         "-Oqv", f"{ip_str}:161", ".1.3.6.1.2.1.1.5.0"],
+            """Check if IP responds to SNMP. Tries v2c first, then v1."""
+            for version in ["2c", "1"]:
+                try:
+                    result = subprocess.run(
+                        ["snmpget", f"-v{version}", "-c", community, "-t", str(timeout), "-r", "0",
+                         "-Oqv", f"{ip_str}:161", ".1.3.6.1.2.1.1.1.0"],
                         capture_output=True, text=True, timeout=timeout + 1
                     )
-                    device_name = name_result.stdout.strip() if name_result.returncode == 0 else "Unknown"
-                    return {
-                        "ip": ip_str,
-                        "description": result.stdout.strip()[:100],
-                        "name": device_name,
-                        "snmp_version": "2c",
-                        "community": community
-                    }
-            except:
-                pass
+                    if result.returncode == 0 and result.stdout.strip():
+                        name_result = subprocess.run(
+                            ["snmpget", f"-v{version}", "-c", community, "-t", str(timeout), "-r", "0",
+                             "-Oqv", f"{ip_str}:161", ".1.3.6.1.2.1.1.5.0"],
+                            capture_output=True, text=True, timeout=timeout + 1
+                        )
+                        device_name = name_result.stdout.strip() if name_result.returncode == 0 else "Unknown"
+                        return {
+                            "ip": ip_str,
+                            "description": result.stdout.strip()[:100],
+                            "name": device_name,
+                            "snmp_version": version,
+                            "community": community
+                        }
+                except:
+                    pass
             return None
         
         # Scan in parallel
         with ThreadPoolExecutor(max_workers=50) as executor:
-            futures = {executor.submit(check_snmp, str(ip)): str(ip) 
-                      for ip in network.hosts()}
+            futures = {executor.submit(check_snmp, ip): ip 
+                      for ip in ip_list}
             
             for future in as_completed(futures, timeout=60):
                 result = future.result()
@@ -2200,9 +2667,194 @@ def scan_network():
         return jsonify({"error": str(e)}), 500
 
 
+def _detect_web_admin(ip: str) -> int | None:
+    """Probe common web admin ports to see if the PDU has a CGI interface.
+    Returns the port number if found, None otherwise."""
+    import socket
+    for port in [80, 6662, 8080, 443]:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            if sock.connect_ex((ip, port)) == 0:
+                sock.close()
+                # Verify it's actually a PDU web admin (check for login.cgi)
+                try:
+                    resp = _requests_lib.get(f"http://{ip}:{port}/", timeout=3)
+                    if "login.cgi" in resp.text or "PDU" in resp.text:
+                        print(f"[web-detect] {ip}:{port} — PDU web admin found")
+                        return port
+                except Exception:
+                    pass
+            else:
+                sock.close()
+        except Exception:
+            pass
+    return None
+
+
+def _http_probe_pdu(ip: str, ports: list[int] = None, connect_timeout: float = 1.5,
+                    http_timeout: float = 3.0) -> dict | None:
+    """Probe an IP for a PDU web admin interface over HTTP (port 80 etc.).
+    Designed for use over VPN/firewalled networks where SNMP UDP/161 is blocked
+    but HTTP TCP is allowed.
+
+    Returns a dict matching the SNMP scan shape on success, or None if not a PDU.
+    """
+    import socket
+    if ports is None:
+        ports = [80, 6662, 8080, 443]
+
+    for port in ports:
+        # Fast TCP connect probe first to skip closed ports cheaply.
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(connect_timeout)
+            rc = sock.connect_ex((ip, port))
+        except Exception:
+            rc = 1
+        finally:
+            try:
+                if sock is not None:
+                    sock.close()
+            except Exception:
+                pass
+        if rc != 0:
+            continue
+
+        # Port is open — verify it actually looks like a PDU web admin.
+        scheme = "https" if port == 443 else "http"
+        try:
+            resp = _requests_lib.get(
+                f"{scheme}://{ip}:{port}/",
+                timeout=http_timeout,
+                verify=False,
+                allow_redirects=True,
+            )
+        except Exception:
+            continue
+
+        body = (resp.text or "")[:4096]
+        lower = body.lower()
+        looks_like_pdu = (
+            "login.cgi" in lower
+            or "pdu" in lower
+            or "power distribution" in lower
+            or "rack monitor" in lower
+        )
+        if not looks_like_pdu:
+            continue
+
+        # Try to extract a friendly name from <title>.
+        name = "PDU"
+        try:
+            import re
+            m = re.search(r"<title>(.*?)</title>", body, re.IGNORECASE | re.DOTALL)
+            if m:
+                name = m.group(1).strip()[:80] or "PDU"
+        except Exception:
+            pass
+
+        return {
+            "ip": ip,
+            "description": f"HTTP/{port} web admin",
+            "name": name,
+            "snmp_version": "1",
+            "community": "public",
+            "web_admin_port": port,
+            "discovery_method": "http",
+        }
+
+    return None
+
+
+@app.route("/api/network/scan/http", methods=["POST"])
+def scan_network_http():
+    """Scan a network range to discover PDUs via HTTP web-admin probes.
+
+    Use this when SNMP UDP/161 is blocked by a corporate firewall or VPN.
+    Accepts the same subnet syntax as /api/network/scan (CIDR, range, or single IP).
+    Returns the same response shape so the frontend can use the same enrichment flow.
+    """
+    import ipaddress
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    try:
+        data = request.get_json(force=True) if request.data else {}
+        subnet = data.get("subnet", "192.168.1.0/24")
+        ports = data.get("ports") or [80, 6662, 8080, 443]
+        connect_timeout = float(data.get("connect_timeout", 1.5))
+        http_timeout = float(data.get("http_timeout", 3.0))
+
+        # Parse subnet — supports CIDR (192.168.0.0/24), range (192.168.0.160-170),
+        # or dash-separated full IPs (192.168.0.160-192.168.0.170).
+        ip_list: list[str] = []
+        try:
+            if "-" in subnet and "/" not in subnet:
+                parts = subnet.split("-")
+                base = parts[0].strip()
+                end_part = parts[1].strip()
+                base_octets = base.split(".")
+                if "." in end_part:
+                    start_ip = ipaddress.IPv4Address(base)
+                    end_ip = ipaddress.IPv4Address(end_part)
+                else:
+                    start_ip = ipaddress.IPv4Address(base)
+                    end_octets = base_octets[:3] + [end_part]
+                    end_ip = ipaddress.IPv4Address(".".join(end_octets))
+                if int(end_ip) < int(start_ip):
+                    return jsonify({"error": "End IP must be >= start IP"}), 400
+                count = int(end_ip) - int(start_ip) + 1
+                if count > 1024:
+                    return jsonify({"error": "Range too large. Max 1024 addresses"}), 400
+                ip_list = [str(ipaddress.IPv4Address(int(start_ip) + i)) for i in range(count)]
+            elif "/" in subnet:
+                network = ipaddress.ip_network(subnet, strict=False)
+                if network.num_addresses > 1024:
+                    return jsonify({"error": "Subnet too large. Max /22 (1024 addresses)"}), 400
+                ip_list = [str(ip) for ip in network.hosts()]
+            else:
+                ip_list = [str(ipaddress.IPv4Address(subnet.strip()))]
+        except ValueError as e:
+            return jsonify({"error": f"Invalid subnet/range: {e}"}), 400
+
+        if not ip_list:
+            return jsonify({"error": "No addresses to scan"}), 400
+
+        print(f"[http-scan] Scanning {len(ip_list)} IPs on ports {ports} (connect_t={connect_timeout}s, http_t={http_timeout}s)")
+        discovered: list[dict] = []
+
+        with ThreadPoolExecutor(max_workers=50) as executor:
+            futures = {
+                executor.submit(_http_probe_pdu, ip, ports, connect_timeout, http_timeout): ip
+                for ip in ip_list
+            }
+            for future in as_completed(futures, timeout=180):
+                try:
+                    result = future.result()
+                except Exception as e:
+                    print(f"[http-scan] probe error for {futures[future]}: {e}")
+                    continue
+                if result:
+                    discovered.append(result)
+                    print(f"[http-scan] FOUND {result['ip']} on port {result.get('web_admin_port')}")
+
+        return jsonify({
+            "success": True,
+            "subnet": subnet,
+            "discovered": discovered,
+            "count": len(discovered),
+            "method": "http",
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/network/scan/ip", methods=["POST"])
 def scan_single_ip():
-    """Scan a single IP address for SNMP PDU."""
+    """Scan a single IP address for SNMP PDU. Tries v2c first, then v1."""
     import subprocess
     
     try:
@@ -2213,34 +2865,44 @@ def scan_single_ip():
         if not ip:
             return jsonify({"error": "IP address required"}), 400
         
-        # Test SNMP connectivity
-        result = subprocess.run(
-            ["snmpget", "-v2c", "-c", community, "-t", "2", "-r", "1",
-             "-Oqv", f"{ip}:161", ".1.3.6.1.2.1.1.1.0"],
-            capture_output=True, text=True, timeout=5
-        )
-        
-        if result.returncode != 0:
-            return jsonify({
-                "success": False,
-                "ip": ip,
-                "error": "No SNMP response",
-                "details": result.stderr.strip()
-            })
-        
-        # Get device name
-        name_result = subprocess.run(
-            ["snmpget", "-v2c", "-c", community, "-t", "2", "-r", "1",
-             "-Oqv", f"{ip}:161", ".1.3.6.1.2.1.1.5.0"],
-            capture_output=True, text=True, timeout=5
-        )
+        last_err = ""
+        for version in ["2c", "1"]:
+            try:
+                result = subprocess.run(
+                    ["snmpget", f"-v{version}", "-c", community, "-t", "2", "-r", "0",
+                     "-Oqv", f"{ip}:161", ".1.3.6.1.2.1.1.1.0"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    name_result = subprocess.run(
+                        ["snmpget", f"-v{version}", "-c", community, "-t", "2", "-r", "0",
+                         "-Oqv", f"{ip}:161", ".1.3.6.1.2.1.1.5.0"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    resp = {
+                        "success": True,
+                        "ip": ip,
+                        "description": result.stdout.strip()[:100],
+                        "name": name_result.stdout.strip() if name_result.returncode == 0 else "Unknown",
+                        "snmp_version": version
+                    }
+                    # Auto-detect web admin interface
+                    web_port = _detect_web_admin(ip)
+                    if web_port:
+                        resp["web_admin_port"] = web_port
+                    return jsonify(resp)
+                else:
+                    last_err = result.stderr.strip()
+            except subprocess.TimeoutExpired:
+                last_err = f"v{version} timed out"
+            except Exception as e:
+                last_err = str(e)
         
         return jsonify({
-            "success": True,
+            "success": False,
             "ip": ip,
-            "description": result.stdout.strip()[:100],
-            "name": name_result.stdout.strip() if name_result.returncode == 0 else "Unknown",
-            "snmp_version": "2c"
+            "error": "No SNMP response (tried v2c and v1)",
+            "details": last_err
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -2311,13 +2973,14 @@ def add_pdu_to_hall(hall_id: int):
             "mount_position": mount_position,
             "snmp_port": snmp_port,
             "snmp_community_ref": snmp_community,
+            "snmp_version": data.get("snmp_version", "2c"),
             "is_active": True,
             "mac_address": data.get("mac_address"),
             "hostname": data.get("hostname"),
             "remote_host": data.get("remote_host"),
             "web_admin_port": data.get("web_admin_port"),
-            "web_admin_user": data.get("web_admin_user"),
-            "web_admin_pass": data.get("web_admin_pass"),
+            "web_admin_user": data.get("web_admin_user") or "admin",
+            "web_admin_pass": data.get("web_admin_pass") or "admin",
         }
         pdu_id = PDURepo.upsert(hall_id, ip_address, pdu_data)
         
@@ -2352,30 +3015,42 @@ def scan_factory_default():
         scan_subnet = data.get("scan_subnet", False)
         factory_ip = data.get("factory_ip", "192.168.0.163")
         
-        # Try the factory default IP first
-        result = subprocess.run(
-            ["snmpget", "-v2c", "-c", community, "-t", "2", "-r", "1",
-             "-Oqv", f"{factory_ip}:161", ".1.3.6.1.2.1.1.1.0"],
-            capture_output=True, text=True, timeout=5
-        )
-        
-        if result.returncode == 0 and result.stdout.strip():
-            name_result = subprocess.run(
-                ["snmpget", "-v2c", "-c", community, "-t", "2", "-r", "1",
-                 "-Oqv", f"{factory_ip}:161", ".1.3.6.1.2.1.1.5.0"],
-                capture_output=True, text=True, timeout=5
-            )
-            return jsonify({
-                "success": True,
-                "found": True,
-                "device": {
-                    "ip": factory_ip,
-                    "description": result.stdout.strip()[:200],
-                    "name": name_result.stdout.strip() if name_result.returncode == 0 else "Unknown",
-                    "snmp_version": "2c",
-                    "community": community
-                }
-            })
+        # Try the factory default IP first (v2c then v1)
+        last_err = ""
+        for version in ["2c", "1"]:
+            try:
+                result = subprocess.run(
+                    ["snmpget", f"-v{version}", "-c", community, "-t", "2", "-r", "0",
+                     "-Oqv", f"{factory_ip}:161", ".1.3.6.1.2.1.1.1.0"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    name_result = subprocess.run(
+                        ["snmpget", f"-v{version}", "-c", community, "-t", "2", "-r", "0",
+                         "-Oqv", f"{factory_ip}:161", ".1.3.6.1.2.1.1.5.0"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    resp = {
+                        "success": True,
+                        "found": True,
+                        "device": {
+                            "ip": factory_ip,
+                            "description": result.stdout.strip()[:200],
+                            "name": name_result.stdout.strip() if name_result.returncode == 0 else "Unknown",
+                            "snmp_version": version,
+                            "community": community
+                        }
+                    }
+                    web_port = _detect_web_admin(factory_ip)
+                    if web_port:
+                        resp["device"]["web_admin_port"] = web_port
+                    return jsonify(resp)
+                else:
+                    last_err = result.stderr.strip()
+            except subprocess.TimeoutExpired:
+                last_err = f"v{version} timed out"
+            except Exception as e:
+                last_err = str(e)
         
         if not scan_subnet:
             return jsonify({
@@ -2392,16 +3067,17 @@ def scan_factory_default():
         discovered = []
         
         def probe(ip_str):
-            try:
-                r = subprocess.run(
-                    ["snmpget", "-v2c", "-c", community, "-t", "1", "-r", "0",
-                     "-Oqv", f"{ip_str}:161", ".1.3.6.1.2.1.1.1.0"],
-                    capture_output=True, text=True, timeout=3
-                )
-                if r.returncode == 0 and r.stdout.strip():
-                    return {"ip": ip_str, "description": r.stdout.strip()[:200], "name": "Unknown", "snmp_version": "2c", "community": community}
-            except:
-                pass
+            for ver in ["2c", "1"]:
+                try:
+                    r = subprocess.run(
+                        ["snmpget", f"-v{ver}", "-c", community, "-t", "1", "-r", "0",
+                         "-Oqv", f"{ip_str}:161", ".1.3.6.1.2.1.1.1.0"],
+                        capture_output=True, text=True, timeout=3
+                    )
+                    if r.returncode == 0 and r.stdout.strip():
+                        return {"ip": ip_str, "description": r.stdout.strip()[:200], "name": "Unknown", "snmp_version": ver, "community": community}
+                except:
+                    pass
             return None
         
         with ThreadPoolExecutor(max_workers=50) as executor:
@@ -2523,6 +3199,47 @@ def get_available_racks(hall_id: int):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/halls/<int:hall_id>/pdus/bulk-rack-assign", methods=["POST"])
+def bulk_rack_assign(hall_id: int):
+    """Assign multiple PDUs to racks in one call.
+    Expects { assignments: [{ pdu_ip, rack_id, mount_position }] }"""
+    try:
+        data = request.get_json(force=True)
+        assignments = data.get("assignments", [])
+        if not assignments:
+            return jsonify({"error": "No assignments provided"}), 400
+
+        import sqlite3
+        db_path = os.path.join(os.path.dirname(__file__), "data", "pdumind.db")
+        conn = sqlite3.connect(db_path)
+        results = []
+        for a in assignments:
+            pdu_ip = a.get("pdu_ip")
+            rack_id = a.get("rack_id")
+            mount_pos = a.get("mount_position", "A")
+            try:
+                conn.execute(
+                    "UPDATE pdus SET rack_id = ?, mount_position = ? WHERE ip_address = ? AND hall_id = ?",
+                    (rack_id, mount_pos, pdu_ip, hall_id)
+                )
+                results.append({"ip": pdu_ip, "success": True})
+            except Exception as e:
+                results.append({"ip": pdu_ip, "success": False, "error": str(e)})
+        conn.commit()
+        conn.close()
+
+        ok_count = sum(1 for r in results if r["success"])
+        return jsonify({
+            "success": True,
+            "assigned": ok_count,
+            "total": len(assignments),
+            "results": results,
+        })
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     # For local dev only (in Docker this will be managed via CMD)
     port = int(os.getenv("PORT", 5000))
@@ -2535,4 +3252,4 @@ if __name__ == "__main__":
         print("[Startup] Using LEGACY multi-PDU poller")
         ensure_multi_pdu_poller()
     
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=port, debug=True, use_reloader=False)

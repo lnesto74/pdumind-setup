@@ -88,6 +88,16 @@ class PDUWebClient:
             self._logged_in = False
             return False
 
+    def logout(self) -> None:
+        """Close the HTTP session to free the PDU's single-session slot."""
+        with self._lock:
+            try:
+                self._session.close()
+            except Exception:
+                pass
+            self._session = requests.Session()
+            self._logged_in = False
+
     def _ensure_session(self) -> None:
         if not self._logged_in or (_time.time() - self._login_time > self._session_ttl):
             for attempt in range(5):
@@ -353,7 +363,8 @@ class PDUWebClient:
     # Live telemetry
     # ------------------------------------------------------------------
 
-    _TELE_LABELS = [
+    # 3-phase CGI layout (75+ fields)
+    _TELE_LABELS_3P = [
         "csrf", "name", "firmware",
         "l1_voltage", "l1_current", "l1_load_pct", "l1_color",
         "l1_active_power", "l1_reactive_power", "l1_apparent_power",
@@ -367,6 +378,16 @@ class PDUWebClient:
         "total_active_power", "total_reactive_power", "total_apparent_power",
         "total_pf", "total_active_energy", "total_reactive_energy",
         "frequency", "neutral_current", "neutral_load_pct",
+    ]
+
+    # Single-phase smart strip CGI layout (50 fields)
+    # Fields: csrf, name, fw, voltage, current, load%, color,
+    #         active_power, pf, energy, frequency, then dashes, alarms, tail
+    _TELE_LABELS_1P = [
+        "csrf", "name", "firmware",
+        "l1_voltage", "l1_current", "l1_load_pct", "l1_color",
+        "l1_active_power", "l1_pf", "l1_active_energy",
+        "frequency",
     ]
 
     # Alarm flag labels in the order they appear in Home_Upload.cgi
@@ -387,12 +408,29 @@ class PDUWebClient:
     def get_live_telemetry(self) -> Dict[str, Any]:
         f = self._get_cgi("Home_Upload.cgi?")
         result: Dict[str, Any] = {}
+
+        # Detect single-phase vs 3-phase by total field count.
+        # 3-phase PDUs return 75+ fields; single-phase smart strips ~50.
+        is_single_phase = len(f) < 65
+        labels = self._TELE_LABELS_1P if is_single_phase else self._TELE_LABELS_3P
+        result["_phase_count"] = "1" if is_single_phase else "3"
+
         for i, val in enumerate(f):
-            key = self._TELE_LABELS[i] if i < len(self._TELE_LABELS) else f"field_{i}"
+            key = labels[i] if i < len(labels) else f"field_{i}"
             result[key] = val
 
+        # For single-phase, promote L1 values to totals for dashboard
+        if is_single_phase:
+            for src, dst in [
+                ("l1_active_power", "total_active_power"),
+                ("l1_active_energy", "total_active_energy"),
+                ("l1_pf", "total_pf"),
+            ]:
+                if src in result and dst not in result:
+                    result[dst] = result[src]
+
         # After the named telemetry fields come:
-        #   - temperature/humidity sensor readings (8 fields)
+        #   - temperature/humidity sensor readings (variable)
         #   - breaker statuses (variable, pairs of status+color)
         #   - alarm flags (pairs of text+color per parameter)
         #   - datetime, overall alarm status, overall alarm color (last 3)
@@ -407,28 +445,52 @@ class PDUWebClient:
             result["alarm_color"] = f[-1]
 
         # Alarm flags: 20 parameters x 2 fields (text+color) = 40 fields before tail
+        # For single-phase PDUs, fewer alarm params may be present.
+        tele_end = len(labels)  # where named telemetry fields end
         alarm_flag_count = len(self._ALARM_FLAG_LABELS)
         alarm_start = len(f) - 3 - (alarm_flag_count * 2)
+
+        # Sanity: if alarm_start lands before telemetry ends, try fewer alarm params.
+        # Single-phase PDUs have 14 alarm pairs instead of 20.
+        if alarm_start < tele_end:
+            # Try detecting alarm region: scan backwards from tail-3 for paired
+            # text+color alarm entries to find the real alarm start.
+            alarm_start = len(f) - 3
+            alarm_flag_count = 0
+            probe = alarm_start - 2
+            while probe >= tele_end:
+                text = f[probe].strip()
+                color = f[probe + 1].strip() if probe + 1 < len(f) else ""
+                if color in ("white", "red", "orange", "yellow", "green", "blue", ""):
+                    alarm_start = probe
+                    alarm_flag_count += 1
+                    probe -= 2
+                else:
+                    break
+
         alarm_flags = []
-        if alarm_start > len(self._TELE_LABELS):
-            for ai, label in enumerate(self._ALARM_FLAG_LABELS):
-                fi = alarm_start + (ai * 2)
-                if fi + 1 < len(f):
-                    text = f[fi].strip()
-                    color = f[fi + 1].strip() if fi + 1 < len(f) else ""
-                    result[label] = text
-                    result[f"{label}_color"] = color
-                    if text and text != "-" and text.lower() != "normal":
-                        alarm_flags.append({"param": label.replace("alarm_", ""), "status": text, "color": color})
+        ai = 0
+        idx = alarm_start
+        while idx + 1 < len(f) - 3:
+            label = self._ALARM_FLAG_LABELS[ai] if ai < len(self._ALARM_FLAG_LABELS) else f"alarm_unknown_{ai}"
+            text = f[idx].strip()
+            color = f[idx + 1].strip() if idx + 1 < len(f) else ""
+            result[label] = text
+            result[f"{label}_color"] = color
+            if text and text != "-" and text.lower() != "normal":
+                alarm_flags.append({"param": label.replace("alarm_", ""), "status": text, "color": color})
+            ai += 1
+            idx += 2
         result["alarm_flags"] = alarm_flags
 
         # Breakers: everything between telemetry labels and alarm flags
         breakers = []
-        breaker_end = alarm_start if alarm_start > len(self._TELE_LABELS) else len(f) - 3
-        idx = len(self._TELE_LABELS)
+        breaker_end = alarm_start
+        idx = tele_end
         while idx + 1 < breaker_end:
-            status = f[idx]
-            color = f[idx + 1] if idx + 1 < len(f) else ""
+            status = f[idx].strip()
+            color = f[idx + 1].strip() if idx + 1 < len(f) else ""
+            # Skip dash-only entries (unused fields)
             if status and status != "-":
                 breakers.append({"status": status, "color": color})
             idx += 2
@@ -584,6 +646,166 @@ class PDUWebClient:
             return "404" not in resp1 and "404" not in resp2
 
     # ------------------------------------------------------------------
+    # System / Device settings (hostname, LCD, logout)
+    # ------------------------------------------------------------------
+
+    def get_system_config(self) -> Dict[str, Any]:
+        f = self._get_cgi("Tool_Onceload.cgi?")
+        return {
+            "device_name": f[4] if len(f) > 4 else "",
+            "lcd_title": f[5] if len(f) > 5 else "",
+            "display_direction": f[6] if len(f) > 6 else "0",
+            "lcd_backlight_mode": f[7] if len(f) > 7 else "0",
+            "lcd_backlight_time": f[8] if len(f) > 8 else "3",
+            "lcd_rest_brightness": f[9] if len(f) > 9 else "0",
+            "logout_enabled": f[10] if len(f) > 10 else "1",
+            "logout_time": f[11] if len(f) > 11 else "3",
+            "web_title_enabled": f[12] if len(f) > 12 else "0",
+            "router_hostname": f[14] if len(f) > 14 else "",
+            "csrf_token": f[17] if len(f) > 17 else f[16] if len(f) > 16 else "",
+        }
+
+    def set_system_config(
+        self,
+        device_name: str | None = None,
+        lcd_title: str | None = None,
+        display_direction: str | None = None,
+        lcd_backlight_mode: str | None = None,
+        lcd_backlight_time: str | None = None,
+        lcd_rest_brightness: str | None = None,
+        logout_enabled: str | None = None,
+        logout_time: str | None = None,
+        web_title_enabled: str | None = None,
+        router_hostname: str | None = None,
+    ) -> bool:
+        with self._lock:
+            cur = self.get_system_config()
+            csrf = cur["csrf_token"]
+            resp = self._post_cgi(
+                "Tool_device_set.cgi",
+                {
+                    "sys_tool_csrftoken1": csrf,
+                    "Device_name": device_name or cur["device_name"],
+                    "LCD_title": lcd_title or cur["lcd_title"],
+                    "Display_Mode": display_direction or cur["display_direction"],
+                    "LCD_BL": lcd_backlight_mode or cur["lcd_backlight_mode"],
+                    "LCD_BL_Time": lcd_backlight_time or cur["lcd_backlight_time"],
+                    "LCD_BL_PWM": lcd_rest_brightness or cur["lcd_rest_brightness"],
+                    "logoutflag": logout_enabled or cur["logout_enabled"],
+                    "logouttime": logout_time or cur["logout_time"],
+                    "webtitleflag": web_title_enabled or cur["web_title_enabled"],
+                    "router_hostname": router_hostname or cur["router_hostname"],
+                },
+            )
+            return "404" not in resp
+
+    # ------------------------------------------------------------------
+    # User management
+    # ------------------------------------------------------------------
+
+    def get_users(self) -> Dict[str, Any]:
+        f = self._get_cgi("User_read_Onceload.cgi?")
+        return {
+            "admin_username": f[2] if len(f) > 2 else "admin",
+            "admin_password_masked": f[3] if len(f) > 3 else "",
+            "user1_username": f[4] if len(f) > 4 else "",
+            "user1_password_masked": f[5] if len(f) > 5 else "",
+            "user2_username": f[6] if len(f) > 6 else "",
+            "user2_password_masked": f[7] if len(f) > 7 else "",
+            "csrf_token": f[9] if len(f) > 9 else f[8] if len(f) > 8 else "",
+        }
+
+    def set_users(
+        self,
+        admin_username: str | None = None,
+        admin_password: str | None = None,
+        user1_username: str | None = None,
+        user1_password: str | None = None,
+        user2_username: str | None = None,
+        user2_password: str | None = None,
+    ) -> bool:
+        with self._lock:
+            cur = self.get_users()
+            csrf = cur["csrf_token"]
+            resp = self._post_cgi(
+                "User_set.cgi",
+                {
+                    "switch_userset_csrftoken1": csrf,
+                    "Meter_admin_User": admin_username or cur["admin_username"],
+                    "Meter_admin_password": admin_password or "",
+                    "Meter_User2": user1_username or cur["user1_username"],
+                    "Meter_password2": user1_password or "",
+                    "Meter_User3": user2_username or cur["user2_username"],
+                    "Meter_password3": user2_password or "",
+                },
+            )
+            return "404" not in resp
+
+    # ------------------------------------------------------------------
+    # Batch apply: push a full template in one go
+    # ------------------------------------------------------------------
+
+    def apply_batch_template(self, template: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply a commissioning template: network, system, users, SNMP, NTP.
+        Returns a report dict with per-section success/failure."""
+        report: Dict[str, Any] = {}
+
+        # 1. DHCP → Static if needed
+        net = template.get("network", {})
+        if net:
+            try:
+                if net.get("dhcp") == "OFF":
+                    self.set_dhcp(False)
+                ok = self.set_ipv4(
+                    ip=net.get("ip", ""),
+                    mask=net.get("mask", "255.255.255.0"),
+                    gateway=net.get("gateway", ""),
+                    dns1=net.get("dns1", ""),
+                    dns2=net.get("dns2", ""),
+                )
+                report["network"] = {"success": ok}
+            except Exception as e:
+                report["network"] = {"success": False, "error": str(e)}
+
+        # 2. System / hostname
+        sys_cfg = template.get("system", {})
+        if sys_cfg:
+            try:
+                ok = self.set_system_config(**sys_cfg)
+                report["system"] = {"success": ok}
+            except Exception as e:
+                report["system"] = {"success": False, "error": str(e)}
+
+        # 3. User credentials
+        users = template.get("users", {})
+        if users:
+            try:
+                ok = self.set_users(**users)
+                report["users"] = {"success": ok}
+            except Exception as e:
+                report["users"] = {"success": False, "error": str(e)}
+
+        # 4. SNMP
+        snmp = template.get("snmp", {})
+        if snmp:
+            try:
+                ok = self.set_snmp(**snmp)
+                report["snmp"] = {"success": ok}
+            except Exception as e:
+                report["snmp"] = {"success": False, "error": str(e)}
+
+        # 5. NTP / Time
+        ntp = template.get("ntp", {})
+        if ntp:
+            try:
+                ok = self.set_time(**ntp)
+                report["ntp"] = {"success": ok}
+            except Exception as e:
+                report["ntp"] = {"success": False, "error": str(e)}
+
+        return report
+
+    # ------------------------------------------------------------------
     # All settings in one call
     # ------------------------------------------------------------------
 
@@ -595,4 +817,6 @@ class PDUWebClient:
                 "snmp": self.get_snmp_config(),
                 "time": self.get_time_config(),
                 "alarm_thresholds": self.get_alarm_thresholds(),
+                "system": self.get_system_config(),
+                "users": self.get_users(),
             }

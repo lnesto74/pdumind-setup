@@ -6,6 +6,7 @@ const TABS = [
   { id: 'network', label: 'Network', icon: 'lan' },
   { id: 'snmp', label: 'SNMP', icon: 'vpn_key' },
   { id: 'time', label: 'Time', icon: 'schedule' },
+  { id: 'system', label: 'System', icon: 'settings' },
   { id: 'alarms', label: 'Alarms', icon: 'warning_amber' },
   { id: 'telemetry', label: 'Live Telemetry', icon: 'electric_bolt' },
   { id: 'logs', label: 'Event Logs', icon: 'history' },
@@ -54,6 +55,8 @@ const PDUSettingsPanel = ({ pdu }) => {
   const [logs, setLogs] = useState([]);
   const [deviceInfo, setDeviceInfo] = useState({});
   const [rebootStatus, setRebootStatus] = useState(null);
+  const [systemConfig, setSystemConfig] = useState({});
+  const [users, setUsers] = useState({});
 
   const telemetryTimer = useRef(null);
 
@@ -71,6 +74,8 @@ const PDUSettingsPanel = ({ pdu }) => {
         setSnmp(data.snmp || {});
         setTimeConfig(data.time || {});
         setDeviceInfo(data.device || {});
+        setSystemConfig(data.system || {});
+        setUsers(data.users || {});
       } else {
         setError(data.error || 'Failed to read settings');
       }
@@ -95,6 +100,7 @@ const PDUSettingsPanel = ({ pdu }) => {
       L3Voltage: 'l3_voltage', L3Current: 'l3_current', L3Power: 'l3_active_power',
       TotalCurrent: 'neutral_current', TotalPower: 'total_active_power',
       TotalEnergy: 'total_active_energy', Frequency: 'frequency',
+      MasterVoltageP1: 'l1_voltage', MasterCurrentP1: 'l1_current', MasterPowerP1: 'l1_active_power',
     };
     const poll = async () => {
       try {
@@ -156,6 +162,7 @@ const PDUSettingsPanel = ({ pdu }) => {
           gateway: network.set_gateway || network.current_gateway,
           dns1: network.set_dns1 || network.current_dns1,
           dns2: network.set_dns2 || network.current_dns2,
+          dhcp: network.dhcp || 'OFF',
           web_port: port, username, password,
           reboot: true,
         }),
@@ -244,6 +251,36 @@ const PDUSettingsPanel = ({ pdu }) => {
       });
       const data = await res.json();
       if (data.success) { setSuccess('Alarm thresholds applied'); setTimeout(() => setSuccess(null), 3000); }
+      else setError(data.error);
+    } catch (e) { setError(e.message); }
+    finally { setSaving(false); }
+  };
+
+  const saveSystem = async () => {
+    setSaving(true); setError(null); setSuccess(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/pdu-admin/${host}/settings/system`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...systemConfig, web_port: port, username, password }),
+      });
+      const data = await res.json();
+      if (data.success) { setSuccess('System settings applied'); setTimeout(() => setSuccess(null), 3000); }
+      else setError(data.error);
+    } catch (e) { setError(e.message); }
+    finally { setSaving(false); }
+  };
+
+  const saveUsers = async () => {
+    setSaving(true); setError(null); setSuccess(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/pdu-admin/${host}/settings/users`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...users, web_port: port, username, password }),
+      });
+      const data = await res.json();
+      if (data.success) { setSuccess('User credentials applied'); setTimeout(() => setSuccess(null), 3000); }
       else setError(data.error);
     } catch (e) { setError(e.message); }
     finally { setSaving(false); }
@@ -355,18 +392,51 @@ const PDUSettingsPanel = ({ pdu }) => {
                   </div>
                 )}
 
+                {/* DHCP / Static toggle */}
+                <div className="mb-3 p-3 rounded-lg bg-[#161E2E] border border-[#233544]">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="material-icons-outlined text-sm text-slate-400">settings_ethernet</span>
+                      <span className="text-xs text-slate-300">IP Assignment</span>
+                    </div>
+                    <div className="flex rounded-lg overflow-hidden border border-[#233544]">
+                      <button
+                        onClick={() => setNetwork(p => ({ ...p, dhcp: 'OFF' }))}
+                        className={`px-3 py-1 text-[10px] font-bold transition-all ${
+                          network.dhcp !== 'ON'
+                            ? 'bg-[#00E5FF]/20 text-[#00E5FF] border-r border-[#00E5FF]/30'
+                            : 'bg-[#0B1120] text-slate-500 border-r border-[#233544] hover:text-slate-300'
+                        }`}
+                      >STATIC IP</button>
+                      <button
+                        onClick={() => setNetwork(p => ({ ...p, dhcp: 'ON' }))}
+                        className={`px-3 py-1 text-[10px] font-bold transition-all ${
+                          network.dhcp === 'ON'
+                            ? 'bg-amber-500/20 text-amber-400'
+                            : 'bg-[#0B1120] text-slate-500 hover:text-slate-300'
+                        }`}
+                      >DHCP</button>
+                    </div>
+                  </div>
+                  {network.dhcp === 'ON' && (
+                    <p className="text-[10px] text-amber-400 mt-2 flex items-center gap-1">
+                      <span className="material-icons-outlined text-xs">warning</span>
+                      DHCP is active — the PDU gets its IP from a DHCP server. Switch to Static to assign a fixed IP.
+                    </p>
+                  )}
+                </div>
+
                 <div className="grid grid-cols-2 gap-3">
                   <InputField label="IP Address" value={network.set_ip || network.current_ip}
-                    onChange={v => setNetwork(p => ({ ...p, set_ip: v }))} />
+                    onChange={v => setNetwork(p => ({ ...p, set_ip: v }))} disabled={network.dhcp === 'ON'} />
                   <InputField label="Subnet Mask" value={network.set_mask || network.current_mask}
-                    onChange={v => setNetwork(p => ({ ...p, set_mask: v }))} />
+                    onChange={v => setNetwork(p => ({ ...p, set_mask: v }))} disabled={network.dhcp === 'ON'} />
                   <InputField label="Gateway" value={network.set_gateway || network.current_gateway}
-                    onChange={v => setNetwork(p => ({ ...p, set_gateway: v }))} />
+                    onChange={v => setNetwork(p => ({ ...p, set_gateway: v }))} disabled={network.dhcp === 'ON'} />
                   <InputField label="DNS 1" value={network.set_dns1 || network.current_dns1}
-                    onChange={v => setNetwork(p => ({ ...p, set_dns1: v }))} />
+                    onChange={v => setNetwork(p => ({ ...p, set_dns1: v }))} disabled={network.dhcp === 'ON'} />
                   <InputField label="DNS 2" value={network.set_dns2 || network.current_dns2}
-                    onChange={v => setNetwork(p => ({ ...p, set_dns2: v }))} />
-                  <InputField label="DHCP" value={network.dhcp || 'OFF'} disabled />
+                    onChange={v => setNetwork(p => ({ ...p, set_dns2: v }))} disabled={network.dhcp === 'ON'} />
                 </div>
               </div>
 
@@ -626,6 +696,148 @@ const PDUSettingsPanel = ({ pdu }) => {
             </div>
           )}
 
+          {/* SYSTEM TAB */}
+          {tab === 'system' && (
+            <div className="space-y-5">
+              {/* Device / Hostname */}
+              <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <span className="material-icons-outlined text-[#00E5FF] text-sm">dns</span>
+                    Device & Hostname
+                  </h3>
+                  <button onClick={saveSystem} disabled={saving}
+                    className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[10px] hover:bg-emerald-500/30 disabled:opacity-50">
+                    {saving ? 'Saving...' : 'Apply'}
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <InputField label="Device Name" value={systemConfig.device_name || ''}
+                      onChange={v => setSystemConfig(p => ({ ...p, device_name: v }))} />
+                    <p className="text-[9px] text-slate-600 mt-0.5">Display name used in PDUMind sidebar and reports.</p>
+                  </div>
+                  <div>
+                    <InputField label="Router Hostname" value={systemConfig.router_hostname || ''}
+                      onChange={v => setSystemConfig(p => ({ ...p, router_hostname: v }))} />
+                    <p className="text-[9px] text-slate-600 mt-0.5">Network hostname set on the PDU device itself.</p>
+                  </div>
+                  <InputField label="LCD Title" value={systemConfig.lcd_title || ''}
+                    onChange={v => setSystemConfig(p => ({ ...p, lcd_title: v }))} />
+                  <div>
+                    <label className="text-[9px] text-slate-500 uppercase tracking-wider">LCD Display Direction</label>
+                    <select value={systemConfig.display_direction || '0'}
+                      onChange={e => setSystemConfig(p => ({ ...p, display_direction: e.target.value }))}
+                      className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white text-xs focus:outline-none focus:border-[#00E5FF]">
+                      <option value="0">Normal</option>
+                      <option value="1">Rotate 90°</option>
+                      <option value="2">Rotate 180°</option>
+                      <option value="3">Rotate 270°</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-3 mt-3">
+                  <div>
+                    <label className="text-[9px] text-slate-500 uppercase tracking-wider">LCD Backlight</label>
+                    <select value={systemConfig.lcd_backlight_mode || '0'}
+                      onChange={e => setSystemConfig(p => ({ ...p, lcd_backlight_mode: e.target.value }))}
+                      className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white text-xs focus:outline-none focus:border-[#00E5FF]">
+                      <option value="0">Always On</option>
+                      <option value="1">Custom</option>
+                      <option value="2">Always Off</option>
+                    </select>
+                  </div>
+                  <InputField label="Backlight Time (min)" value={systemConfig.lcd_backlight_time || '3'}
+                    onChange={v => setSystemConfig(p => ({ ...p, lcd_backlight_time: v }))} />
+                  <InputField label="Rest Brightness (%)" value={systemConfig.lcd_rest_brightness || '0'}
+                    onChange={v => setSystemConfig(p => ({ ...p, lcd_rest_brightness: v }))} />
+                </div>
+                <div className="grid grid-cols-3 gap-3 mt-3">
+                  <div>
+                    <label className="text-[9px] text-slate-500 uppercase tracking-wider">Auto Logout</label>
+                    <select value={systemConfig.logout_enabled || '1'}
+                      onChange={e => setSystemConfig(p => ({ ...p, logout_enabled: e.target.value }))}
+                      className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white text-xs focus:outline-none focus:border-[#00E5FF]">
+                      <option value="1">ON</option>
+                      <option value="0">OFF</option>
+                    </select>
+                  </div>
+                  <InputField label="Logout Time (min)" value={systemConfig.logout_time || '3'}
+                    onChange={v => setSystemConfig(p => ({ ...p, logout_time: v }))} />
+                  <div>
+                    <label className="text-[9px] text-slate-500 uppercase tracking-wider">Web Title</label>
+                    <select value={systemConfig.web_title_enabled || '0'}
+                      onChange={e => setSystemConfig(p => ({ ...p, web_title_enabled: e.target.value }))}
+                      className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white text-xs focus:outline-none focus:border-[#00E5FF]">
+                      <option value="1">ON</option>
+                      <option value="0">OFF</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* User Credentials */}
+              <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <span className="material-icons-outlined text-[#00E5FF] text-sm">manage_accounts</span>
+                    User Credentials
+                  </h3>
+                  <button onClick={saveUsers} disabled={saving}
+                    className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[10px] hover:bg-emerald-500/30 disabled:opacity-50">
+                    {saving ? 'Saving...' : 'Apply'}
+                  </button>
+                </div>
+                <div className="space-y-4">
+                  <div className="p-3 rounded-lg bg-[#161E2E] border border-[#233544]">
+                    <p className="text-[10px] text-amber-400 uppercase tracking-wider mb-2 flex items-center gap-1">
+                      <span className="material-icons-outlined text-xs">shield</span> Superuser (Admin)
+                    </p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <InputField label="Username" value={users.admin_username || 'admin'}
+                        onChange={v => setUsers(p => ({ ...p, admin_username: v }))} />
+                      <div>
+                        <label className="text-[9px] text-slate-500 uppercase tracking-wider">New Password</label>
+                        <input type="password" value={users.admin_password || ''}
+                          onChange={e => setUsers(p => ({ ...p, admin_password: e.target.value }))}
+                          placeholder="Leave blank to keep current"
+                          className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF] placeholder:text-slate-600" />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-lg bg-[#161E2E] border border-[#233544]">
+                    <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-2">General User 1</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <InputField label="Username" value={users.user1_username || ''}
+                        onChange={v => setUsers(p => ({ ...p, user1_username: v }))} />
+                      <div>
+                        <label className="text-[9px] text-slate-500 uppercase tracking-wider">Password</label>
+                        <input type="password" value={users.user1_password || ''}
+                          onChange={e => setUsers(p => ({ ...p, user1_password: e.target.value }))}
+                          placeholder="Leave blank to keep current"
+                          className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF] placeholder:text-slate-600" />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-lg bg-[#161E2E] border border-[#233544]">
+                    <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-2">General User 2</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <InputField label="Username" value={users.user2_username || ''}
+                        onChange={v => setUsers(p => ({ ...p, user2_username: v }))} />
+                      <div>
+                        <label className="text-[9px] text-slate-500 uppercase tracking-wider">Password</label>
+                        <input type="password" value={users.user2_password || ''}
+                          onChange={e => setUsers(p => ({ ...p, user2_password: e.target.value }))}
+                          placeholder="Leave blank to keep current"
+                          className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF] placeholder:text-slate-600" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* TELEMETRY TAB */}
           {tab === 'telemetry' && (
             <div className="space-y-4">
@@ -642,36 +854,48 @@ const PDUSettingsPanel = ({ pdu }) => {
                     <TeleCard label="Neutral Load" value={telemetry.neutral_load_pct} unit="%" icon="monitor_heart" />
                   </div>
 
-                  {/* Per-phase */}
-                  <div className="grid grid-cols-3 gap-4">
-                    {['l1', 'l2', 'l3'].map((phase, i) => (
-                      <div key={phase} className="p-4 rounded-xl bg-[#0B1120] border border-[#233544]">
-                        <h4 className={`text-sm font-bold mb-3 ${['text-red-400', 'text-amber-400', 'text-blue-400'][i]}`}>
-                          Phase {phase.toUpperCase()}
-                        </h4>
-                        <div className="space-y-2">
-                          {[
-                            { l: 'Voltage', k: `${phase}_voltage`, u: 'V' },
-                            { l: 'Current', k: `${phase}_current`, u: 'A' },
-                            { l: 'Load', k: `${phase}_load_pct`, u: '%' },
-                            { l: 'Active Power', k: `${phase}_active_power`, u: 'W' },
-                            { l: 'Reactive Power', k: `${phase}_reactive_power`, u: 'VAR' },
-                            { l: 'Apparent Power', k: `${phase}_apparent_power`, u: 'VA' },
-                            { l: 'Power Factor', k: `${phase}_pf`, u: '' },
-                            { l: 'Active Energy', k: `${phase}_active_energy`, u: 'kWh' },
-                          ].map(m => (
-                            <div key={m.k} className="flex justify-between items-baseline">
-                              <span className="text-[10px] text-slate-500">{m.l}</span>
-                              <span className="text-sm font-mono text-white">
-                                {telemetry[m.k] ?? '-'}
-                                {m.u && <span className="text-[10px] text-slate-500 ml-1">{m.u}</span>}
-                              </span>
+                  {/* Per-phase — only show phases that have data */}
+                  {(() => {
+                    const phaseCount = parseInt(telemetry._phase_count) || (telemetry.l2_voltage ? 3 : 1);
+                    const phases = phaseCount === 1 ? ['l1'] : ['l1', 'l2', 'l3'];
+                    const colors = { l1: 'text-red-400', l2: 'text-amber-400', l3: 'text-blue-400' };
+                    const labels = { l1: 'Phase L1', l2: 'Phase L2', l3: 'Phase L3' };
+                    return (
+                      <div className={`grid gap-4 ${phases.length === 1 ? 'grid-cols-1' : 'grid-cols-3'}`}>
+                        {phases.map(phase => (
+                          <div key={phase} className="p-4 rounded-xl bg-[#0B1120] border border-[#233544]">
+                            <h4 className={`text-sm font-bold mb-3 ${colors[phase]}`}>
+                              {phaseCount === 1 ? 'Single Phase' : labels[phase]}
+                            </h4>
+                            <div className={`${phaseCount === 1 ? 'grid grid-cols-2 gap-x-8 gap-y-2' : 'space-y-2'}`}>
+                              {[
+                                { l: 'Voltage', k: `${phase}_voltage`, u: 'V' },
+                                { l: 'Current', k: `${phase}_current`, u: 'A' },
+                                { l: 'Active Power', k: `${phase}_active_power`, u: 'W' },
+                                { l: 'Reactive Power', k: `${phase}_reactive_power`, u: 'VAR' },
+                                { l: 'Apparent Power', k: `${phase}_apparent_power`, u: 'VA' },
+                                { l: 'Power Factor', k: `${phase}_pf`, u: '' },
+                                { l: 'Active Energy', k: `${phase}_active_energy`, u: 'kWh' },
+                                { l: 'Reactive Energy', k: `${phase}_reactive_energy`, u: 'kVARh' },
+                              ].map(m => {
+                                const val = telemetry[m.k];
+                                if (val === undefined || val === null || val === '-1') return null;
+                                return (
+                                  <div key={m.k} className="flex justify-between items-baseline">
+                                    <span className="text-[10px] text-slate-500">{m.l}</span>
+                                    <span className="text-sm font-mono text-white">
+                                      {val}
+                                      {m.u && <span className="text-[10px] text-slate-500 ml-1">{m.u}</span>}
+                                    </span>
+                                  </div>
+                                );
+                              })}
                             </div>
-                          ))}
-                        </div>
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
+                    );
+                  })()}
 
                   {/* Totals */}
                   <div className="p-4 rounded-xl bg-[#0B1120] border border-[#233544]">
@@ -684,15 +908,24 @@ const PDUSettingsPanel = ({ pdu }) => {
                         { l: 'Power Factor', k: 'total_pf', u: '' },
                         { l: 'Active Energy', k: 'total_active_energy', u: 'kWh' },
                         { l: 'Reactive Energy', k: 'total_reactive_energy', u: 'kVARh' },
-                      ].map(m => (
-                        <div key={m.k} className="flex justify-between items-baseline">
-                          <span className="text-xs text-slate-500">{m.l}</span>
-                          <span className="text-lg font-mono font-bold text-white">
-                            {telemetry[m.k] ?? '-'}
-                            {m.u && <span className="text-xs text-slate-500 ml-1">{m.u}</span>}
-                          </span>
-                        </div>
-                      ))}
+                      ].map(m => {
+                        const val = telemetry[m.k];
+                        if (val === undefined || val === null || val === '-1') return (
+                          <div key={m.k} className="flex justify-between items-baseline">
+                            <span className="text-xs text-slate-500">{m.l}</span>
+                            <span className="text-lg font-mono font-bold text-slate-600">—</span>
+                          </div>
+                        );
+                        return (
+                          <div key={m.k} className="flex justify-between items-baseline">
+                            <span className="text-xs text-slate-500">{m.l}</span>
+                            <span className="text-lg font-mono font-bold text-white">
+                              {val}
+                              {m.u && <span className="text-xs text-slate-500 ml-1">{m.u}</span>}
+                            </span>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
 
@@ -765,19 +998,22 @@ const PDUSettingsPanel = ({ pdu }) => {
   );
 };
 
-const TeleCard = ({ label, value, unit, icon }) => (
-  <div className="p-4 rounded-xl bg-[#0B1120] border border-[#233544] flex items-center gap-3">
-    <div className="w-10 h-10 rounded-lg bg-[#161E2E] flex items-center justify-center">
-      <span className="material-icons-outlined text-[#00E5FF]">{icon}</span>
+const TeleCard = ({ label, value, unit, icon }) => {
+  const isNA = value === undefined || value === null || value === '-1' || value === -1;
+  return (
+    <div className="p-4 rounded-xl bg-[#0B1120] border border-[#233544] flex items-center gap-3">
+      <div className="w-10 h-10 rounded-lg bg-[#161E2E] flex items-center justify-center">
+        <span className="material-icons-outlined text-[#00E5FF]">{icon}</span>
+      </div>
+      <div>
+        <p className="text-[10px] text-slate-500 uppercase">{label}</p>
+        <p className={`text-xl font-mono font-bold ${isNA ? 'text-slate-600' : 'text-white'}`}>
+          {isNA ? '—' : value}
+          {!isNA && unit && <span className="text-xs text-slate-500 ml-1">{unit}</span>}
+        </p>
+      </div>
     </div>
-    <div>
-      <p className="text-[10px] text-slate-500 uppercase">{label}</p>
-      <p className="text-xl font-mono font-bold text-white">
-        {value ?? '-'}
-        {unit && <span className="text-xs text-slate-500 ml-1">{unit}</span>}
-      </p>
-    </div>
-  </div>
-);
+  );
+};
 
 export default PDUSettingsPanel;
