@@ -61,7 +61,7 @@ from polling import (
 )
 
 # Import auth module
-from auth import register_auth_routes, ensure_default_admin
+from auth import register_auth_routes, ensure_default_admin, require_auth
 
 def snmp_walk(ip: str, port: int, base_oid: str, timeout: int = OUTLET_BASE_TIMEOUT, snmp_version: str = "2c") -> dict[str, str]:
     """Walk an OID tree and return {full_oid: value} mapping. Uses numeric OIDs and prints
@@ -1743,6 +1743,258 @@ def acknowledge_event(event_id: int):
         EventRepo.acknowledge(event_id, acknowledged_by)
         return jsonify({"success": True})
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# =============================================================================
+# SUPPORT DEBUG API
+# =============================================================================
+
+def _debug_app_version() -> str:
+    ver = os.getenv("BUILD_VERSION", "").strip()
+    if ver:
+        return ver
+    try:
+        import subprocess
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        short = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=root, stderr=subprocess.DEVNULL, text=True
+        ).strip()
+        count = subprocess.check_output(
+            ["git", "rev-list", "--count", "HEAD"], cwd=root, stderr=subprocess.DEVNULL, text=True
+        ).strip()
+        return f"git-b{count}.{short}"
+    except Exception:
+        return "unknown"
+
+
+def _debug_tcp_reachable(host: str, port: int, timeout: float = 2.0) -> bool:
+    import socket
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        ok = sock.connect_ex((host, int(port))) == 0
+        sock.close()
+        return ok
+    except Exception:
+        return False
+
+
+def _build_support_debug_report() -> Dict[str, Any]:
+    """Collect DB + poller sanity checks for remote customer support."""
+    from datetime import datetime, timezone
+
+    db_path = os.path.join(os.getenv("DATA_DIR", "data"), "pdumind.db")
+    db_exists = os.path.isfile(db_path)
+    db_size_mb = round(os.path.getsize(db_path) / (1024 * 1024), 2) if db_exists else 0
+
+    halls = HallRepo.get_all()
+    from db.persistence import _connect, _db_lock
+    with _db_lock:
+        conn = _connect()
+        try:
+            cur = conn.execute(
+                """SELECT p.*, r.rack_code
+                   FROM pdus p
+                   LEFT JOIN racks r ON p.rack_id = r.id
+                   ORDER BY p.hall_id, p.ip_address"""
+            )
+            all_pdus_db = [dict(row) for row in cur.fetchall()]
+        finally:
+            conn.close()
+
+    issues: List[str] = []
+    pdu_rows: List[Dict[str, Any]] = []
+
+    for pdu in sorted(all_pdus_db, key=lambda p: (p.get("hall_id") or 0, p.get("ip_address") or "")):
+        ip = pdu.get("ip_address") or ""
+        host = pdu.get("remote_host") or ip
+        web_port = pdu.get("web_admin_port")
+        web_user = (pdu.get("web_admin_user") or "").strip()
+        web_pass = (pdu.get("web_admin_pass") or "").strip()
+        use_https = bool(pdu.get("web_admin_https"))
+        is_active = bool(pdu.get("is_active", 1))
+        commissioned = False
+        meta_raw = pdu.get("metadata_json")
+        if meta_raw:
+            try:
+                commissioned = bool(json.loads(meta_raw).get("commissioned"))
+            except Exception:
+                pass
+
+        creds_ok = bool(web_port and web_user and web_pass)
+        pass_state = "SET" if web_pass else "EMPTY"
+
+        tcp_443 = _debug_tcp_reachable(host, 443) if ip and is_active else None
+        tcp_80 = _debug_tcp_reachable(host, 80) if ip and is_active else None
+
+        with MULTI_PDU_LOCK:
+            cached = MULTI_PDU_RESULTS.get(ip, {})
+            cache_errors = MULTI_PDU_ERRORS.get(ip, {})
+        cache_count = len(cached) if cached else 0
+
+        row_issues: List[str] = []
+        if is_active and not web_port:
+            row_issues.append("missing web_admin_port")
+        if is_active and web_port and not web_pass:
+            row_issues.append("missing web_admin_pass")
+        if is_active and web_port and not web_user:
+            row_issues.append("missing web_admin_user")
+        if is_active and not creds_ok and (tcp_443 or tcp_80):
+            row_issues.append("PDU reachable but DB credentials incomplete — run Repair")
+        if is_active and creds_ok and cache_count == 0:
+            row_issues.append("no cached telemetry yet")
+
+        pdu_rows.append({
+            "id": pdu.get("id"),
+            "hall_id": pdu.get("hall_id"),
+            "ip": ip,
+            "label": pdu.get("label") or pdu.get("hostname") or "",
+            "rack": pdu.get("rack_code") or pdu.get("location") or "",
+            "is_active": is_active,
+            "web_admin_port": web_port,
+            "web_admin_https": use_https,
+            "web_admin_user": web_user or "(empty)",
+            "web_admin_pass": pass_state,
+            "credentials_ok": creds_ok,
+            "commissioned_metadata": commissioned,
+            "tcp_443": tcp_443,
+            "tcp_80": tcp_80,
+            "telemetry_cache_fields": cache_count,
+            "cache_errors": len(cache_errors),
+            "issues": row_issues,
+        })
+
+    active_pdus = [p for p in pdu_rows if p["is_active"]]
+    creds_ok_count = sum(1 for p in active_pdus if p["credentials_ok"])
+    missing_port = sum(1 for p in active_pdus if not p.get("web_admin_port"))
+    missing_pass = sum(1 for p in active_pdus if p.get("web_admin_port") and p["web_admin_pass"] == "EMPTY")
+
+    if active_pdus and missing_port:
+        issues.append(
+            f"CRITICAL: {missing_port}/{len(active_pdus)} active PDUs missing web_admin_port "
+            "— telemetry/polling uses SNMP fallback"
+        )
+    if active_pdus and missing_pass:
+        issues.append(f"WARNING: {missing_pass} PDUs have web port but empty password — web login will fail")
+    if active_pdus and creds_ok_count == 0:
+        issues.append("CRITICAL: no active PDU has complete web credentials — run Commissioning → Repair")
+    elif active_pdus and creds_ok_count < len(active_pdus):
+        issues.append(f"WARNING: only {creds_ok_count}/{len(active_pdus)} PDUs have complete web credentials")
+
+    with MULTI_PDU_LOCK:
+        cache_ips = list(MULTI_PDU_RESULTS.keys())
+    if active_pdus and creds_ok_count and len(cache_ips) < creds_ok_count:
+        issues.append(f"INFO: telemetry cache populated for {len(cache_ips)}/{creds_ok_count} web-ready PDUs")
+
+    poller_running = MULTI_PDU_THREAD is not None and MULTI_PDU_THREAD.is_alive()
+    if not poller_running:
+        issues.append("CRITICAL: background PDU poller thread is not running")
+    if _poller_is_paused():
+        issues.append("INFO: PDU poller is paused (batch commission or settings session)")
+
+    report = {
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "version": _debug_app_version(),
+        "database": {
+            "path": db_path,
+            "exists": db_exists,
+            "size_mb": db_size_mb,
+        },
+        "summary": {
+            "halls": len(halls),
+            "pdus_total": len(pdu_rows),
+            "pdus_active": len(active_pdus),
+            "web_credentials_ok": creds_ok_count,
+            "missing_web_port": missing_port,
+            "telemetry_cache_pdus": len(cache_ips),
+            "poller_running": poller_running,
+            "poller_paused": _poller_is_paused(),
+            "issues_count": len(issues),
+        },
+        "issues": issues,
+        "halls": [{"id": h["id"], "name": h.get("name"), "description": h.get("description")} for h in halls],
+        "pdus": pdu_rows,
+    }
+    report["text"] = _format_support_debug_text(report)
+    return report
+
+
+def _format_support_debug_text(report: Dict[str, Any]) -> str:
+    lines = [
+        "=== PDUMind Support Debug Report ===",
+        f"Generated: {report['generated_at']}",
+        f"Version:   {report['version']}",
+        "",
+        "--- SUMMARY ---",
+        f"Halls:              {report['summary']['halls']}",
+        f"Active PDUs:        {report['summary']['pdus_active']} / {report['summary']['pdus_total']}",
+        f"Web credentials OK: {report['summary']['web_credentials_ok']}",
+        f"Missing web port:   {report['summary']['missing_web_port']}",
+        f"Telemetry cache:    {report['summary']['telemetry_cache_pdus']} PDUs",
+        f"Poller running:     {'yes' if report['summary']['poller_running'] else 'NO'}",
+        f"Poller paused:      {'yes' if report['summary']['poller_paused'] else 'no'}",
+        "",
+        f"--- ISSUES ({report['summary']['issues_count']}) ---",
+    ]
+    if report["issues"]:
+        for issue in report["issues"]:
+            lines.append(f"  • {issue}")
+    else:
+        lines.append("  (none detected)")
+
+    lines.extend([
+        "",
+        "--- DATABASE ---",
+        f"Path:   {report['database']['path']}",
+        f"Exists: {'yes' if report['database']['exists'] else 'NO'}",
+        f"Size:   {report['database']['size_mb']} MB",
+        "",
+        "--- PDUs ---",
+    ])
+
+    current_hall = None
+    for p in report["pdus"]:
+        if p["hall_id"] != current_hall:
+            current_hall = p["hall_id"]
+            hall_name = next((h["name"] for h in report["halls"] if h["id"] == current_hall), f"Hall {current_hall}")
+            lines.append("")
+            lines.append(f"[Hall: {hall_name} (id={current_hall})]")
+        active_tag = "active" if p["is_active"] else "INACTIVE"
+        https_tag = "HTTPS" if p["web_admin_https"] else "HTTP"
+        port_disp = p["web_admin_port"] if p["web_admin_port"] else "MISSING"
+        tcp = []
+        if p["tcp_443"] is True:
+            tcp.append("443:open")
+        elif p["tcp_443"] is False:
+            tcp.append("443:closed")
+        if p["tcp_80"] is True:
+            tcp.append("80:open")
+        elif p["tcp_80"] is False:
+            tcp.append("80:closed")
+        tcp_str = ", ".join(tcp) if tcp else "n/a"
+        lines.append(
+            f"  {p['ip'] or '?'} | {active_tag} | port:{port_disp} ({https_tag}) | "
+            f"user:{p['web_admin_user']} | pass:{p['web_admin_pass']} | "
+            f"cache:{p['telemetry_cache_fields']} fields | tcp:{tcp_str} | rack:{p['rack'] or '-'}"
+        )
+        for ri in p["issues"]:
+            lines.append(f"    ! {ri}")
+
+    lines.extend(["", "=== End of Report ==="])
+    return "\n".join(lines)
+
+
+@app.route("/api/debug/support-report", methods=["GET"])
+@require_auth
+def get_support_debug_report():
+    """Generate a copy-paste support diagnostic report (no secrets exposed)."""
+    try:
+        report = _build_support_debug_report()
+        return jsonify(report)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 
@@ -3827,17 +4079,6 @@ def repair_hall_web_access(hall_id: int):
                     "web_admin_https": bool(pdu.get("web_admin_https")),
                     "web_admin_user": pdu.get("web_admin_user"),
                 }
-                if not pdu.get("web_admin_port"):
-                    results.append({
-                        "id": pdu["id"],
-                        "ip": pdu["ip_address"],
-                        "label": pdu.get("label") or pdu.get("hostname"),
-                        "success": False,
-                        "skipped": True,
-                        "reason": "No web admin port stored — SNMP-only or not commissioned",
-                        "before": before,
-                    })
-                    continue
                 ok, repair_msg = _repair_pdu_web_credentials(pdu, username=user, password=password)
                 after = None
                 if ok:

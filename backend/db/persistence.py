@@ -401,6 +401,30 @@ class PDURepo:
                 existing = cur.fetchone()
                 
                 if existing:
+                    cur = conn.execute("SELECT * FROM pdus WHERE id = ?", (existing["id"],))
+                    row = dict(cur.fetchone())
+
+                    def _pick(key, default=None):
+                        if key in data:
+                            return data[key]
+                        return row.get(key, default)
+
+                    metadata_val = row.get("metadata_json")
+                    if "metadata" in data:
+                        metadata_val = (
+                            json.dumps(data["metadata"])
+                            if data.get("metadata") is not None
+                            else None
+                        )
+
+                    is_active = row.get("is_active", 1)
+                    if "is_active" in data:
+                        is_active = 1 if data.get("is_active") else 0
+
+                    web_https = row.get("web_admin_https", 0)
+                    if "web_admin_https" in data:
+                        web_https = 1 if data.get("web_admin_https") else 0
+
                     conn.execute(
                         """UPDATE pdus SET 
                            rack_id = ?, pdu_model_id = ?,
@@ -412,23 +436,23 @@ class PDURepo:
                            updated_at = ?
                            WHERE id = ?""",
                         (
-                            data.get("rack_id"),
-                            data.get("pdu_model_id"),
-                            data.get("mount_position", "A"),
-                            data.get("snmp_port", 161),
-                            data.get("snmp_version", "2c"),
-                            data.get("snmp_community_ref"),
-                            data.get("mac_address"),
-                            data.get("hostname"),
-                            data.get("label"),
-                            data.get("location"),
-                            json.dumps(data.get("metadata")) if data.get("metadata") else None,
-                            1 if data.get("is_active", True) else 0,
-                            data.get("remote_host"),
-                            data.get("web_admin_port"),
-                            data.get("web_admin_user"),
-                            data.get("web_admin_pass"),
-                            1 if data.get("web_admin_https") else 0,
+                            _pick("rack_id"),
+                            _pick("pdu_model_id"),
+                            _pick("mount_position", "A"),
+                            _pick("snmp_port", 161),
+                            _pick("snmp_version", "2c"),
+                            _pick("snmp_community_ref"),
+                            _pick("mac_address"),
+                            _pick("hostname"),
+                            _pick("label"),
+                            _pick("location"),
+                            metadata_val,
+                            is_active,
+                            _pick("remote_host"),
+                            _pick("web_admin_port"),
+                            _pick("web_admin_user"),
+                            _pick("web_admin_pass"),
+                            web_https,
                             _utc_now(),
                             existing["id"]
                         )

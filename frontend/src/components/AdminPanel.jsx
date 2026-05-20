@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import SupportDebugTab from './SupportDebugTab';
 
 const API_BASE = '';
 
@@ -86,7 +87,7 @@ export default function AdminPanel({ onClose }) {
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className="w-full max-w-2xl max-h-[80vh] bg-[#0f172a] border border-[#233544] rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+      <div className={`w-full ${tab === 'debug' ? 'max-w-3xl' : 'max-w-2xl'} max-h-[80vh] bg-[#0f172a] border border-[#233544] rounded-2xl shadow-2xl overflow-hidden`} onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[#233544]">
           <h2 className="text-sm font-bold text-white flex items-center gap-2">
@@ -103,6 +104,7 @@ export default function AdminPanel({ onClose }) {
           {[
             { id: 'users', label: 'Users', icon: 'people' },
             { id: 'logs', label: 'Access Log', icon: 'history' },
+            { id: 'debug', label: 'Support Debug', icon: 'bug_report' },
           ].map(t => (
             <button
               key={t.id}
@@ -119,6 +121,8 @@ export default function AdminPanel({ onClose }) {
 
         {/* Content */}
         <div className="p-6 overflow-y-auto max-h-[60vh]">
+          {tab === 'debug' && <SupportDebugTab />}
+
           {tab === 'users' && (
             <div className="space-y-3">
               <div className="flex justify-between items-center mb-4">

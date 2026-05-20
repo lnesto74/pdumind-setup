@@ -3,6 +3,7 @@ import Dashboard from './components/Dashboard';
 import Dashboard2 from './components/Dashboard2';
 import LoginPage from './components/LoginPage';
 import AdminPanel from './components/AdminPanel';
+import SupportDebugTab from './components/SupportDebugTab';
 import MaintenanceChatCard from './components/MaintenanceChatCard';
 import AgentVisualization from './components/AgentVisualization';
 import { PDUProvider } from './context/PDUContext';
@@ -18,6 +19,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
+  const [showSupport, setShowSupport] = useState(false);
 
   const checkAuth = useCallback(async () => {
     const token = localStorage.getItem('pdumind_token');
@@ -87,6 +89,14 @@ export default function App() {
                     </div>
                     <div className="flex items-center gap-3">
                       <button
+                        onClick={() => setShowSupport(true)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-amber-400/90 hover:text-amber-300 hover:bg-amber-500/10 transition-colors border border-amber-500/20 hover:border-amber-500/40"
+                        title="Support Debug — copy diagnostic report"
+                      >
+                        <span className="material-icons-outlined text-sm">support_agent</span>
+                        Support
+                      </button>
+                      <button
                         onClick={() => setShowAdmin(true)}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-[#00E5FF] hover:bg-[#00E5FF]/10 transition-colors border border-transparent hover:border-[#00E5FF]/30"
                         title="Administration"
@@ -128,6 +138,24 @@ export default function App() {
             </div>
             {currentView === 'agent' && <MaintenanceChatCard />}
             {showAdmin && <AdminPanel onClose={() => setShowAdmin(false)} />}
+            {showSupport && (
+              <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setShowSupport(false)}>
+                <div className="w-full max-w-3xl max-h-[85vh] bg-[#0f172a] border border-[#233544] rounded-2xl shadow-2xl overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+                  <div className="flex items-center justify-between px-6 py-4 border-b border-[#233544] shrink-0">
+                    <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                      <span className="material-icons-outlined text-amber-400">support_agent</span>
+                      Support Debug
+                    </h2>
+                    <button onClick={() => setShowSupport(false)} className="text-slate-500 hover:text-white transition-colors">
+                      <span className="material-icons-outlined">close</span>
+                    </button>
+                  </div>
+                  <div className="p-6 overflow-y-auto">
+                    <SupportDebugTab />
+                  </div>
+                </div>
+              </div>
+            )}
           </>
         </SimulationProvider>
       </PowerHistoryProvider>
