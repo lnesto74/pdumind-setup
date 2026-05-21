@@ -3042,8 +3042,13 @@ def _connect_batch_pdu_client(
     template: dict,
     *,
     web_https_hint: bool = False,
-) -> Tuple[PDUWebClient, int, bool]:
-    """Connect for batch commissioning — one clean path, poller paused, HTTP first."""
+) -> Tuple[PDUWebClient, int, bool, str, str]:
+    """Connect for batch commissioning — one clean path, poller paused, HTTP first.
+
+    Returns (client, port, use_https, username, password) for the credentials that
+    actually logged in — important when the DB fallback succeeds but the template
+    password field is stale.
+    """
     _evict_all_pdu_clients_for_host(ip)
     time.sleep(1.5)  # let any in-flight poll finish and release the PDU session slot
 
@@ -3071,7 +3076,7 @@ def _connect_batch_pdu_client(
             if client:
                 scheme = "https" if use_https else "http"
                 print(f"[batch] {ip} connected via {scheme}://{ip}:{try_port} ({source} creds)")
-                return client, try_port, use_https
+                return client, try_port, use_https, user, password
         last_err = ConnectionError(
             f"PDU login failed for {user} — tried "
             + ", ".join(f"{'https' if h else 'http'}://{ip}:{p}" for p, h in unique_endpoints)
@@ -3810,10 +3815,11 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                 needs_reboot = bool(pdu_template.get("network")) or web_access_enabled
 
                 connect_port, connect_https = web_port, False
+                connect_user, connect_pass = admin_user, admin_pass
                 _batch_hold_pdu_sessions(current_ip, web_port)
 
                 try:
-                    client, connect_port, connect_https = _connect_batch_pdu_client(
+                    client, connect_port, connect_https, connect_user, connect_pass = _connect_batch_pdu_client(
                         current_ip, web_port, template, web_https_hint=web_https_hint
                     )
 
@@ -3869,10 +3875,12 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                             _BATCH_JOBS[job_id]["results"][pdu_key] = status
 
                         if web_access_enabled:
+                            verify_user = effective_user if (new_admin_pass or user_wants_rename) else connect_user
+                            verify_pass = effective_pass if new_admin_pass else connect_pass
                             verify_client, verify_port, verified_https = _wait_for_pdu_after_reboot(
                                 new_ip,
-                                effective_user,
-                                effective_pass,
+                                verify_user,
+                                verify_pass,
                                 timeout=120,
                                 prefer_https=True,
                                 https_port=post_web_port,
@@ -3937,6 +3945,10 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
 
                 stored_web_port = post_web_port if web_access_enabled else connect_port
                 stored_use_https = post_use_https if web_access_enabled else connect_https
+                # Persist credentials that actually worked, unless the operator
+                # explicitly set a new admin password / username in the template.
+                stored_user = effective_user if (new_admin_pass or user_wants_rename) else connect_user
+                stored_pass = effective_pass if new_admin_pass else connect_pass
 
                 pdu_data = {
                     "label": template.get("system", {}).get("router_hostname", "") or template.get("system", {}).get("device_name", f"PDU-{new_ip}"),
@@ -3948,8 +3960,8 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                     "hostname": pdu_template.get("system", {}).get("router_hostname", ""),
                     "web_admin_port": stored_web_port,
                     "web_admin_https": stored_use_https,
-                    "web_admin_user": effective_user,
-                    "web_admin_pass": effective_pass,
+                    "web_admin_user": stored_user,
+                    "web_admin_pass": stored_pass,
                 }
                 pdu_id = PDURepo.upsert(hall_id, new_ip, pdu_data)
 
