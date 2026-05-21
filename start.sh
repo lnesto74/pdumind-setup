@@ -29,9 +29,23 @@ if ! docker info > /dev/null 2>&1; then
     fi
 fi
 
+# Detect LAN IP for viewer share URL (Mac/Linux)
+HUB_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')
+if [ -n "$HUB_IP" ]; then
+  if [ -f .env ]; then
+    grep -v '^HUB_LAN_IP=' .env | grep -v '^HUB_PORT=' > .env.tmp || true
+    mv .env.tmp .env
+  else
+    touch .env
+  fi
+  echo "HUB_LAN_IP=$HUB_IP" >> .env
+  echo "HUB_PORT=3000" >> .env
+  echo "📡 Hub LAN IP: $HUB_IP"
+fi
+
 # Start containers
 echo "🚀 Starting containers..."
-docker compose up -d
+docker compose up -d --build
 
 # Wait for services to be healthy
 echo "⏳ Waiting for services..."
@@ -42,6 +56,10 @@ echo ""
 echo "✅ PDUMind is running!"
 echo ""
 echo "   Frontend:  http://localhost:3000"
+echo "   Viewer:    http://localhost:3000/view"
+if [ -n "$HUB_IP" ]; then
+  echo "   Share URL: http://${HUB_IP}:3000/view"
+fi
 echo "   Backend:   http://localhost:5002"
 echo ""
 echo "   To stop:   docker compose down"

@@ -4,7 +4,7 @@ from flask_cors import CORS
 import json
 import time
 import requests as _requests_lib
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 from threading import Thread, Lock
 # Parallelization helpers
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -412,6 +412,24 @@ init_db()
 init_persistence_db()  # Initialize new persistence layer
 register_auth_routes(app)
 ensure_default_admin()
+
+from hub import (
+    register_hub_routes,
+    register_api_guard,
+    sanitize_hall_state,
+    is_coordinator_authenticated,
+)
+
+try:
+    from demo.routes import register_demo_routes, init_demo_on_startup
+    register_demo_routes(app)
+except ImportError:
+    def init_demo_on_startup(_app):
+        pass
+
+register_hub_routes(app)
+register_api_guard(app)
+init_demo_on_startup(app)
 
 @app.route("/api/outlet/<int:outlet>/status", methods=["PUT"])
 def set_outlet_status(outlet: int):
@@ -1475,6 +1493,8 @@ def get_hall_state(hall_id: int):
         state = HallRepo.get_full_state(hall_id)
         if not state:
             return jsonify({"error": "Hall not found"}), 404
+        if not is_coordinator_authenticated():
+            state = sanitize_hall_state(state)
         return jsonify(state)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1506,6 +1526,8 @@ def get_default_hall():
     try:
         hall_id = HallRepo.get_or_create_default()
         state = HallRepo.get_full_state(hall_id)
+        if not is_coordinator_authenticated():
+            state = sanitize_hall_state(state)
         return jsonify(state)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -3107,6 +3129,7 @@ def pdu_admin_connect():
         except ConnectionError:
             return jsonify({"error": "Login failed — check credentials"}), 401
 
+        settings = _overlay_commissioning_display(host, settings)
         return jsonify({"success": True, "web_port": port, "use_https": use_https, **settings})
     except ConnectionError as e:
         return jsonify({"error": str(e)}), 401
@@ -3139,6 +3162,61 @@ def pdu_admin_session_release(host: str):
         return jsonify({"error": str(e)}), 500
 
 
+def _find_pdu_record(host: str) -> Optional[Dict[str, Any]]:
+    """Look up a PDU row by IP, remote_host, or hostname (read-only)."""
+    pdu = PDURepo.get_by_ip(host)
+    if pdu:
+        return pdu
+    from db.persistence import _connect, _db_lock
+    with _db_lock:
+        conn = _connect()
+        try:
+            cur = conn.execute(
+                "SELECT * FROM pdus WHERE remote_host = ? OR hostname = ? LIMIT 1",
+                (host, host),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+
+def _load_pdu_metadata(host: str) -> Dict[str, Any]:
+    pdu = _find_pdu_record(host)
+    if not pdu or not pdu.get("metadata_json"):
+        return {}
+    try:
+        return json.loads(pdu["metadata_json"])
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _merge_pdu_metadata(host: str, patch: Dict[str, Any]) -> None:
+    """Merge display-only commissioning fields into metadata_json (credentials untouched)."""
+    pdu = _find_pdu_record(host)
+    if not pdu:
+        return
+    meta = _load_pdu_metadata(host)
+    meta.update(patch)
+    PDURepo.upsert(pdu["hall_id"], pdu["ip_address"], {"metadata": meta})
+
+
+def _overlay_commissioning_display(host: str, settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Inject batch-commissioned display fields not stored on the PDU hardware."""
+    meta = _load_pdu_metadata(host)
+    if not meta:
+        return settings
+
+    sntp2 = (meta.get("sntp_server2") or "").strip()
+    if sntp2:
+        time_cfg = dict(settings.get("time") or {})
+        if not (time_cfg.get("sntp_server2") or "").strip():
+            time_cfg["sntp_server2"] = sntp2
+            settings["time"] = time_cfg
+
+    return settings
+
+
 @app.route("/api/pdu-admin/<host>/settings", methods=["GET"])
 def pdu_admin_get_settings(host: str):
     """Read all settings from a PDU.  Retries once on timeout since the
@@ -3166,6 +3244,7 @@ def pdu_admin_get_settings(host: str):
                 client._lock.release()
         else:
             raise last_err
+        settings = _overlay_commissioning_display(host, settings)
         return jsonify({"success": True, **settings})
     except Exception as e:
         import traceback; traceback.print_exc()
@@ -3297,6 +3376,10 @@ def pdu_admin_set_time(host: str):
 
         ok = client.set_time(**PDUWebClient.prepare_time_kwargs(data))
         if ok:
+            if "sntp_server2" in data:
+                _merge_pdu_metadata(host, {
+                    "sntp_server2": (data.get("sntp_server2") or "").strip(),
+                })
             return jsonify({"success": True, "message": "Time settings applied"})
         return jsonify({"error": "Failed to apply time settings"}), 500
     except Exception as e:
@@ -3869,6 +3952,14 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                     "web_admin_pass": effective_pass,
                 }
                 pdu_id = PDURepo.upsert(hall_id, new_ip, pdu_data)
+
+                ntp_cfg = template.get("ntp") or {}
+                sntp2 = (ntp_cfg.get("sntp_server2") or "").strip()
+                if sntp2:
+                    _merge_pdu_metadata(new_ip, {
+                        "commissioned": True,
+                        "sntp_server2": sntp2,
+                    })
 
                 _evict_pdu_client(current_ip, connect_port, connect_https)
                 _evict_pdu_client(current_ip, web_port, False)

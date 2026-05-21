@@ -28,8 +28,19 @@ _db_lock = Lock()
 def _get_schema_path() -> str:
     return os.path.join(os.path.dirname(__file__), "schema.sql")
 
+def _get_active_db_path() -> str:
+    try:
+        from demo.context import get_active_db_path
+        demo_path = get_active_db_path()
+        if demo_path:
+            return demo_path
+    except ImportError:
+        pass
+    return DB_PATH
+
+
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(_get_active_db_path(), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
@@ -70,6 +81,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if col not in existing:
             conn.execute(f"ALTER TABLE pdus ADD COLUMN {col} {typ}")
             print(f"[DB] Migrated: added pdus.{col}")
+    cur = conn.execute("PRAGMA table_info(users)")
+    user_cols = {row["name"] for row in cur.fetchall()}
+    if "role" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'admin'")
+        print("[DB] Migrated: added users.role")
 
 
 # =============================================================================

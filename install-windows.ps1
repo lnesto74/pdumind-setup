@@ -176,6 +176,34 @@ foreach ($d in $dirs) {
 }
 Write-Ok "Data directories ready"
 
+# ── 7b. Detect LAN IP for viewer share URL ─────────────────────────────
+Write-Step "Detecting LAN IP for viewer share link..."
+$hubIp = $null
+try {
+    $hubIp = (Get-NetIPAddress -AddressFamily IPv4 |
+        Where-Object {
+            $_.IPAddress -notlike '127.*' -and
+            $_.PrefixOrigin -ne 'WellKnown' -and
+            $_.InterfaceAlias -notlike '*Loopback*'
+        } |
+        Sort-Object -Property InterfaceMetric |
+        Select-Object -First 1).IPAddress
+} catch {}
+
+$envFile = Join-Path $InstallDir ".env"
+$envLines = @()
+if (Test-Path $envFile) {
+    $envLines = Get-Content $envFile | Where-Object { $_ -notmatch '^\s*HUB_LAN_IP=' -and $_ -notmatch '^\s*HUB_PORT=' }
+}
+if ($hubIp) {
+    $envLines += "HUB_LAN_IP=$hubIp"
+    $envLines += "HUB_PORT=3000"
+    $envLines | Set-Content $envFile -Encoding UTF8
+    Write-Ok "Hub LAN IP: $hubIp (viewer link: http://${hubIp}:3000/view)"
+} else {
+    Write-Warn "Could not detect LAN IP — set HUB_LAN_IP in $envFile manually"
+}
+
 # ── 8. Build and launch with Docker Compose ────────────────────────────
 Write-Step "Building and starting PDUMind (first build takes 3-5 minutes)..."
 Push-Location $InstallDir
@@ -236,6 +264,10 @@ Write-Host "   PDUMind is ready!" -ForegroundColor White
 Write-Host "  =====================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Frontend:  http://localhost:3000" -ForegroundColor Cyan
+Write-Host "  Viewer:    http://localhost:3000/view" -ForegroundColor Cyan
+if ($hubIp) {
+  Write-Host "  Share URL: http://${hubIp}:3000/view  (colleagues on same network)" -ForegroundColor Green
+}
 Write-Host "  Backend:   http://localhost:5002" -ForegroundColor Cyan
 Write-Host "  Install:   $InstallDir" -ForegroundColor Gray
 Write-Host ""

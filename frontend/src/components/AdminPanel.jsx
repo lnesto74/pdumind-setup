@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import SupportDebugTab from './SupportDebugTab';
+import HubSharePanel from './HubSharePanel';
 
 const API_BASE = '';
 
@@ -11,8 +12,8 @@ function authHeaders() {
   return { 'Authorization': `Bearer ${getToken()}`, 'Content-Type': 'application/json' };
 }
 
-export default function AdminPanel({ onClose }) {
-  const [tab, setTab] = useState('users');
+export default function AdminPanel({ onClose, initialTab = 'share' }) {
+  const [tab, setTab] = useState(initialTab);
   const [users, setUsers] = useState([]);
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -87,7 +88,7 @@ export default function AdminPanel({ onClose }) {
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className={`w-full ${tab === 'debug' ? 'max-w-3xl' : 'max-w-2xl'} max-h-[80vh] bg-[#0f172a] border border-[#233544] rounded-2xl shadow-2xl overflow-hidden`} onClick={e => e.stopPropagation()}>
+      <div className={`w-full ${tab === 'debug' || tab === 'share' ? 'max-w-3xl' : 'max-w-2xl'} max-h-[80vh] bg-[#0f172a] border border-[#233544] rounded-2xl shadow-2xl overflow-hidden`} onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[#233544]">
           <h2 className="text-sm font-bold text-white flex items-center gap-2">
@@ -100,8 +101,9 @@ export default function AdminPanel({ onClose }) {
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-1 px-6 pt-4">
+        <div className="flex flex-wrap gap-1 px-6 pt-4">
           {[
+            { id: 'share', label: 'Share', icon: 'share' },
             { id: 'users', label: 'Users', icon: 'people' },
             { id: 'logs', label: 'Access Log', icon: 'history' },
             { id: 'debug', label: 'Support Debug', icon: 'bug_report' },
@@ -121,6 +123,7 @@ export default function AdminPanel({ onClose }) {
 
         {/* Content */}
         <div className="p-6 overflow-y-auto max-h-[60vh]">
+          {tab === 'share' && <HubSharePanel />}
           {tab === 'debug' && <SupportDebugTab />}
 
           {tab === 'users' && (

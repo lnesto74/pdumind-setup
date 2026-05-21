@@ -19,9 +19,12 @@ DEFAULT_ADMIN_PASS = "admin"
 
 
 def _get_db() -> sqlite3.Connection:
-    """Get the persistence database connection."""
-    from db.persistence import _connect
-    return _connect()
+    """Auth always uses the main database (never the demo sandbox)."""
+    from db.persistence import DB_PATH
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
 
 
 def _hash_password(password: str) -> str:
@@ -37,6 +40,7 @@ def _generate_token(user: Dict[str, Any]) -> str:
         "user_id": user["id"],
         "username": user["username"],
         "display_name": user.get("display_name", ""),
+        "demo_mode": user.get("role") == "demo",
         "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRY_HOURS),
         "iat": datetime.now(timezone.utc),
     }
@@ -112,7 +116,7 @@ def register_auth_routes(app):
 
         conn = _get_db()
         cur = conn.execute(
-            "SELECT id, username, password_hash, display_name, must_change_pw, is_active FROM users WHERE username = ?",
+            "SELECT id, username, password_hash, display_name, must_change_pw, is_active, role FROM users WHERE username = ?",
             (username,),
         )
         row = cur.fetchone()
@@ -123,6 +127,7 @@ def register_auth_routes(app):
         user = {
             "id": row[0], "username": row[1], "password_hash": row[2],
             "display_name": row[3], "must_change_pw": row[4], "is_active": row[5],
+            "role": row[6] or "admin",
         }
 
         if not user["is_active"]:
@@ -144,6 +149,8 @@ def register_auth_routes(app):
                 "username": user["username"],
                 "display_name": user["display_name"],
                 "must_change_pw": bool(user["must_change_pw"]),
+                "demo_mode": user.get("role") == "demo",
+                "role": user.get("role", "admin"),
             },
         })
 
@@ -158,7 +165,7 @@ def register_auth_routes(app):
     def auth_me():
         conn = _get_db()
         cur = conn.execute(
-            "SELECT id, username, display_name, must_change_pw FROM users WHERE id = ?",
+            "SELECT id, username, display_name, must_change_pw, role FROM users WHERE id = ?",
             (g.current_user["user_id"],),
         )
         row = cur.fetchone()
@@ -168,6 +175,8 @@ def register_auth_routes(app):
             "user": {
                 "id": row[0], "username": row[1],
                 "display_name": row[2], "must_change_pw": bool(row[3]),
+                "demo_mode": (row[4] or "admin") == "demo",
+                "role": row[4] or "admin",
             }
         })
 

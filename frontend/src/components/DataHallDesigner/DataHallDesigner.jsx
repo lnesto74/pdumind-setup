@@ -189,10 +189,10 @@ const CustomRackModel = ({ url, dimensions, colors, onClick, onPointerOver, onPo
 };
 
 // Rack 3D Component
-const Rack3D = ({ rack, isSelected, isHovered, alertLevel, alertInfo, showLabel, onSelect, onHover, customModelUrl, customModelAssets, hasPdus, pduCount }) => {
+const Rack3D = ({ rack, isSelected, isHovered, alertLevel, alertInfo, showLabel, onSelect, onHover, customModelUrl, customModelAssets, hasPdus, pduCount, heatmapLevel }) => {
   const { position, dimensions } = rack;
   
-  // Determine colors based on alert level
+  // Determine colors based on alert level or load heatmap
   const getColors = () => {
     if (isSelected) {
       return { color: '#00E5FF', emissive: '#00E5FF', intensity: 0.3, outline: '#00E5FF' };
@@ -205,6 +205,21 @@ const Rack3D = ({ rack, isSelected, isHovered, alertLevel, alertInfo, showLabel,
     }
     if (alertLevel === 'warning') {
       return { color: '#78350F', emissive: '#F59E0B', intensity: 0.3, outline: '#F59E0B' };
+    }
+    if (heatmapLevel != null) {
+      if (heatmapLevel === 0) {
+        return { color: '#1e293b', emissive: '#334155', intensity: 0.05, outline: '#475569' };
+      }
+      if (heatmapLevel >= 90) {
+        return { color: '#7F1D1D', emissive: '#EF4444', intensity: 0.35, outline: '#EF4444' };
+      }
+      if (heatmapLevel >= 70) {
+        return { color: '#9a3412', emissive: '#F97316', intensity: 0.28, outline: '#F97316' };
+      }
+      if (heatmapLevel >= 40) {
+        return { color: '#78350F', emissive: '#F59E0B', intensity: 0.22, outline: '#F59E0B' };
+      }
+      return { color: '#14532d', emissive: '#22C55E', intensity: 0.18, outline: '#22C55E' };
     }
     return { color: '#2D4A5E', emissive: '#000000', intensity: 0, outline: '#3D6A7E' };
   };
@@ -454,7 +469,7 @@ const Walls = ({ hall }) => {
 };
 
 // Main 3D Scene
-const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showLabels, onSelectRack, onHoverRack, customRackModelUrl, customRackModelAssets, lighting }) => {
+const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showLabels, onSelectRack, onHoverRack, customRackModelUrl, customRackModelAssets, lighting, heatmapByRack }) => {
   // Debug: Log when customRackModelUrl changes
   useEffect(() => {
     console.log('[DataHallScene] customRackModelUrl:', customRackModelUrl);
@@ -524,6 +539,7 @@ const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showLabels, 
             customModelAssets={customRackModelAssets}
             hasPdus={rack.pdus && rack.pdus.length > 0}
             pduCount={rack.pdus ? rack.pdus.length : 0}
+            heatmapLevel={heatmapByRack?.[rack.id] ?? null}
           />
         );
       })}
@@ -1067,12 +1083,12 @@ const MibDropZone = ({ hallId }) => {
 };
 
 // Main Component
-const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onHallChange, onConfigSaved, alerts: externalAlerts }) => {
+const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onHallChange, onConfigSaved, alerts: externalAlerts, readOnly = false, heatmapByRack = {} }) => {
   const [config, setConfig] = useState(defaultDataHallConfig);
   const [selectedRack, setSelectedRack] = useState(null);
   const [hoveredRack, setHoveredRack] = useState(null);
   const [showLabels, setShowLabels] = useState(false);
-  const [panelCollapsed, setPanelCollapsed] = useState(false);
+  const [panelCollapsed, setPanelCollapsed] = useState(readOnly);
   
   // Lighting controls state
   const [showLightingPanel, setShowLightingPanel] = useState(false);
@@ -1338,7 +1354,7 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
   
   // Auto-save on config change (debounced) — uses ref guard to prevent saving during load
   useEffect(() => {
-    if (!hallId || isLoadingRef.current) return;
+    if (readOnly || !hallId || isLoadingRef.current) return;
     
     saveTimerRef.current = setTimeout(() => {
       saveTimerRef.current = null;
@@ -1351,7 +1367,7 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
         saveTimerRef.current = null;
       }
     };
-  }, [config, hallId, saveHallState]);
+  }, [config, hallId, saveHallState, readOnly]);
   
   // Generate layout from config
   const layoutResult = useMemo(() => generateDataHallLayout(config), [config]);
@@ -1410,8 +1426,9 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
   const layout = mergedLayoutResult.success ? mergedLayoutResult.layout : null;
   
   return (
-    <div className="flex h-[calc(100vh-8rem)] bg-[#0B1120] relative">
-      {/* Left Panel - Parameters (Collapsible) */}
+    <div className={`flex ${readOnly ? 'h-full' : 'h-[calc(100vh-8rem)]'} bg-[#0B1120] relative`}>
+      {/* Left Panel - Parameters (Collapsible) — hidden in read-only viewer mode */}
+      {!readOnly && (
       <div className={`${panelCollapsed ? 'w-0' : 'w-80'} border-r ${panelCollapsed ? 'border-transparent' : 'border-[#233544]'} bg-[#0B1120] transition-all duration-300 flex-shrink-0 relative overflow-hidden flex flex-col`}>
         <div className={`${panelCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100'} transition-opacity duration-200 w-80 flex flex-col h-full`}>
           <div className="sticky top-0 z-20 bg-[#0B1120] px-4 pt-4 pb-2 border-b border-[#233544]">
@@ -1828,8 +1845,10 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
         </div>
         </div>
       </div>
-      
+      )}
+
       {/* Collapse Toggle Button */}
+      {!readOnly && (
       <button
         onClick={() => setPanelCollapsed(!panelCollapsed)}
         className={`flex-shrink-0 w-5 h-10 bg-[#161E2E] border-y border-r border-[#00E5FF]/30 rounded-r flex items-center justify-center hover:bg-[#233544] transition-colors self-center -ml-px`}
@@ -1838,6 +1857,7 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
           chevron_right
         </span>
       </button>
+      )}
       
       {/* Right Panel - 3D View */}
       <div className="flex-1 relative overflow-hidden" style={{ isolation: 'isolate' }}>
@@ -1860,6 +1880,7 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
               customRackModelUrl={config.rackModel?.url}
               customRackModelAssets={config.rackModel?.assets}
               lighting={lighting}
+              heatmapByRack={heatmapByRack}
             />
           </Suspense>
         </Canvas>
@@ -1872,28 +1893,43 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
           onPduClick={(pdu) => onNavigateToPdu && onNavigateToPdu(pdu)}
         />
         
-        {/* Alert Legend */}
+        {/* Alert / Heatmap Legend */}
         <div className="absolute top-4 left-4 z-20 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-4 py-3">
-          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">Status Legend</p>
+          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">
+            {readOnly ? 'Load Heatmap' : 'Status Legend'}
+          </p>
           <div className="flex flex-col gap-2 text-[10px] font-mono">
-            <div className="flex items-center gap-2">
-              <span className="w-3 h-3 rounded bg-[#2D4A5E]"></span>
-              <span className="text-slate-400">Normal</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="w-3 h-3 rounded bg-[#F59E0B]"></span>
-              <span className="text-amber-400">Warning</span>
-              <span className="text-slate-500">({alerts.filter(a => a.severity === 'warning').length})</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="w-3 h-3 rounded bg-[#EF4444]"></span>
-              <span className="text-red-400">Critical</span>
-              <span className="text-slate-500">({alerts.filter(a => a.severity === 'critical').length})</span>
-            </div>
+            {readOnly ? (
+              <>
+                <div className="flex items-center gap-2"><span className="w-3 h-3 rounded bg-[#22C55E]"></span><span className="text-emerald-400">Low load</span></div>
+                <div className="flex items-center gap-2"><span className="w-3 h-3 rounded bg-[#F59E0B]"></span><span className="text-amber-400">Medium</span></div>
+                <div className="flex items-center gap-2"><span className="w-3 h-3 rounded bg-[#F97316]"></span><span className="text-orange-400">High</span></div>
+                <div className="flex items-center gap-2"><span className="w-3 h-3 rounded bg-[#EF4444]"></span><span className="text-red-400">Critical / Alarm</span></div>
+                <div className="flex items-center gap-2"><span className="w-3 h-3 rounded bg-[#475569]"></span><span className="text-slate-500">Offline</span></div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center gap-2">
+                  <span className="w-3 h-3 rounded bg-[#2D4A5E]"></span>
+                  <span className="text-slate-400">Normal</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-3 h-3 rounded bg-[#F59E0B]"></span>
+                  <span className="text-amber-400">Warning</span>
+                  <span className="text-slate-500">({alerts.filter(a => a.severity === 'warning').length})</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-3 h-3 rounded bg-[#EF4444]"></span>
+                  <span className="text-red-400">Critical</span>
+                  <span className="text-slate-500">({alerts.filter(a => a.severity === 'critical').length})</span>
+                </div>
+              </>
+            )}
           </div>
         </div>
         
         {/* Save Status Indicator */}
+        {!readOnly && (
         <div className="absolute top-4 right-4 z-20 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-3 py-2 text-[10px] font-mono w-36">
           {currentHall && (
             <div className="text-[#00E5FF] font-bold mb-1 truncate">{currentHall.name}</div>
@@ -1914,12 +1950,15 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
             )}
           </div>
         </div>
+        )}
         
         {/* View Controls Legend + Lighting Toggle */}
         <div className="absolute bottom-4 left-4 z-20 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-3 py-2 text-[10px] font-mono text-slate-400 flex items-center gap-3">
           <span>🖱️ Orbit: Drag</span>
           <span>⚙️ Pan: Right-drag</span>
           <span>🔍 Zoom: Scroll</span>
+          {!readOnly && (
+          <>
           <span className="w-px h-4 bg-[#233544]"></span>
           <button
             onClick={() => setShowLightingPanel(!showLightingPanel)}
@@ -1927,10 +1966,12 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
           >
             💡 Lighting
           </button>
+          </>
+          )}
         </div>
         
         {/* Lighting Controls Panel */}
-        {showLightingPanel && (
+        {!readOnly && showLightingPanel && (
           <div className="absolute bottom-14 left-4 z-30 bg-[#161E2E] border border-[#00E5FF]/50 rounded-lg p-4 w-80 shadow-xl max-h-[70vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-xs font-bold text-[#00E5FF] uppercase tracking-wider">Lighting Tuner</h3>

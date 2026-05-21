@@ -13,6 +13,9 @@ services:
       - PYTHONUNBUFFERED=1
       - DATA_DIR=/app/data
       - PORT=5002
+      - HUB_LAN_IP=${HUB_LAN_IP:-}
+      - HUB_PORT=${HUB_PORT:-3000}
+      - PDUMIND_DEMO_ENABLED=${PDUMIND_DEMO_ENABLED:-}
       - MAX_SNMP_THREADS=12
       - SNMP_BATCH_SIZE=2
       - OUTLET_BASE_TIMEOUT=3

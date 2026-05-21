@@ -384,12 +384,17 @@ class PDUWebClient:
     # SNMP config
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _cgi_bool(val: Any) -> bool:
+        s = str(val or "").strip().lower()
+        return s in ("true", "1", "on", "yes")
+
     def get_snmp_config(self) -> Dict[str, Any]:
         f = self._get_cgi("snmp_Onceload.cgi?")
         return {
-            "snmpv1_enabled": f[2] == "true" if len(f) > 2 else False,
-            "snmpv2_enabled": f[3] == "true" if len(f) > 3 else False,
-            "snmpv3_enabled": f[4] == "true" if len(f) > 4 else False,
+            "snmpv1_enabled": self._cgi_bool(f[2]) if len(f) > 2 else False,
+            "snmpv2_enabled": self._cgi_bool(f[3]) if len(f) > 3 else False,
+            "snmpv3_enabled": self._cgi_bool(f[4]) if len(f) > 4 else False,
             "community_read": f[5] if len(f) > 5 else "",
             "community_write": f[6] if len(f) > 6 else "",
             "snmpv3_username": f[7] if len(f) > 7 else "",
@@ -420,9 +425,10 @@ class PDUWebClient:
             csrf = cur["csrf_token"]
 
             def _bool_val(new, cur_val):
+                # PDU web form uses "true" when checked and empty string when unchecked.
                 if new is None:
-                    return "true" if cur_val else "false"
-                return "true" if new else "false"
+                    return "true" if cur_val else ""
+                return "true" if new else ""
 
             def _field(new, cur_val):
                 return cur_val if new is None else new

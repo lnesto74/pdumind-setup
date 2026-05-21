@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import PduNtpSettingsForm from './PduNtpSettingsForm';
-import { splitSntpServers } from '../constants/pduSettings';
+import { splitSntpServers, primarySntpServer } from '../constants/pduSettings';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -260,6 +260,7 @@ const PDUSettingsPanel = ({ pdu }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...timeConfig,
+          sntp_server: primarySntpServer(timeConfig.sntp_server, timeConfig.sntp_server2),
           web_port: port, username, password,
         }),
       });
