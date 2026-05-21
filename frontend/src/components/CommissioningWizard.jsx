@@ -1958,9 +1958,17 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                     Row {rack.row_index + 1}, Pos {rack.position_index + 1}
                                   </p>
 
-                                  {/* Slot buttons — stacked vertically so long IPs + X stay inside the card */}
+                                  {/* Slot buttons — show both mount positions (A/B or Left/Right) */}
                                   <div className="flex flex-col gap-1.5 mt-2 min-w-0">
-                                    {(rack.open_slots || []).map(slot => {
+                                    {(() => {
+                                      const open = rack.open_slots || [];
+                                      const isLeftRight = open.some(s => s === 'Left' || s === 'Right')
+                                        || takenSlots.some(s => s === 'Left' || s === 'Right');
+                                      const slotOrder = isLeftRight ? ['Left', 'Right'] : ['A', 'B'];
+                                      return slotOrder.slice(0, rack.total_slots || 2);
+                                    })().map(slot => {
+                                      const isOpen = (rack.open_slots || []).includes(slot);
+                                      if (!isOpen && !slotsUsedByBatch.find(s => s.slot === slot)) return null;
                                       const usedBy = slotsUsedByBatch.find(s => s.slot === slot);
                                       const pduResult = usedBy ? batchProgress.results[usedBy.pduKey] : null;
                                       const ip = pduResult?.new_ip || pduResult?.ip || '';
@@ -1992,11 +2000,14 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                               setDragPdu(null);
                                             }
                                           }}
-                                          className={`w-full px-1.5 py-1 rounded text-[9px] font-mono transition-all ${
+                                          className={`w-full px-1.5 py-1.5 rounded text-[9px] font-mono transition-all ${
                                             dragPdu && !batchRackMap[dragPdu]
                                               ? 'bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/50 cursor-pointer hover:bg-[#00E5FF]/30'
                                               : 'bg-[#161E2E] text-slate-500 border border-[#233544]'
-                                          }`}>{slot} — empty</button>
+                                          }`}>
+                                          <span className="font-bold text-[10px]">Pos {slot}</span>
+                                          <span className="block text-[8px] opacity-80">empty — click to assign</span>
+                                        </button>
                                       );
                                     })}
                                   </div>

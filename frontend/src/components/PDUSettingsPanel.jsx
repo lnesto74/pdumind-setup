@@ -27,6 +27,36 @@ const InputField = ({ label, value, onChange, disabled, mono = true }) => (
   </div>
 );
 
+const PasswordField = ({ label, value, onChange, disabled, placeholder, compact = false }) => {
+  const [visible, setVisible] = useState(false);
+  const boxClass = compact
+    ? 'w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF] placeholder:text-slate-600'
+    : 'w-full bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2 pr-10 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF] disabled:opacity-50 placeholder:text-slate-600';
+  return (
+    <div>
+      <label className="text-[9px] text-slate-500 uppercase tracking-wider block mb-1">{label}</label>
+      <div className="relative">
+        <input
+          type={visible ? 'text' : 'password'}
+          value={value || ''}
+          onChange={e => onChange(e.target.value)}
+          disabled={disabled}
+          placeholder={placeholder}
+          className={boxClass}
+        />
+        <button
+          type="button"
+          onClick={() => setVisible(v => !v)}
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-[#00E5FF] transition-colors"
+          title={visible ? 'Hide password' : 'Show password'}
+        >
+          <span className="material-icons-outlined text-sm">{visible ? 'visibility_off' : 'visibility'}</span>
+        </button>
+      </div>
+    </div>
+  );
+};
+
 const StatusBadge = ({ ok, label }) => (
   <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono ${
     ok ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-slate-500/20 text-slate-400 border border-slate-500/30'
@@ -64,6 +94,7 @@ const PDUSettingsPanel = ({ pdu }) => {
   const telemetryTimer = useRef(null);
 
   const queryParams = `port=${port}&use_https=${useHttps ? '1' : '0'}&username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
+  const credPayload = { web_port: port, username, password, use_https: useHttps ? 1 : 0 };
 
   const fetchSettings = useCallback(async () => {
     if (!host) return;
@@ -194,6 +225,7 @@ const PDUSettingsPanel = ({ pdu }) => {
           dns2: network.set_dns2 || network.current_dns2,
           dhcp: network.dhcp || 'OFF',
           web_port: port, username, password,
+          use_https: useHttps ? 1 : 0,
           reboot: true,
         }),
       });
@@ -242,7 +274,7 @@ const PDUSettingsPanel = ({ pdu }) => {
           auth_key: snmp.auth_key,
           encrypt_protocol: snmp.encrypt_protocol,
           priv_key: snmp.priv_key,
-          web_port: port, username, password,
+          ...credPayload,
         }),
       });
       const data = await res.json();
@@ -261,7 +293,7 @@ const PDUSettingsPanel = ({ pdu }) => {
         body: JSON.stringify({
           ...timeConfig,
           sntp_server: primarySntpServer(timeConfig.sntp_server, timeConfig.sntp_server2),
-          web_port: port, username, password,
+          ...credPayload,
         }),
       });
       const data = await res.json();
@@ -293,7 +325,7 @@ const PDUSettingsPanel = ({ pdu }) => {
       const res = await fetch(`${API_BASE}/api/pdu-admin/${host}/settings/system`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...systemConfig, web_port: port, username, password }),
+        body: JSON.stringify({ ...systemConfig, ...credPayload }),
       });
       const data = await res.json();
       if (data.success) { setSuccess('System settings applied'); setTimeout(() => setSuccess(null), 3000); }
@@ -308,7 +340,7 @@ const PDUSettingsPanel = ({ pdu }) => {
       const res = await fetch(`${API_BASE}/api/pdu-admin/${host}/settings/users`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...users, web_port: port, username, password }),
+        body: JSON.stringify({ ...users, ...credPayload }),
       });
       const data = await res.json();
       if (data.success) { setSuccess('User credentials applied'); setTimeout(() => setSuccess(null), 3000); }
@@ -550,12 +582,14 @@ const PDUSettingsPanel = ({ pdu }) => {
                       onChange={v => setSnmp(p => ({ ...p, snmpv3_username: v }))} />
                     <InputField label="Auth Protocol" value={snmp.verify_protocol}
                       onChange={v => setSnmp(p => ({ ...p, verify_protocol: v }))} />
-                    <InputField label="Auth Key" value={snmp.auth_key}
-                      onChange={v => setSnmp(p => ({ ...p, auth_key: v }))} />
+                    <PasswordField label="Auth Key" value={snmp.auth_key}
+                      onChange={v => setSnmp(p => ({ ...p, auth_key: v }))}
+                      placeholder="Leave blank to keep current" compact />
                     <InputField label="Privacy Protocol" value={snmp.encrypt_protocol}
                       onChange={v => setSnmp(p => ({ ...p, encrypt_protocol: v }))} />
-                    <InputField label="Privacy Key" value={snmp.priv_key}
-                      onChange={v => setSnmp(p => ({ ...p, priv_key: v }))} />
+                    <PasswordField label="Privacy Key" value={snmp.priv_key}
+                      onChange={v => setSnmp(p => ({ ...p, priv_key: v }))}
+                      placeholder="Leave blank to keep current" compact />
                   </div>
                 </div>
               )}
@@ -803,13 +837,9 @@ const PDUSettingsPanel = ({ pdu }) => {
                     <div className="grid grid-cols-2 gap-3">
                       <InputField label="Username" value={users.admin_username || 'admin'}
                         onChange={v => setUsers(p => ({ ...p, admin_username: v }))} />
-                      <div>
-                        <label className="text-[9px] text-slate-500 uppercase tracking-wider">New Password</label>
-                        <input type="password" value={users.admin_password || ''}
-                          onChange={e => setUsers(p => ({ ...p, admin_password: e.target.value }))}
-                          placeholder="Leave blank to keep current"
-                          className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF] placeholder:text-slate-600" />
-                      </div>
+                      <PasswordField label="New Password" value={users.admin_password || ''}
+                        onChange={v => setUsers(p => ({ ...p, admin_password: v }))}
+                        placeholder="Leave blank to keep current" compact />
                     </div>
                   </div>
                   <div className="p-3 rounded-lg bg-[#161E2E] border border-[#233544]">
@@ -817,13 +847,9 @@ const PDUSettingsPanel = ({ pdu }) => {
                     <div className="grid grid-cols-2 gap-3">
                       <InputField label="Username" value={users.user1_username || ''}
                         onChange={v => setUsers(p => ({ ...p, user1_username: v }))} />
-                      <div>
-                        <label className="text-[9px] text-slate-500 uppercase tracking-wider">Password</label>
-                        <input type="password" value={users.user1_password || ''}
-                          onChange={e => setUsers(p => ({ ...p, user1_password: e.target.value }))}
-                          placeholder="Leave blank to keep current"
-                          className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF] placeholder:text-slate-600" />
-                      </div>
+                      <PasswordField label="Password" value={users.user1_password || ''}
+                        onChange={v => setUsers(p => ({ ...p, user1_password: v }))}
+                        placeholder="Leave blank to keep current" compact />
                     </div>
                   </div>
                   <div className="p-3 rounded-lg bg-[#161E2E] border border-[#233544]">
@@ -831,13 +857,9 @@ const PDUSettingsPanel = ({ pdu }) => {
                     <div className="grid grid-cols-2 gap-3">
                       <InputField label="Username" value={users.user2_username || ''}
                         onChange={v => setUsers(p => ({ ...p, user2_username: v }))} />
-                      <div>
-                        <label className="text-[9px] text-slate-500 uppercase tracking-wider">Password</label>
-                        <input type="password" value={users.user2_password || ''}
-                          onChange={e => setUsers(p => ({ ...p, user2_password: e.target.value }))}
-                          placeholder="Leave blank to keep current"
-                          className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF] placeholder:text-slate-600" />
-                      </div>
+                      <PasswordField label="Password" value={users.user2_password || ''}
+                        onChange={v => setUsers(p => ({ ...p, user2_password: v }))}
+                        placeholder="Leave blank to keep current" compact />
                     </div>
                   </div>
                 </div>

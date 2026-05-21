@@ -424,32 +424,34 @@ class PDUWebClient:
             cur = self.get_snmp_config()
             csrf = cur["csrf_token"]
 
-            def _bool_val(new, cur_val):
-                # PDU web form uses "true" when checked and empty string when unchecked.
-                if new is None:
-                    return "true" if cur_val else ""
-                return "true" if new else ""
+            def _snmp_checkbox_val(new, cur_val):
+                # HTML checkboxes: checked => field present (value "on"); unchecked => omitted.
+                enabled = cur_val if new is None else bool(new)
+                return "on" if enabled else None
 
             def _field(new, cur_val):
                 return cur_val if new is None else new
 
-            resp = self._post_cgi(
-                "snmp_set.cgi",
-                {
-                    "switch_netset_csrftoken2": csrf,
-                    "SNMPStatu_Ver1": _bool_val(snmpv1, cur["snmpv1_enabled"]),
-                    "SNMPStatu_Ver2": _bool_val(snmpv2, cur["snmpv2_enabled"]),
-                    "SNMPStatu_Ver3": _bool_val(snmpv3, cur["snmpv3_enabled"]),
-                    "SNMPStatu_Community_Read": _field(read_community, cur["community_read"]),
-                    "SNMPStatu_Community_Write": _field(write_community, cur["community_write"]),
-                    "SNMPStatu_User_Name": _field(snmpv3_username, cur["snmpv3_username"]),
-                    "SNMPStatu_VerifyProtocol": _field(verify_protocol, cur["verify_protocol"]),
-                    "SNMPStatu_AUTH_KEY": _field(auth_key, cur["auth_key"]),
-                    "SNMPStatu_EncrypyProtocol": _field(encrypt_protocol, cur["encrypt_protocol"]),
-                    "SNMPStatu_PRIV_KEY": _field(priv_key, cur["priv_key"]),
-                    "SNMPStatu_TrapManageIP1": _field(trap_ip, cur["trap_ip"]),
-                },
-            )
+            post_data: Dict[str, Any] = {
+                "switch_netset_csrftoken2": csrf,
+                "SNMPStatu_Community_Read": _field(read_community, cur["community_read"]),
+                "SNMPStatu_Community_Write": _field(write_community, cur["community_write"]),
+                "SNMPStatu_User_Name": _field(snmpv3_username, cur["snmpv3_username"]),
+                "SNMPStatu_VerifyProtocol": _field(verify_protocol, cur["verify_protocol"]),
+                "SNMPStatu_AUTH_KEY": _field(auth_key, cur["auth_key"]),
+                "SNMPStatu_EncrypyProtocol": _field(encrypt_protocol, cur["encrypt_protocol"]),
+                "SNMPStatu_PRIV_KEY": _field(priv_key, cur["priv_key"]),
+                "SNMPStatu_TrapManageIP1": _field(trap_ip, cur["trap_ip"]),
+            }
+            for field, val in (
+                ("SNMPStatu_Ver1", _snmp_checkbox_val(snmpv1, cur["snmpv1_enabled"])),
+                ("SNMPStatu_Ver2", _snmp_checkbox_val(snmpv2, cur["snmpv2_enabled"])),
+                ("SNMPStatu_Ver3", _snmp_checkbox_val(snmpv3, cur["snmpv3_enabled"])),
+            ):
+                if val is not None:
+                    post_data[field] = val
+
+            resp = self._post_cgi("snmp_set.cgi", post_data)
             return "404" not in resp
 
     # ------------------------------------------------------------------
@@ -499,6 +501,14 @@ class PDUWebClient:
         return s or "79"
 
     @staticmethod
+    def _optional_secret(value: Any) -> str | None:
+        """Don't overwrite PDU keys with blank or masked placeholder values."""
+        s = str(value or "").strip()
+        if not s or set(s) <= {"*"}:
+            return None
+        return s
+
+    @staticmethod
     def prepare_snmp_kwargs(snmp: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize batch/UI SNMP dict into explicit set_snmp() kwargs."""
         if not snmp:
@@ -511,9 +521,9 @@ class PDUWebClient:
             "snmpv3": bool(snmp.get("snmpv3", snmp.get("snmpv3_enabled", True))),
             "snmpv3_username": snmp.get("snmpv3_username"),
             "verify_protocol": snmp.get("verify_protocol"),
-            "auth_key": snmp.get("auth_key"),
+            "auth_key": PDUWebClient._optional_secret(snmp.get("auth_key")),
             "encrypt_protocol": snmp.get("encrypt_protocol"),
-            "priv_key": snmp.get("priv_key"),
+            "priv_key": PDUWebClient._optional_secret(snmp.get("priv_key")),
             "trap_ip": snmp.get("trap_ip", ""),
         }
         return prepared
