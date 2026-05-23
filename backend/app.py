@@ -3481,22 +3481,15 @@ def pdu_admin_set_users(host: str):
             # Persist new admin credentials to DB so the poller uses them
             if new_admin_user or new_admin_pass:
                 try:
-                    import sqlite3
-                    db_path = os.path.join(os.path.dirname(__file__), "data", "pdumind.db")
-                    conn = sqlite3.connect(db_path)
-                    updates = []
-                    params = []
-                    if new_admin_user:
-                        updates.append("web_admin_user = ?")
-                        params.append(new_admin_user)
-                    if new_admin_pass:
-                        updates.append("web_admin_pass = ?")
-                        params.append(new_admin_pass)
-                    if updates:
-                        params.append(host)
-                        conn.execute(f"UPDATE pdus SET {', '.join(updates)} WHERE ip_address = ?", params)
-                        conn.commit()
-                    conn.close()
+                    pdu = _find_pdu_record(host)
+                    if pdu:
+                        updates: Dict[str, Any] = {}
+                        if new_admin_user:
+                            updates["web_admin_user"] = new_admin_user
+                        if new_admin_pass:
+                            updates["web_admin_pass"] = new_admin_pass
+                        if updates:
+                            PDURepo.upsert(pdu["hall_id"], pdu["ip_address"], updates)
                 except Exception as db_err:
                     print(f"[set_users] DB update warning: {db_err}")
 
@@ -3715,7 +3708,7 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
         for idx, pdu_info in enumerate(pdu_list):
             current_ip = pdu_info.get("ip", "")
             mac = pdu_info.get("mac", "")
-            web_port = pdu_info.get("web_admin_port", 80)
+            web_port = int(pdu_info.get("web_admin_port") or 80)
             web_https_hint = _parse_use_https(pdu_info.get("web_admin_https"))
             pdu_key = mac or current_ip
 
@@ -3822,6 +3815,18 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                     client, connect_port, connect_https, connect_user, connect_pass = _connect_batch_pdu_client(
                         current_ip, web_port, template, web_https_hint=web_https_hint
                     )
+                    # Persist working credentials immediately so a later SNMP/reboot
+                    # failure cannot leave the DB with stale or blank web-admin fields.
+                    PDURepo.upsert(
+                        hall_id,
+                        current_ip,
+                        {
+                            "web_admin_port": int(connect_port),
+                            "web_admin_https": 1 if connect_https else 0,
+                            "web_admin_user": connect_user,
+                            "web_admin_pass": connect_pass,
+                        },
+                    )
 
                     if web_access_enabled and not connect_https:
                         try:
@@ -3861,6 +3866,18 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                             _BATCH_JOBS[job_id]["results"][pdu_key] = status
                             _BATCH_JOBS[job_id]["completed"] += 1
                         continue
+                    users_result = report.get("users") or {}
+                    if pdu_template.get("users") and not users_result.get("success", True):
+                        status["step"] = "users_failed"
+                        status["error"] = (
+                            users_result.get("error")
+                            or "PDU web login username/password could not be applied — "
+                            "check for unsupported characters or try changing password too"
+                        )
+                        with _batch_lock:
+                            _BATCH_JOBS[job_id]["results"][pdu_key] = status
+                            _BATCH_JOBS[job_id]["completed"] += 1
+                        continue
                     reboot_ok = False
                     if needs_reboot:
                         reboot_ok = _trigger_pdu_reboot(client, current_ip)
@@ -3886,8 +3903,8 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                             _BATCH_JOBS[job_id]["results"][pdu_key] = status
 
                         if web_access_enabled:
-                            verify_user = effective_user if (new_admin_pass or user_wants_rename) else connect_user
-                            verify_pass = effective_pass if new_admin_pass else connect_pass
+                            verify_user = new_admin_user if user_wants_rename else connect_user
+                            verify_pass = new_admin_pass if new_admin_pass else connect_pass
                             verify_client, verify_port, verified_https = _wait_for_pdu_after_reboot(
                                 new_ip,
                                 verify_user,
@@ -3954,12 +3971,40 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                 with _batch_lock:
                     _BATCH_JOBS[job_id]["results"][pdu_key] = status
 
-                stored_web_port = post_web_port if web_access_enabled else connect_port
+                stored_web_port = int(post_web_port if web_access_enabled else connect_port)
                 stored_use_https = post_use_https if web_access_enabled else connect_https
-                # Persist credentials that actually worked, unless the operator
-                # explicitly set a new admin password / username in the template.
-                stored_user = effective_user if (new_admin_pass or user_wants_rename) else connect_user
-                stored_pass = effective_pass if new_admin_pass else connect_pass
+                stored_user = new_admin_user if user_wants_rename else connect_user
+                stored_pass = new_admin_pass if new_admin_pass else connect_pass
+
+                # After a credential change, confirm the PDU accepts the new login
+                # before rewriting the database (avoids storing a username the device rejects).
+                if user_wants_rename or new_admin_pass:
+                    try:
+                        client.logout()
+                    except Exception:
+                        pass
+                    verify_client = _probe_pdu_login(
+                        new_ip,
+                        stored_web_port,
+                        stored_user,
+                        stored_pass,
+                        stored_use_https,
+                        retries=5,
+                    )
+                    if not verify_client:
+                        status["step"] = "credentials_verify_failed"
+                        status["error"] = (
+                            f"PDU rejected login as {stored_user!r} after username/password change — "
+                            "run Commissioning → Repair with the credentials that work in Chrome"
+                        )
+                        with _batch_lock:
+                            _BATCH_JOBS[job_id]["results"][pdu_key] = status
+                            _BATCH_JOBS[job_id]["completed"] += 1
+                        continue
+                    try:
+                        verify_client.logout()
+                    except Exception:
+                        pass
 
                 pdu_data = {
                     "label": template.get("system", {}).get("router_hostname", "") or template.get("system", {}).get("device_name", f"PDU-{new_ip}"),
@@ -4856,24 +4901,24 @@ def bulk_rack_assign(hall_id: int):
         if not assignments:
             return jsonify({"error": "No assignments provided"}), 400
 
-        import sqlite3
-        db_path = os.path.join(os.path.dirname(__file__), "data", "pdumind.db")
-        conn = sqlite3.connect(db_path)
         results = []
         for a in assignments:
             pdu_ip = a.get("pdu_ip")
             rack_id = a.get("rack_id")
             mount_pos = a.get("mount_position", "A")
             try:
-                conn.execute(
-                    "UPDATE pdus SET rack_id = ?, mount_position = ? WHERE ip_address = ? AND hall_id = ?",
-                    (rack_id, mount_pos, pdu_ip, hall_id)
+                pdu = PDURepo.get_by_ip(pdu_ip)
+                if not pdu or pdu.get("hall_id") != hall_id:
+                    results.append({"ip": pdu_ip, "success": False, "error": "PDU not found in hall"})
+                    continue
+                PDURepo.upsert(
+                    hall_id,
+                    pdu_ip,
+                    {"rack_id": rack_id, "mount_position": mount_pos},
                 )
                 results.append({"ip": pdu_ip, "success": True})
             except Exception as e:
                 results.append({"ip": pdu_ip, "success": False, "error": str(e)})
-        conn.commit()
-        conn.close()
 
         ok_count = sum(1 for r in results if r["success"])
         return jsonify({

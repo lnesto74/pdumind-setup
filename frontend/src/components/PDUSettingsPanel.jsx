@@ -68,10 +68,12 @@ const StatusBadge = ({ ok, label }) => (
 
 const PDUSettingsPanel = ({ pdu }) => {
   const host = pdu?.remote_host || pdu?.ip;
-  const port = pdu?.web_admin_port || 80;
-  const useHttps = !!(pdu?.web_admin_https);
-  const username = pdu?.web_admin_user || 'admin';
-  const password = pdu?.web_admin_pass || 'admin';
+  const credentialsMissing = !pdu?.web_admin_port || !pdu?.web_admin_pass || !pdu?.web_admin_user;
+  // When DB lost web-admin fields, prefer HTTPS:443 (common after batch commissioning).
+  const port = pdu?.web_admin_port || 443;
+  const useHttps = pdu?.web_admin_https != null ? !!pdu.web_admin_https : !pdu?.web_admin_port;
+  const username = pdu?.web_admin_user || '';
+  const password = pdu?.web_admin_pass || '';
 
   const [tab, setTab] = useState('network');
   const [loading, setLoading] = useState(false);
@@ -130,6 +132,13 @@ const PDUSettingsPanel = ({ pdu }) => {
   // Pause background telemetry polling for this PDU while settings are open.
   useEffect(() => {
     if (!host) return undefined;
+    if (credentialsMissing) {
+      setError(
+        'Web login credentials are missing from the database. Open Commissioning → Repair, ' +
+        'enter the username and password that work in Chrome (e.g. IT-GNI-ALL@agoda.com), and run Repair.'
+      );
+      return undefined;
+    }
     let cancelled = false;
     const holdUrl = `${API_BASE}/api/pdu-admin/${host}/session/hold?port=${port}`;
     const releaseUrl = `${API_BASE}/api/pdu-admin/${host}/session/release?port=${port}`;
@@ -147,7 +156,7 @@ const PDUSettingsPanel = ({ pdu }) => {
       cancelled = true;
       fetch(releaseUrl, { method: 'POST' }).catch(() => {});
     };
-  }, [host, port, useHttps, fetchSettings]);
+  }, [host, port, useHttps, fetchSettings, credentialsMissing]);
 
   // Auto-poll telemetry from the cached background poller (no direct PDU login)
   useEffect(() => {
@@ -373,7 +382,7 @@ const PDUSettingsPanel = ({ pdu }) => {
             {deviceInfo.name || host} &middot; FW {deviceInfo.firmware || '?'} &middot; MAC {deviceInfo.mac || '?'}
           </p>
         </div>
-        <button onClick={fetchSettings} disabled={loading}
+        <button onClick={fetchSettings} disabled={loading || credentialsMissing}
           className="px-3 py-1.5 bg-[#161E2E] border border-[#233544] hover:border-[#00E5FF]/30 text-slate-300 rounded-lg text-xs flex items-center gap-1.5 transition-all">
           <span className={`material-icons-outlined text-sm ${loading ? 'animate-spin' : ''}`}>refresh</span>
           Refresh

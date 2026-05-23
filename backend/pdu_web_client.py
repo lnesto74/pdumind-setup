@@ -1035,9 +1035,22 @@ class PDUWebClient:
             if admin_password is not None:
                 fields["Meter_admin_password"] = admin_password
             resp = self._post_cgi("User_set.cgi", fields)
-            return "404" not in resp
-
-            return "404" not in resp
+            if "404" in resp:
+                return False
+            # Confirm username change took effect (password cannot be read back).
+            if admin_username:
+                try:
+                    read_back = self.get_users()
+                    if (read_back.get("admin_username") or "").strip() != admin_username.strip():
+                        print(
+                            f"[pdu-users] {self.base_url} username mismatch after write: "
+                            f"expected {admin_username!r}, got {read_back.get('admin_username')!r}"
+                        )
+                        return False
+                except Exception as exc:
+                    print(f"[pdu-users] {self.base_url} read-back failed: {exc}")
+                    return False
+            return True
 
     # ------------------------------------------------------------------
     # Web access (HTTP / HTTPS) — sys_http.html / http_https_set.cgi
@@ -1165,7 +1178,10 @@ class PDUWebClient:
                     if v:
                         user_kwargs[k] = v
                 ok = self.set_users(**user_kwargs)
-                report["users"] = {"success": ok}
+                detail: Dict[str, Any] = {"success": ok}
+                if not ok:
+                    detail["error"] = "User credentials were not confirmed on the PDU after write"
+                report["users"] = detail
             except Exception as e:
                 report["users"] = {"success": False, "error": str(e)}
 

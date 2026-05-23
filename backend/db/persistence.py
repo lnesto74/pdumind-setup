@@ -399,6 +399,25 @@ class RackRepo:
 
 class PDURepo:
     """Repository for PDU instances."""
+
+    # Fields that must not be overwritten with blank/None on partial upserts.
+    _PRESERVE_IF_BLANK = frozenset({
+        "web_admin_port", "web_admin_user", "web_admin_pass",
+        "snmp_community_ref", "remote_host",
+    })
+
+    @staticmethod
+    def _preserve_blank(key: str, value: Any, existing: Any) -> Any:
+        """Keep stored credentials when an upsert passes empty/null placeholders."""
+        if key not in PDURepo._PRESERVE_IF_BLANK:
+            return value
+        if value is None:
+            return existing
+        if isinstance(value, str) and not value.strip():
+            return existing
+        if key == "web_admin_port" and not value:
+            return existing
+        return value
     
     @staticmethod
     def upsert(hall_id: int, ip_address: str, data: Dict[str, Any]) -> int:
@@ -422,7 +441,7 @@ class PDURepo:
 
                     def _pick(key, default=None):
                         if key in data:
-                            return data[key]
+                            return PDURepo._preserve_blank(key, data[key], row.get(key, default))
                         return row.get(key, default)
 
                     metadata_val = row.get("metadata_json")
