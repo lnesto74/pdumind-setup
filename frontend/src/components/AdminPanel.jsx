@@ -285,10 +285,11 @@ export default function AdminPanel({ onClose, initialTab = 'share' }) {
                         )}
                         <button
                           onClick={() => startEditUser(u)}
-                          className="text-slate-600 hover:text-[#00E5FF] transition-colors"
-                          title="Edit user"
+                          className="flex items-center gap-1 px-2 py-1 rounded text-[10px] text-[#00E5FF] border border-[#00E5FF]/30 hover:bg-[#00E5FF]/10 transition-colors"
+                          title="Edit username, display name, or password"
                         >
                           <span className="material-icons-outlined text-sm">edit</span>
+                          Edit
                         </button>
                         <button
                           onClick={() => handleDeleteUser(u.id, u.username)}
