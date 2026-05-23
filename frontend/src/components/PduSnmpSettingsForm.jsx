@@ -3,9 +3,11 @@ import {
   SNMP_AUTH_PROTOCOLS,
   SNMP_PRIV_PROTOCOLS,
 } from '../constants/pduSettings';
+import PasswordInput from './PasswordInput';
 
 const fieldClass =
   'w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]';
+const pwFieldClass = `${fieldClass} pr-9`;
 
 /**
  * SNMP settings form matching sys_snmp.html (V1/V2c/V3, communities, v3 creds, trap).
@@ -83,9 +85,12 @@ export default function PduSnmpSettingsForm({ value, onChange, compact = false }
             </div>
             <div>
               <label className="text-[9px] text-slate-500 uppercase">Authentication Key</label>
-              <input type="password" value={v.auth_key || ''} placeholder="Min 8 chars if V3 enabled"
+              <PasswordInput
+                value={v.auth_key || ''}
+                placeholder="Min 8 chars if V3 enabled"
                 onChange={e => set({ auth_key: e.target.value })}
-                className={fieldClass} />
+                inputClassName={pwFieldClass}
+              />
             </div>
             <div>
               <label className="text-[9px] text-slate-500 uppercase">Private Protocol</label>
@@ -99,9 +104,12 @@ export default function PduSnmpSettingsForm({ value, onChange, compact = false }
             </div>
             <div className="col-span-2">
               <label className="text-[9px] text-slate-500 uppercase">Private Key</label>
-              <input type="password" value={v.priv_key || ''} placeholder="Min 8 chars if encryption enabled"
+              <PasswordInput
+                value={v.priv_key || ''}
+                placeholder="Min 8 chars if encryption enabled"
                 onChange={e => set({ priv_key: e.target.value })}
-                className={fieldClass} />
+                inputClassName={pwFieldClass}
+              />
             </div>
           </div>
           <p className="text-[9px] text-slate-600">

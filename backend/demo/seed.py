@@ -4,7 +4,15 @@ from __future__ import annotations
 import json
 import os
 
-from demo.config import DEMO_DB_PATH, DEMO_HALL_NAME, DEMO_USERNAME, DEMO_PASSWORD, demo_enabled
+from demo.config import (
+    DEMO_DB_PATH,
+    DEMO_HALL_NAME,
+    DEMO_PASSWORD,
+    DEMO_SCAN_RANGE,
+    DEMO_SUBNET,
+    DEMO_USERNAME,
+    demo_enabled,
+)
 from demo.context import activate_demo_db, deactivate_demo_db
 from demo.simulator import reset_simulator_state, start_demo_poller
 
@@ -20,7 +28,7 @@ DEFAULT_HALL_CONFIG = {
     },
     "rack": {"width": 600, "depth": 1000, "heightU": 42, "model": "Standard 42U"},
     "pdu": {"pdusPerRack": 1, "modelId": "DPDU-V3-C1308-10A", "mounting": "A/B"},
-    "ipPlanning": {"subnet": "10.99.1.0/28", "assignmentStrategy": "sequential"},
+    "ipPlanning": {"subnet": DEMO_SUBNET, "assignmentStrategy": "sequential"},
 }
 
 

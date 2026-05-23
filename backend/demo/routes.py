@@ -6,6 +6,7 @@ import re
 from flask import jsonify, request, g
 
 from auth import require_auth
+from demo.config import DEMO_SCAN_RANGE, DEMO_SUBNET
 from demo.context import bind_request_context, is_demo_session
 from demo.seed import seed_demo_hall, setup_demo_environment
 from demo.simulator import (
@@ -54,10 +55,12 @@ def register_demo_routes(app):
             return jsonify({"demo_mode": False})
         return jsonify({
             "demo_mode": True,
-            "scan_subnet": "10.99.1.0/28",
+            "scan_subnet": DEMO_SCAN_RANGE,
+            "scan_subnet_cidr": DEMO_SUBNET,
             "factory_ip": "192.168.0.163",
+            "pdu_ips": [f"10.99.1.{206 + i}" for i in range(8)],
             "pdu_count": 8,
-            "hint": "Use Batch scan on 10.99.1.0/28 or HTTP scan for full demo flow",
+            "hint": f"Use Batch scan on {DEMO_SCAN_RANGE} (or {DEMO_SUBNET}). Reset demo cage first if PDUs were already commissioned.",
         })
 
 
@@ -67,11 +70,11 @@ def _try_intercept():
 
     if method == "POST" and path == "/api/network/scan":
         data = request.get_json(force=True) if request.data else {}
-        return jsonify(scan_snmp(data.get("subnet", "10.99.1.0/28"), data.get("community", "private")))
+        return jsonify(scan_snmp(data.get("subnet", DEMO_SCAN_RANGE), data.get("community", "private")))
 
     if method == "POST" and path == "/api/network/scan/http":
         data = request.get_json(force=True) if request.data else {}
-        return jsonify(scan_http(data.get("subnet", "10.99.1.0/28")))
+        return jsonify(scan_http(data.get("subnet", DEMO_SCAN_RANGE)))
 
     if method == "POST" and path == "/api/network/scan/factory-default":
         data = request.get_json(force=True) if request.data else {}

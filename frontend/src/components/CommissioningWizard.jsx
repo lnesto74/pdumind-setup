@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import PduSnmpSettingsForm from './PduSnmpSettingsForm';
 import PduNtpSettingsForm from './PduNtpSettingsForm';
 import PduWebAccessSettingsForm from './PduWebAccessSettingsForm';
+import PasswordInput from './PasswordInput';
 import {
   DEFAULT_SNMP_TEMPLATE,
   DEFAULT_NTP_TEMPLATE,
@@ -12,6 +13,13 @@ import {
 } from '../constants/pduSettings';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
+
+const wizardPwClass =
+  'bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF] pr-9';
+const repairPwClass =
+  'w-full bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF] pr-9';
+const batchPwClass =
+  'w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF] pr-9';
 
 const STEPS = [
   { id: 'scan', label: 'Detect PDU', icon: 'wifi_find' },
@@ -145,6 +153,23 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
   const [probeResults, setProbeResults] = useState({}); // ip -> probe report
 
   const currentStep = STEPS[step];
+
+  // Demo account: pre-fill batch scan range and SNMP community
+  useEffect(() => {
+    const token = localStorage.getItem('pdumind_token');
+    if (!token) return;
+    fetch(`${API_BASE}/api/demo/status`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data?.demo_mode) return;
+        if (data.scan_subnet) setSubnet(data.scan_subnet);
+        setCommunity('private');
+        setScanMode('batch');
+      })
+      .catch(() => {});
+  }, []);
 
   // Fetch data when entering step 1 (Configure)
   useEffect(() => {
@@ -1243,10 +1268,11 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                       className="bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
                       placeholder="Username"
                     />
-                    <input
-                      type="password" value={remotePass}
+                    <PasswordInput
+                      value={remotePass}
                       onChange={e => setRemotePass(e.target.value)}
-                      className="bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
+                      className="w-full"
+                      inputClassName={wizardPwClass}
                       placeholder="Password"
                     />
                   </div>
@@ -1303,11 +1329,10 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     </div>
                     <div>
                       <label className="text-[9px] text-slate-500 uppercase">Password (must work in Chrome now)</label>
-                      <input
-                        type="password"
+                      <PasswordInput
                         value={repairPass}
                         onChange={e => setRepairPass(e.target.value)}
-                        className="w-full bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
+                        inputClassName={repairPwClass}
                         placeholder="admin"
                       />
                     </div>
@@ -1722,17 +1747,21 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         <div className="grid grid-cols-2 gap-2">
                           <div>
                             <label className="text-[9px] text-slate-500 uppercase">Current PDU Password</label>
-                            <input type="password" value={batchTemplate.current_credentials.password}
+                            <PasswordInput
+                              value={batchTemplate.current_credentials.password}
                               onChange={e => setBatchTemplate(p => ({ ...p, current_credentials: { ...p.current_credentials, password: e.target.value } }))}
-                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
-                              placeholder="Current admin password" />
+                              inputClassName={batchPwClass}
+                              placeholder="Current admin password"
+                            />
                           </div>
                           <div>
                             <label className="text-[9px] text-slate-500 uppercase">New Admin Password</label>
-                            <input type="password" value={batchTemplate.users.admin_password}
+                            <PasswordInput
+                              value={batchTemplate.users.admin_password}
                               onChange={e => setBatchTemplate(p => ({ ...p, users: { ...p.users, admin_password: e.target.value } }))}
-                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
-                              placeholder="Leave blank to keep current" />
+                              inputClassName={batchPwClass}
+                              placeholder="Leave blank to keep current"
+                            />
                           </div>
                         </div>
                       </div>
@@ -1793,11 +1822,11 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         {Object.entries(batchProgress.results || {}).map(([key, r]) => (
                           <div key={key} className={`p-2 rounded text-xs flex items-center gap-2 ${
                             r.step === 'done' ? 'bg-emerald-500/10 text-emerald-400' :
-                            r.step === 'error' || r.step === 'reboot_timeout' ? 'bg-red-500/10 text-red-400' :
+                            r.step === 'error' || r.step === 'reboot_timeout' || r.step === 'snmp_failed' ? 'bg-red-500/10 text-red-400' :
                             'bg-amber-500/10 text-amber-300'
                           }`}>
                             <span className="material-icons-outlined text-sm">
-                              {r.step === 'done' ? 'check_circle' : r.step === 'error' || r.step === 'reboot_timeout' ? 'error' : 'sync'}
+                              {r.step === 'done' ? 'check_circle' : r.step === 'error' || r.step === 'reboot_timeout' || r.step === 'snmp_failed' ? 'error' : 'sync'}
                             </span>
                             <span className="font-mono">{r.ip}</span>
                             {r.new_ip && r.new_ip !== r.ip && <span className="text-slate-500">→ {r.new_ip}</span>}
@@ -1843,11 +1872,11 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                             </div>
                             {r.error && <p className="text-[10px] text-red-400 mt-1">{r.error}</p>}
                             {r.sections && Object.keys(r.sections).length > 0 && (
-                              <div className="flex gap-1 mt-1.5">
+                              <div className="flex flex-wrap gap-1 mt-1.5">
                                 {Object.entries(r.sections).map(([sec, res]) => (
-                                  <span key={sec} className={`text-[9px] px-1.5 py-0.5 rounded ${
+                                  <span key={sec} title={res.error || ''} className={`text-[9px] px-1.5 py-0.5 rounded ${
                                     res.success ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
-                                  }`}>{sec}</span>
+                                  }`}>{sec}{res.success ? '' : ' ✗'}</span>
                                 ))}
                               </div>
                             )}

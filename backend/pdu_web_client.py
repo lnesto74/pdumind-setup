@@ -419,40 +419,98 @@ class PDUWebClient:
         encrypt_protocol: str | None = None,
         priv_key: str | None = None,
         trap_ip: str | None = None,
+        *,
+        verify: bool = True,
     ) -> bool:
         with self._lock:
             cur = self.get_snmp_config()
             csrf = cur["csrf_token"]
 
-            def _snmp_checkbox_val(new, cur_val):
-                # HTML checkboxes: checked => field present (value "on"); unchecked => omitted.
-                enabled = cur_val if new is None else bool(new)
-                return "on" if enabled else None
-
             def _field(new, cur_val):
                 return cur_val if new is None else new
+
+            explicit_versions = (
+                snmpv1 is not None or snmpv2 is not None or snmpv3 is not None
+            )
 
             post_data: Dict[str, Any] = {
                 "switch_netset_csrftoken2": csrf,
                 "SNMPStatu_Community_Read": _field(read_community, cur["community_read"]),
                 "SNMPStatu_Community_Write": _field(write_community, cur["community_write"]),
-                "SNMPStatu_User_Name": _field(snmpv3_username, cur["snmpv3_username"]),
-                "SNMPStatu_VerifyProtocol": _field(verify_protocol, cur["verify_protocol"]),
-                "SNMPStatu_AUTH_KEY": _field(auth_key, cur["auth_key"]),
-                "SNMPStatu_EncrypyProtocol": _field(encrypt_protocol, cur["encrypt_protocol"]),
-                "SNMPStatu_PRIV_KEY": _field(priv_key, cur["priv_key"]),
                 "SNMPStatu_TrapManageIP1": _field(trap_ip, cur["trap_ip"]),
             }
-            for field, val in (
-                ("SNMPStatu_Ver1", _snmp_checkbox_val(snmpv1, cur["snmpv1_enabled"])),
-                ("SNMPStatu_Ver2", _snmp_checkbox_val(snmpv2, cur["snmpv2_enabled"])),
-                ("SNMPStatu_Ver3", _snmp_checkbox_val(snmpv3, cur["snmpv3_enabled"])),
-            ):
-                if val is not None:
-                    post_data[field] = val
+
+            # When any version flag is supplied, post all three explicitly —
+            # omitting unchecked boxes leaves old firmware versions enabled.
+            if explicit_versions:
+                v1 = cur["snmpv1_enabled"] if snmpv1 is None else bool(snmpv1)
+                v2 = cur["snmpv2_enabled"] if snmpv2 is None else bool(snmpv2)
+                v3 = cur["snmpv3_enabled"] if snmpv3 is None else bool(snmpv3)
+                for field, enabled in (
+                    ("SNMPStatu_Ver1", v1),
+                    ("SNMPStatu_Ver2", v2),
+                    ("SNMPStatu_Ver3", v3),
+                ):
+                    if enabled:
+                        post_data[field] = "on"
+            else:
+                for field, val in (
+                    ("SNMPStatu_Ver1", cur["snmpv1_enabled"]),
+                    ("SNMPStatu_Ver2", cur["snmpv2_enabled"]),
+                    ("SNMPStatu_Ver3", cur["snmpv3_enabled"]),
+                ):
+                    if val:
+                        post_data[field] = "on"
+
+            v3_active = bool(
+                post_data.get("SNMPStatu_Ver3")
+                or (not explicit_versions and cur["snmpv3_enabled"])
+            )
+            if v3_active:
+                post_data["SNMPStatu_User_Name"] = _field(snmpv3_username, cur["snmpv3_username"])
+                post_data["SNMPStatu_VerifyProtocol"] = _field(verify_protocol, cur["verify_protocol"])
+                post_data["SNMPStatu_EncrypyProtocol"] = _field(encrypt_protocol, cur["encrypt_protocol"])
+                auth_val = auth_key if auth_key is not None else cur["auth_key"]
+                priv_val = priv_key if priv_key is not None else cur["priv_key"]
+                if auth_val:
+                    post_data["SNMPStatu_AUTH_KEY"] = auth_val
+                if priv_val:
+                    post_data["SNMPStatu_PRIV_KEY"] = priv_val
 
             resp = self._post_cgi("snmp_set.cgi", post_data)
-            return "404" not in resp
+            if "404" in resp:
+                return False
+
+            if not verify:
+                return True
+
+            after = self.get_snmp_config()
+            mismatches: List[str] = []
+            if read_community is not None and after.get("community_read") != read_community:
+                mismatches.append(
+                    f"read community {after.get('community_read')!r} != {read_community!r}"
+                )
+            if write_community is not None and after.get("community_write") != write_community:
+                mismatches.append(
+                    f"write community {after.get('community_write')!r} != {write_community!r}"
+                )
+            if explicit_versions:
+                expected = (
+                    bool(post_data.get("SNMPStatu_Ver1")),
+                    bool(post_data.get("SNMPStatu_Ver2")),
+                    bool(post_data.get("SNMPStatu_Ver3")),
+                )
+                actual = (
+                    after.get("snmpv1_enabled"),
+                    after.get("snmpv2_enabled"),
+                    after.get("snmpv3_enabled"),
+                )
+                if expected != actual:
+                    mismatches.append(f"SNMP versions {actual} != {expected}")
+            if mismatches:
+                print(f"[set_snmp] verify failed on {self.host}: {'; '.join(mismatches)}")
+                return False
+            return True
 
     # ------------------------------------------------------------------
     # Time config
@@ -517,8 +575,8 @@ class PDUWebClient:
             "read_community": snmp.get("read_community") or snmp.get("community_read"),
             "write_community": snmp.get("write_community") or snmp.get("community_write"),
             "snmpv1": bool(snmp.get("snmpv1", snmp.get("snmpv1_enabled", False))),
-            "snmpv2": bool(snmp.get("snmpv2", snmp.get("snmpv2_enabled", False))),
-            "snmpv3": bool(snmp.get("snmpv3", snmp.get("snmpv3_enabled", True))),
+            "snmpv2": bool(snmp.get("snmpv2", snmp.get("snmpv2_enabled", True))),
+            "snmpv3": bool(snmp.get("snmpv3", snmp.get("snmpv3_enabled", False))),
             "snmpv3_username": snmp.get("snmpv3_username"),
             "verify_protocol": snmp.get("verify_protocol"),
             "auth_key": PDUWebClient._optional_secret(snmp.get("auth_key")),
@@ -526,6 +584,12 @@ class PDUWebClient:
             "priv_key": PDUWebClient._optional_secret(snmp.get("priv_key")),
             "trap_ip": snmp.get("trap_ip", ""),
         }
+        if not prepared["snmpv3"]:
+            prepared["snmpv3_username"] = None
+            prepared["verify_protocol"] = None
+            prepared["auth_key"] = None
+            prepared["encrypt_protocol"] = None
+            prepared["priv_key"] = None
         return prepared
 
     @staticmethod
@@ -1068,7 +1132,20 @@ class PDUWebClient:
             except Exception as e:
                 report["system"] = {"success": False, "error": str(e)}
 
-        # 3. User credentials — only push when the operator actually set a value.
+        # 3. SNMP — apply before credential changes; verify read-back on device.
+        snmp = template.get("snmp", {})
+        if snmp:
+            try:
+                snmp_kwargs = self.prepare_snmp_kwargs(snmp)
+                ok = self.set_snmp(**snmp_kwargs)
+                detail: Dict[str, Any] = {"success": ok}
+                if not ok:
+                    detail["error"] = "SNMP settings were not confirmed on the PDU after write"
+                report["snmp"] = detail
+            except Exception as e:
+                report["snmp"] = {"success": False, "error": str(e)}
+
+        # 4. User credentials — only push when the operator actually set a value.
         users = template.get("users") or {}
         admin_pw = (users.get("admin_password") or "").strip()
         admin_user = (users.get("admin_username") or "").strip()
@@ -1091,15 +1168,6 @@ class PDUWebClient:
                 report["users"] = {"success": ok}
             except Exception as e:
                 report["users"] = {"success": False, "error": str(e)}
-
-        # 4. SNMP — always push explicit version flags + trap (empty clears trap IP).
-        snmp = template.get("snmp", {})
-        if snmp:
-            try:
-                ok = self.set_snmp(**self.prepare_snmp_kwargs(snmp))
-                report["snmp"] = {"success": ok}
-            except Exception as e:
-                report["snmp"] = {"success": False, "error": str(e)}
 
         # 5. NTP / Time — primary SNTP server only (PDU has one field).
         ntp = template.get("ntp", {})

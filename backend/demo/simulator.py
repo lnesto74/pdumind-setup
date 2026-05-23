@@ -14,6 +14,7 @@ from demo.config import (
     DEMO_HALL_NAME,
     DEMO_IPS,
     DEMO_MAC_PREFIX,
+    DEMO_SCAN_RANGE,
     DEMO_SUBNET,
 )
 from demo.context import activate_demo_db
@@ -62,31 +63,43 @@ def reset_simulator_state() -> None:
     _init_devices()
 
 
+def _demo_ip_set() -> set:
+    return {ipaddress.IPv4Address(ip) for ip in DEMO_IPS}
+
+
+def _scan_range_contains_demo_ip(subnet: str) -> bool:
+    """True when the user's scan range includes at least one simulated PDU IP."""
+    demo_ips = _demo_ip_set()
+    if "-" in subnet and "/" not in subnet:
+        parts = subnet.split("-")
+        start = ipaddress.IPv4Address(parts[0].strip())
+        end_s = parts[1].strip()
+        if "." in end_s:
+            end = ipaddress.IPv4Address(end_s)
+        else:
+            base = parts[0].strip().split(".")
+            end = ipaddress.IPv4Address(".".join(base[:3] + [end_s]))
+        scan_range = range(int(start), int(end) + 1)
+        return any(int(ip) in scan_range for ip in demo_ips)
+    if "/" in subnet:
+        net = ipaddress.ip_network(subnet, strict=False)
+        return any(ip in net for ip in demo_ips)
+    return ipaddress.IPv4Address(subnet.strip()) in demo_ips
+
+
 def _subnet_overlaps_demo(subnet: str) -> bool:
     try:
         if DEMO_FACTORY_IP in subnet:
             return True
-        if "-" in subnet and "/" not in subnet:
-            parts = subnet.split("-")
-            start = ipaddress.IPv4Address(parts[0].strip())
-            end_s = parts[1].strip()
-            if "." in end_s:
-                end = ipaddress.IPv4Address(end_s)
-            else:
-                base = parts[0].strip().split(".")
-                end = ipaddress.IPv4Address(".".join(base[:3] + [end_s]))
-            demo_net = ipaddress.ip_network(DEMO_SUBNET, strict=False)
-            for ip_int in range(int(start), int(end) + 1):
-                if ipaddress.IPv4Address(ip_int) in demo_net:
-                    return True
-            return False
+        if _scan_range_contains_demo_ip(subnet):
+            return True
         if "/" in subnet:
             net = ipaddress.ip_network(subnet, strict=False)
             demo_net = ipaddress.ip_network(DEMO_SUBNET, strict=False)
             return net.overlaps(demo_net)
         return ipaddress.IPv4Address(subnet.strip()) in ipaddress.ip_network(DEMO_SUBNET, strict=False)
     except Exception:
-        return subnet.strip() in DEMO_IPS or DEMO_SUBNET in subnet
+        return subnet.strip() in DEMO_IPS or DEMO_SUBNET in subnet or DEMO_SCAN_RANGE in subnet
 
 
 def scan_snmp(subnet: str, community: str = "private") -> Dict[str, Any]:

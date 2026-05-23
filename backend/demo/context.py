@@ -53,8 +53,14 @@ def is_demo_session() -> bool:
 
 
 def _is_localhost_viewer_request() -> bool:
-    """Allow /view on this Mac to read demo DB without login (local demos only)."""
+    """Allow /view on this Mac to read demo DB without login (local demos only).
+
+    Must NOT apply to authenticated coordinators — they manage real halls in the
+    main DB; routing their /state requests to the demo DB causes 404s when switching halls.
+    """
     if not demo_enabled() or request.method != "GET":
+        return False
+    if _token_payload() is not None:
         return False
     host = (request.host or "").split(":")[0]
     if host not in ("localhost", "127.0.0.1"):
@@ -62,7 +68,9 @@ def _is_localhost_viewer_request() -> bool:
     path = request.path
     if path.endswith("/fleet-snapshot"):
         return True
-    if path.startswith("/api/halls") and (path.endswith("/state") or path == "/api/halls/default"):
+    if path.startswith("/api/halls") and (
+        path.endswith("/state") or path in ("/api/halls/default", "/api/halls")
+    ):
         return True
     if path.startswith("/api/pdus/by-ip/") and "/live" in path:
         return True

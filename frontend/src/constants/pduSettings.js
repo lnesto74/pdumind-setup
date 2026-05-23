@@ -135,8 +135,8 @@ export const DEFAULT_SNMP_TEMPLATE = {
   read_community: 'public',
   write_community: 'private',
   snmpv1: false,
-  snmpv2: false,
-  snmpv3: true,
+  snmpv2: true,
+  snmpv3: false,
   snmpv3_username: 'admin',
   verify_protocol: '2',   // SHA
   auth_key: '',

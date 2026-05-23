@@ -12,8 +12,10 @@ DEMO_PASSWORD = os.getenv("DEMO_PASSWORD", "demo")
 DEMO_HALL_NAME = "Demo Data Hall — Agoda Cage"
 
 # Simulated PDU cage (mirrors Agoda 10.106.76.206–213 but on private demo subnet)
-DEMO_SUBNET = "10.99.1.0/28"
 DEMO_IPS = [f"10.99.1.{206 + i}" for i in range(8)]
+# /27 covers 10.99.1.192–223 (includes all 8 demo PDUs at .206–.213)
+DEMO_SUBNET = "10.99.1.192/27"
+DEMO_SCAN_RANGE = "10.99.1.206-213"
 DEMO_FACTORY_IP = "192.168.0.163"
 DEMO_MAC_PREFIX = "18:D7:93:50:88"
 

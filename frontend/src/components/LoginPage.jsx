@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import PasswordInput from './PasswordInput';
 
 const API_BASE = '';
 
@@ -7,12 +8,19 @@ export default function LoginPage({ onLogin, version }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [showChangePw, setShowChangePw] = useState(false);
+  const [showSetup, setShowSetup] = useState(false);
+  const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [changePwError, setChangePwError] = useState('');
+  const [setupError, setSetupError] = useState('');
   const [tempToken, setTempToken] = useState('');
   const [tempUser, setTempUser] = useState(null);
+
+  useEffect(() => {
+    if (tempUser?.username) {
+      setNewUsername(tempUser.username);
+    }
+  }, [tempUser]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -33,7 +41,8 @@ export default function LoginPage({ onLogin, version }) {
       if (data.user.must_change_pw) {
         setTempToken(data.token);
         setTempUser(data.user);
-        setShowChangePw(true);
+        setNewUsername(data.user.username);
+        setShowSetup(true);
         setLoading(false);
         return;
       }
@@ -44,48 +53,57 @@ export default function LoginPage({ onLogin, version }) {
     setLoading(false);
   };
 
-  const handleChangePassword = async (e) => {
+  const handleCompleteSetup = async (e) => {
     e.preventDefault();
-    setChangePwError('');
+    setSetupError('');
     if (newPassword !== confirmPassword) {
-      setChangePwError('Passwords do not match');
+      setSetupError('Passwords do not match');
       return;
     }
     if (newPassword.length < 4) {
-      setChangePwError('Password must be at least 4 characters');
+      setSetupError('Password must be at least 4 characters');
+      return;
+    }
+    if (!newUsername.trim()) {
+      setSetupError('Username is required');
       return;
     }
     try {
-      const res = await fetch(`${API_BASE}/api/auth/change-password`, {
+      const res = await fetch(`${API_BASE}/api/auth/complete-setup`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${tempToken}`,
         },
-        body: JSON.stringify({ current_password: password, new_password: newPassword }),
+        body: JSON.stringify({
+          current_password: password,
+          new_username: newUsername.trim(),
+          new_password: newPassword,
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
-        setChangePwError(data.error || 'Failed to change password');
+        setSetupError(data.error || 'Failed to complete setup');
         return;
       }
-      onLogin({ ...tempUser, must_change_pw: false }, tempToken);
+      onLogin(data.user, data.token);
     } catch {
-      setChangePwError('Cannot reach server');
+      setSetupError('Cannot reach server');
     }
   };
+
+  const inputClass = 'w-full px-3 py-2.5 rounded-lg bg-[#0B1120] border border-[#233544] text-white text-sm focus:border-[#00E5FF] focus:outline-none transition-colors';
+  const pwInputClass = `${inputClass} pr-9`;
 
   return (
     <div className="min-h-screen bg-[#0B1120] flex flex-col items-center justify-center px-4">
       <div className="w-full max-w-sm">
-        {/* Logo */}
         <div className="text-center mb-10">
           <img src="/logo/pdumind-logo-2.png" alt="PDUMind" className="h-12 mx-auto mb-6" />
           <p className="text-slate-500 text-xs tracking-widest uppercase">Power Distribution Intelligence</p>
         </div>
 
-        {!showChangePw ? (
-          /* Login Form */
+        {!showSetup ? (
           <form onSubmit={handleLogin} className="space-y-5">
             <div className="p-6 rounded-xl bg-[#0f172a] border border-[#233544]">
               <h2 className="text-sm font-bold text-white mb-5 flex items-center gap-2">
@@ -107,7 +125,7 @@ export default function LoginPage({ onLogin, version }) {
                     type="text"
                     value={username}
                     onChange={e => setUsername(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-lg bg-[#0B1120] border border-[#233544] text-white text-sm focus:border-[#00E5FF] focus:outline-none transition-colors"
+                    className={inputClass}
                     placeholder="admin"
                     autoFocus
                     required
@@ -115,12 +133,11 @@ export default function LoginPage({ onLogin, version }) {
                 </div>
                 <div>
                   <label className="block text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">Password</label>
-                  <input
-                    type="password"
+                  <PasswordInput
                     value={password}
                     onChange={e => setPassword(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-lg bg-[#0B1120] border border-[#233544] text-white text-sm focus:border-[#00E5FF] focus:outline-none transition-colors"
                     placeholder="••••••"
+                    inputClassName={pwInputClass}
                     required
                   />
                 </div>
@@ -136,45 +153,54 @@ export default function LoginPage({ onLogin, version }) {
             </div>
           </form>
         ) : (
-          /* Change Password Form */
-          <form onSubmit={handleChangePassword} className="space-y-5">
+          <form onSubmit={handleCompleteSetup} className="space-y-5">
             <div className="p-6 rounded-xl bg-[#0f172a] border border-[#233544]">
               <h2 className="text-sm font-bold text-white mb-2 flex items-center gap-2">
-                <span className="material-icons-outlined text-amber-400 text-lg">vpn_key</span>
-                Change Password
+                <span className="material-icons-outlined text-amber-400 text-lg">manage_accounts</span>
+                Account Setup
               </h2>
               <p className="text-xs text-slate-500 mb-5">
-                You must set a new password before continuing.
+                Choose your username and set a new password before continuing.
               </p>
 
-              {changePwError && (
+              {setupError && (
                 <div className="mb-4 px-3 py-2 rounded-lg bg-red-500/15 border border-red-500/30 text-red-400 text-xs flex items-center gap-2">
                   <span className="material-icons-outlined text-sm">error</span>
-                  {changePwError}
+                  {setupError}
                 </div>
               )}
 
               <div className="space-y-4">
                 <div>
-                  <label className="block text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">New Password</label>
+                  <label className="block text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">Username</label>
                   <input
-                    type="password"
+                    type="text"
+                    value={newUsername}
+                    onChange={e => setNewUsername(e.target.value)}
+                    className={inputClass}
+                    placeholder="Choose a username"
+                    autoFocus
+                    required
+                  />
+                  <p className="text-[10px] text-slate-600 mt-1">3–32 characters: letters, numbers, . _ -</p>
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">New Password</label>
+                  <PasswordInput
                     value={newPassword}
                     onChange={e => setNewPassword(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-lg bg-[#0B1120] border border-[#233544] text-white text-sm focus:border-[#00E5FF] focus:outline-none transition-colors"
                     placeholder="••••••"
-                    autoFocus
+                    inputClassName={pwInputClass}
                     required
                   />
                 </div>
                 <div>
                   <label className="block text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">Confirm Password</label>
-                  <input
-                    type="password"
+                  <PasswordInput
                     value={confirmPassword}
                     onChange={e => setConfirmPassword(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-lg bg-[#0B1120] border border-[#233544] text-white text-sm focus:border-[#00E5FF] focus:outline-none transition-colors"
                     placeholder="••••••"
+                    inputClassName={pwInputClass}
                     required
                   />
                 </div>
@@ -184,14 +210,13 @@ export default function LoginPage({ onLogin, version }) {
                 type="submit"
                 className="w-full mt-5 py-2.5 rounded-lg bg-[#00E5FF] text-[#0B1120] font-bold text-sm uppercase tracking-wider hover:bg-[#00d4eb] transition-colors"
               >
-                Set Password & Continue
+                Save & Continue
               </button>
             </div>
           </form>
         )}
       </div>
 
-      {/* Footer */}
       <div className="mt-10 text-center">
         <p className="text-[10px] text-slate-700 font-mono">Powered by Aility Pte Ltd</p>
         <p className="text-[10px] text-slate-700 font-mono mt-0.5">PDUMind {version}</p>

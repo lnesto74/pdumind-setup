@@ -3365,7 +3365,7 @@ def pdu_admin_set_snmp(host: str):
         ok = client.set_snmp(**PDUWebClient.prepare_snmp_kwargs(data))
         if ok:
             return jsonify({"success": True, "message": "SNMP settings applied"})
-        return jsonify({"error": "Failed to apply SNMP settings"}), 500
+        return jsonify({"error": "Failed to apply SNMP settings — values on PDU did not match request"}), 500
     except Exception as e:
         import traceback; traceback.print_exc()
         return jsonify({"error": str(e)}), 500
@@ -3850,6 +3850,17 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
 
                     report = client.apply_batch_template(pdu_template, reboot_after=False)
                     status["sections"] = report
+                    snmp_result = report.get("snmp") or {}
+                    if pdu_template.get("snmp") and not snmp_result.get("success", True):
+                        status["step"] = "snmp_failed"
+                        status["error"] = (
+                            snmp_result.get("error")
+                            or "SNMP settings were not applied on the PDU — check version flags and community strings"
+                        )
+                        with _batch_lock:
+                            _BATCH_JOBS[job_id]["results"][pdu_key] = status
+                            _BATCH_JOBS[job_id]["completed"] += 1
+                        continue
                     reboot_ok = False
                     if needs_reboot:
                         reboot_ok = _trigger_pdu_reboot(client, current_ip)
