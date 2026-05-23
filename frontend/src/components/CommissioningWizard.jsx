@@ -125,7 +125,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
   const [batchTemplate, setBatchTemplate] = useState({
     network: { ip_start: '', mask: '255.255.255.0', gateway: '', dns1: '', dns2: '' },
     system: { device_name: '', router_hostname: 'PDU-{seq}', sync_device_name: true },
-    users: { admin_username: 'admin', admin_password: '' },
+    users: { admin_username: '', admin_password: '' },
     snmp: { ...DEFAULT_SNMP_TEMPLATE },
     ntp: { ...DEFAULT_NTP_TEMPLATE },
     web_access: { ...DEFAULT_WEB_ACCESS_TEMPLATE },
@@ -1742,16 +1742,42 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                       {/* Credentials */}
                       <div className="p-3 rounded-lg bg-[#0B1120] border border-[#233544]">
                         <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider mb-2 flex items-center gap-1">
-                          <span className="material-icons-outlined text-xs">manage_accounts</span> Credentials
+                          <span className="material-icons-outlined text-xs">manage_accounts</span> PDU Web Login
+                        </p>
+                        <p className="text-[9px] text-slate-600 mb-2">
+                          Current credentials are used to connect during batch deploy. New values are written to each PDU.
                         </p>
                         <div className="grid grid-cols-2 gap-2">
                           <div>
-                            <label className="text-[9px] text-slate-500 uppercase">Current PDU Password</label>
+                            <label className="text-[9px] text-slate-500 uppercase">Current Username</label>
+                            <input
+                              type="text"
+                              value={batchTemplate.current_credentials.username}
+                              onChange={e => setBatchTemplate(p => ({
+                                ...p,
+                                current_credentials: { ...p.current_credentials, username: e.target.value },
+                              }))}
+                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
+                              placeholder="admin"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[9px] text-slate-500 uppercase">Current Password</label>
                             <PasswordInput
                               value={batchTemplate.current_credentials.password}
                               onChange={e => setBatchTemplate(p => ({ ...p, current_credentials: { ...p.current_credentials, password: e.target.value } }))}
                               inputClassName={batchPwClass}
-                              placeholder="Current admin password"
+                              placeholder="Password on PDU now"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[9px] text-slate-500 uppercase">New Admin Username</label>
+                            <input
+                              type="text"
+                              value={batchTemplate.users.admin_username}
+                              onChange={e => setBatchTemplate(p => ({ ...p, users: { ...p.users, admin_username: e.target.value } }))}
+                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
+                              placeholder="Leave blank to keep current"
                             />
                           </div>
                           <div>
@@ -2754,9 +2780,14 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                 </p>
               </div>
               <div className="p-2 rounded bg-[#0B1120] border border-[#1a2638]">
-                <p className="text-slate-500 text-[9px] uppercase">Admin Password</p>
-                <p className="font-mono text-white">
-                  {batchTemplate.users?.admin_password ? '••••••••  (will be changed)' : 'Unchanged'}
+                <p className="text-slate-500 text-[9px] uppercase">PDU Login</p>
+                <p className="font-mono text-white text-[11px]">
+                  {batchTemplate.users?.admin_username &&
+                   batchTemplate.users.admin_username !== batchTemplate.current_credentials?.username
+                    ? `${batchTemplate.current_credentials?.username || 'admin'} → ${batchTemplate.users.admin_username}`
+                    : batchTemplate.current_credentials?.username || 'admin'}
+                  {' · '}
+                  {batchTemplate.users?.admin_password ? 'password will change' : 'password unchanged'}
                 </p>
               </div>
             </div>
