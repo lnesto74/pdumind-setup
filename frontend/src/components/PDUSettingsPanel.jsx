@@ -265,6 +265,51 @@ const PDUSettingsPanel = ({ pdu }) => {
     } catch (e) { setError(e.message); setSaving(false); }
   };
 
+  const rebootPdu = async () => {
+    if (credentialsMissing) return;
+    if (!window.confirm(`Reboot PDU at ${host}?\n\nThe device will be offline for approximately 60 seconds.`)) {
+      return;
+    }
+    setSaving(true); setError(null); setSuccess(null); setRebootStatus(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/pdu-admin/${host}/reboot`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          web_port: port,
+          username,
+          password,
+          use_https: useHttps ? 1 : 0,
+          wait: false,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        setError(data.error || 'Reboot failed');
+        setSaving(false);
+        return;
+      }
+      setRebootStatus('rebooting');
+      setSaving(false);
+      const deadline = Date.now() + 90_000;
+      const poll = async () => {
+        while (Date.now() < deadline) {
+          await new Promise(r => setTimeout(r, 5000));
+          try {
+            const pr = await fetch(`${API_BASE}/api/pdu-admin/${host}/ping?${queryParams}`);
+            const pd = await pr.json();
+            if (pd.online) { setRebootStatus('online'); fetchSettings(); return; }
+          } catch { /* still offline */ }
+        }
+        setRebootStatus('failed');
+      };
+      poll();
+    } catch (e) {
+      setError(e.message);
+      setSaving(false);
+    }
+  };
+
   const saveSnmp = async () => {
     setSaving(true); setError(null); setSuccess(null);
     try {
@@ -434,11 +479,23 @@ const PDUSettingsPanel = ({ pdu }) => {
                     <span className="material-icons-outlined text-[#00E5FF] text-sm">lan</span>
                     IPv4 Configuration
                   </h3>
-                  <button onClick={saveNetwork} disabled={saving || rebootStatus === 'rebooting'}
-                    className="px-4 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded-lg text-xs hover:bg-emerald-500/30 disabled:opacity-50 transition-all flex items-center gap-1.5">
-                    {saving ? <span className="material-icons-outlined text-sm animate-spin">sync</span> : <span className="material-icons-outlined text-sm">save</span>}
-                    {rebootStatus === 'rebooting' ? 'Rebooting...' : 'Apply & Reboot'}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={rebootPdu}
+                      disabled={saving || rebootStatus === 'rebooting' || credentialsMissing}
+                      title="Reboot without changing network settings"
+                      className="px-3 py-1.5 bg-amber-500/15 border border-amber-500/40 text-amber-300 rounded-lg text-xs hover:bg-amber-500/25 disabled:opacity-50 transition-all flex items-center gap-1.5"
+                    >
+                      <span className="material-icons-outlined text-sm">restart_alt</span>
+                      Reboot PDU
+                    </button>
+                    <button onClick={saveNetwork} disabled={saving || rebootStatus === 'rebooting' || credentialsMissing}
+                      className="px-4 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded-lg text-xs hover:bg-emerald-500/30 disabled:opacity-50 transition-all flex items-center gap-1.5">
+                      {saving ? <span className="material-icons-outlined text-sm animate-spin">sync</span> : <span className="material-icons-outlined text-sm">save</span>}
+                      {rebootStatus === 'rebooting' ? 'Rebooting...' : 'Apply & Reboot'}
+                    </button>
+                  </div>
                 </div>
 
                 {rebootStatus && (

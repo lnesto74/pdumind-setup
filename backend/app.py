@@ -3264,6 +3264,83 @@ def _trigger_pdu_reboot(client: PDUWebClient, host: str = "") -> bool:
     return ok
 
 
+def _reboot_pdu_via_web(pdu: Dict[str, Any], *, wait: bool = False) -> Dict[str, Any]:
+    """Log in to a PDU web admin and trigger reboot.cgi (no config changes)."""
+    ip = pdu["ip_address"]
+    host = pdu.get("remote_host") or ip
+    label = pdu.get("label") or pdu.get("hostname") or ip
+
+    db_analysis = _analyze_pdu_db_credentials(pdu)
+    if not db_analysis["credentials_complete"]:
+        return {
+            "success": False,
+            "skipped": True,
+            "id": pdu.get("id"),
+            "ip": ip,
+            "label": label,
+            "code": "MISSING_CREDENTIALS",
+            "error": "Missing web credentials in database — run Commissioning → Repair first",
+        }
+
+    if _is_pdu_session_held(host):
+        return {
+            "success": False,
+            "id": pdu.get("id"),
+            "ip": ip,
+            "label": label,
+            "code": "SESSION_BUSY",
+            "error": "PDU web session busy — close PDU Settings and any PDU browser tabs",
+        }
+
+    _evict_all_pdu_clients_for_host(host)
+
+    try:
+        whost, port, username, password, use_https = _web_admin_creds_from_pdu(pdu)
+        client = _get_pdu_client(whost, port, username, password, use_https=use_https)
+        if not _trigger_pdu_reboot(client, whost):
+            return {
+                "success": False,
+                "id": pdu.get("id"),
+                "ip": ip,
+                "label": label,
+                "code": "REBOOT_FAILED",
+                "error": "reboot.cgi did not respond — check web login credentials",
+            }
+
+        online = None
+        if wait:
+            online = client.wait_online(timeout=90)
+
+        try:
+            client.logout()
+        except Exception:
+            pass
+        _evict_pdu_client(whost, port, use_https)
+
+        msg = "Reboot triggered (~60 s offline)"
+        if wait:
+            msg = "PDU is back online" if online else "Reboot sent but PDU not yet reachable after 90 s"
+
+        print(f"[pdu-reboot] {ip} -> {msg}")
+        return {
+            "success": True,
+            "id": pdu.get("id"),
+            "ip": ip,
+            "label": label,
+            "online": online,
+            "message": msg,
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "id": pdu.get("id"),
+            "ip": ip,
+            "label": label,
+            "code": "ERROR",
+            "error": str(exc),
+        }
+
+
 @app.route("/api/pdu-admin/<host>/settings/network", methods=["POST"])
 def pdu_admin_set_network(host: str):
     """Change IPv4 settings on a PDU.  Optionally reboots the device so the
@@ -4534,6 +4611,62 @@ def update_pdu_web_credentials(pdu_id: int):
         return jsonify({"success": True, "ip_address": pdu["ip_address"]})
     except ConnectionError as e:
         return jsonify({"error": str(e)}), 401
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/halls/<int:hall_id>/pdus/bulk-reboot", methods=["POST"])
+def bulk_reboot_pdus(hall_id: int):
+    """Reboot selected PDUs via web admin reboot.cgi (same path as PDU Settings Apply & Reboot).
+
+    Body:
+      pdu_ids — list of PDU database ids (required, non-empty)
+      wait — if true, wait up to 90 s per PDU for it to come back online (default false)
+    """
+    try:
+        hall = HallRepo.get(hall_id)
+        if not hall:
+            return jsonify({"error": "Hall not found"}), 404
+
+        data = request.get_json(force=True) if request.data else {}
+        pdu_ids_raw = data.get("pdu_ids")
+        if not pdu_ids_raw:
+            return jsonify({"error": "pdu_ids is required"}), 400
+        pdu_ids = {int(x) for x in pdu_ids_raw}
+        wait = bool(data.get("wait", False))
+
+        pdus = PDURepo.get_by_hall(hall_id)
+        targets = [p for p in pdus if p["id"] in pdu_ids]
+        if not targets:
+            return jsonify({"error": "No matching PDUs in this hall"}), 400
+
+        results: List[Dict[str, Any]] = []
+        _pause_pdu_poller()
+        try:
+            for idx, pdu in enumerate(targets):
+                if idx > 0:
+                    time.sleep(2)
+                results.append(_reboot_pdu_via_web(pdu, wait=wait))
+        finally:
+            _resume_pdu_poller()
+
+        attempted = [r for r in results if not r.get("skipped")]
+        ok = sum(1 for r in attempted if r.get("success"))
+        skipped = sum(1 for r in results if r.get("skipped"))
+        failed = len(attempted) - ok
+
+        return jsonify({
+            "success": ok > 0 and failed == 0,
+            "hall_id": hall_id,
+            "hall_name": hall.get("name"),
+            "total": len(results),
+            "rebooted": ok,
+            "failed": failed,
+            "skipped": skipped,
+            "results": results,
+        })
     except Exception as e:
         import traceback
         traceback.print_exc()

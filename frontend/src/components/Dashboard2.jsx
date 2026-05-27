@@ -3,6 +3,7 @@ import api from '../api';
 import DataHallDesigner from './DataHallDesigner/DataHallDesigner';
 import CommissioningWizard from './CommissioningWizard';
 import PDUSettingsPanel from './PDUSettingsPanel';
+import PduBulkRebootModal from './PduBulkRebootModal';
 
 // API base URL
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5002';
@@ -188,6 +189,7 @@ const Dashboard2 = () => {
   
   // Commissioning wizard state
   const [showWizard, setShowWizard] = useState(false);
+  const [showBulkReboot, setShowBulkReboot] = useState(false);
   
   // PDU edit/delete state
   const [editingPduId, setEditingPduId] = useState(null);
@@ -827,6 +829,16 @@ const Dashboard2 = () => {
               <span className="material-icons-outlined text-sm">add</span>
               Commission PDU
             </button>
+            {generatedPDUs.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowBulkReboot(true)}
+                className="w-full mt-2 py-2 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 font-medium text-xs uppercase tracking-wider rounded-lg flex items-center justify-center gap-2 transition-all"
+              >
+                <span className="material-icons-outlined text-sm">restart_alt</span>
+                Reboot PDUs
+              </button>
+            )}
           </div>
 
           {/* Quick Stats */}
@@ -1881,6 +1893,16 @@ const Dashboard2 = () => {
             fetchHallState(selectedHallId);
           }}
           onClose={() => setShowWizard(false)}
+        />
+      )}
+
+      {showBulkReboot && selectedHallId && (
+        <PduBulkRebootModal
+          hallId={selectedHallId}
+          hallName={selectedHall?.name}
+          pdus={hallPDUs}
+          onClose={() => setShowBulkReboot(false)}
+          onComplete={() => fetchHallState(selectedHallId, true)}
         />
       )}
     </div>
