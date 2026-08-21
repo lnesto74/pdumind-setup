@@ -1,4 +1,4 @@
-#Requires -RunAsAdministrator
+﻿#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     PDUMind One-Click Installer for Windows
@@ -15,6 +15,7 @@ param(
 
 $ErrorActionPreference = "Continue"
 $ProgressPreference = "SilentlyContinue"
+# Installer build 20260821c -- if parse fails, this line never ran
 
 function Write-Step { param([string]$msg) Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Write-Ok   { param([string]$msg) Write-Host "    [OK] $msg" -ForegroundColor Green }
@@ -22,12 +23,13 @@ function Write-Warn { param([string]$msg) Write-Host "    [!] $msg" -ForegroundC
 function Write-Err  { param([string]$msg) Write-Host "    [X] $msg" -ForegroundColor Red }
 
 Write-Host ""
+Write-Host "  PDUMind installer 20260821c" -ForegroundColor Green
 Write-Host "  =====================================" -ForegroundColor Cyan
 Write-Host "       PDUMind Installer for Windows    " -ForegroundColor White
 Write-Host "  =====================================" -ForegroundColor Cyan
 Write-Host ""
 
-# ── 1. Check Windows version ───────────────────────────────────────────
+# -- 1. Check Windows version -------------------------------------------
 Write-Step "Checking Windows version..."
 $osVersion = [System.Environment]::OSVersion.Version
 if ($osVersion.Build -lt 18362) {
@@ -37,7 +39,7 @@ if ($osVersion.Build -lt 18362) {
 }
 Write-Ok "Windows $($osVersion.Major).$($osVersion.Minor) build $($osVersion.Build)"
 
-# ── 2. Enable WSL2 (required by Docker Desktop) ────────────────────────
+# -- 2. Enable WSL2 (required by Docker Desktop) ------------------------
 Write-Step "Ensuring WSL2 is enabled..."
 $wslFeature = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux
 if ($wslFeature.State -ne "Enabled") {
@@ -55,7 +57,7 @@ try {
     wsl --set-default-version 2 2>$null | Out-Null
 } catch {}
 
-# ── 3. Install Git if missing ──────────────────────────────────────────
+# -- 3. Install Git if missing ------------------------------------------
 Write-Step "Checking Git..."
 $gitCmd = Get-Command git -ErrorAction SilentlyContinue
 if (-not $gitCmd) {
@@ -70,7 +72,7 @@ if (-not $gitCmd) {
 }
 Write-Ok "Git $(git --version)"
 
-# ── 4. Install Docker Desktop if missing ───────────────────────────────
+# -- 4. Install Docker Desktop if missing -------------------------------
 Write-Step "Checking Docker Desktop..."
 $dockerCmd = Get-Command docker -ErrorAction SilentlyContinue
 $needsInstall = $false
@@ -119,7 +121,7 @@ if ($needsInstall) {
 
 Write-Ok "Docker $(docker --version)"
 
-# ── 5. Wait for Docker daemon to be ready ──────────────────────────────
+# -- 5. Wait for Docker daemon to be ready ------------------------------
 Write-Step "Waiting for Docker Engine to be ready..."
 $attempts = 0
 $maxAttempts = 30
@@ -144,7 +146,7 @@ if ($attempts -ge $maxAttempts) {
 }
 Write-Ok "Docker Engine is running"
 
-# ── 6. Clone or update the repository ──────────────────────────────────
+# -- 6. Clone or update the repository ----------------------------------
 Write-Step "Setting up PDUMind in $InstallDir..."
 
 if (Test-Path "$InstallDir\.git") {
@@ -168,7 +170,7 @@ if (Test-Path "$InstallDir\.git") {
     Write-Ok "Repository cloned"
 }
 
-# ── 7. Create data directories ─────────────────────────────────────────
+# -- 7. Create data directories -----------------------------------------
 Write-Step "Preparing data directories..."
 $dirs = @("$InstallDir\data", "$InstallDir\data\mibs", "$InstallDir\data\models", "$InstallDir\backend\data", "$InstallDir\backend\data\mibs", "$InstallDir\backend\data\models")
 foreach ($d in $dirs) {
@@ -176,7 +178,7 @@ foreach ($d in $dirs) {
 }
 Write-Ok "Data directories ready"
 
-# ── 7b. Detect LAN IP for viewer share URL ─────────────────────────────
+# -- 7b. Detect LAN IP for viewer share URL -----------------------------
 Write-Step "Detecting LAN IP for viewer share link..."
 $hubIp = $null
 try {
@@ -210,12 +212,13 @@ $dotEnv | Set-Content $envFile -Encoding UTF8
 if ($hubIp) {
     $shareUrl = "http://" + $hubIp + ":3000/view"
     Write-Ok "Hub LAN IP: $hubIp (viewer link: $shareUrl)"
-} else {
+}
+if (-not $hubIp) {
     Write-Warn "Could not detect LAN IP - set HUB_LAN_IP in $envFile manually"
 }
 Write-Ok "Stencil / Switchboard enabled (PDUMIND_OPS_ENABLED=1)"
 
-# ── 8. Build and launch with Docker Compose ────────────────────────────
+# -- 8. Build and launch with Docker Compose ----------------------------
 Write-Step "Building and starting PDUMind (first build takes 3-5 minutes)..."
 Push-Location $InstallDir
 
@@ -239,7 +242,7 @@ if ($LASTEXITCODE -ne 0) {
 Pop-Location
 Write-Ok "PDUMind containers are running"
 
-# ── 9. Wait for services and open browser ──────────────────────────────
+# -- 9. Wait for services and open browser ------------------------------
 Write-Step "Waiting for services to start..."
 Start-Sleep -Seconds 8
 
@@ -253,7 +256,7 @@ while ($attempts -lt 15) {
     Start-Sleep -Seconds 3
 }
 
-# ── 10. Create Desktop shortcut ─────────────────────────────────────────
+# -- 10. Create Desktop shortcut -----------------------------------------
 Write-Step "Creating Desktop shortcut..."
 try {
     $desktopPath = [Environment]::GetFolderPath("Desktop")
