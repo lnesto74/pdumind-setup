@@ -191,22 +191,27 @@ try {
 } catch {}
 
 $envFile = Join-Path $InstallDir ".env"
-$envLines = @()
+$dotEnv = @()
 if (Test-Path $envFile) {
-    $envLines = Get-Content $envFile | Where-Object { $_ -notmatch '^\s*HUB_LAN_IP=' -and $_ -notmatch '^\s*HUB_PORT=' }
+    $dotEnv = Get-Content $envFile | Where-Object { $_ -notmatch '^\s*HUB_LAN_IP=' -and $_ -notmatch '^\s*HUB_PORT=' }
 }
 if ($hubIp) {
-    $envLines += "HUB_LAN_IP=$hubIp"
-    $envLines += "HUB_PORT=3000"
+    $dotEnv += "HUB_LAN_IP=$hubIp"
+    $dotEnv += "HUB_PORT=3000"
 }
-if (-not ($envLines | Where-Object { $_ -match '^\s*PDUMIND_OPS_ENABLED=' })) {
-    $envLines += "PDUMIND_OPS_ENABLED=1"
+$opsAlready = $false
+foreach ($line in $dotEnv) {
+    if ($line -match '^\s*PDUMIND_OPS_ENABLED=') { $opsAlready = $true }
 }
-$envLines | Set-Content $envFile -Encoding UTF8
+if (-not $opsAlready) {
+    $dotEnv += "PDUMIND_OPS_ENABLED=1"
+}
+$dotEnv | Set-Content $envFile -Encoding UTF8
 if ($hubIp) {
-    Write-Ok "Hub LAN IP: $hubIp (viewer link: http://${hubIp}:3000/view)"
+    $shareUrl = "http://" + $hubIp + ":3000/view"
+    Write-Ok "Hub LAN IP: $hubIp (viewer link: $shareUrl)"
 } else {
-    Write-Warn "Could not detect LAN IP — set HUB_LAN_IP in $envFile manually"
+    Write-Warn "Could not detect LAN IP - set HUB_LAN_IP in $envFile manually"
 }
 Write-Ok "Stencil / Switchboard enabled (PDUMIND_OPS_ENABLED=1)"
 
@@ -272,7 +277,8 @@ Write-Host ""
 Write-Host "  Frontend:  http://localhost:3000" -ForegroundColor Cyan
 Write-Host "  Viewer:    http://localhost:3000/view" -ForegroundColor Cyan
 if ($hubIp) {
-  Write-Host "  Share URL: http://${hubIp}:3000/view  (colleagues on same network)" -ForegroundColor Green
+  $shareUrl = "http://" + $hubIp + ":3000/view"
+  Write-Host "  Share URL: $shareUrl  (colleagues on same network)" -ForegroundColor Green
 }
 Write-Host "  Backend:   http://localhost:5002" -ForegroundColor Cyan
 Write-Host "  Install:   $InstallDir" -ForegroundColor Gray
