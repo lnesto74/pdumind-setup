@@ -4,6 +4,10 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+      - 1.1.1.1
     ports:
       - "5002:5002"
     volumes:
@@ -16,6 +20,7 @@ services:
       - HUB_LAN_IP=${HUB_LAN_IP:-}
       - HUB_PORT=${HUB_PORT:-3000}
       - PDUMIND_DEMO_ENABLED=${PDUMIND_DEMO_ENABLED:-}
+      - PDUMIND_OPS_ENABLED=${PDUMIND_OPS_ENABLED:-}
       - MAX_SNMP_THREADS=12
       - SNMP_BATCH_SIZE=2
       - OUTLET_BASE_TIMEOUT=3
@@ -32,6 +37,9 @@ services:
       - "3000:3000"
     environment:
       - API_PROXY_TARGET=http://backend:5002
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
     depends_on:
       - backend
 volumes:

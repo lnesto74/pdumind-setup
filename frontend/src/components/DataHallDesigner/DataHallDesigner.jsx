@@ -1,14 +1,60 @@
-import React, { useState, useMemo, useCallback, Suspense, useEffect, useRef } from 'react';
-import { Canvas, useLoader, useThree } from '@react-three/fiber';
-import { OrbitControls, Grid, Text, Environment, useGLTF } from '@react-three/drei';
+import React, { useState, useMemo, useCallback, Suspense, useEffect, useLayoutEffect, useRef } from 'react';
+import { Canvas, useLoader, useThree, useFrame } from '@react-three/fiber';
+import { OrbitControls, Grid, Text, Environment, useGLTF, TransformControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
 import { defaultDataHallConfig, generateDataHallLayout, validateConfig } from './dataHallConfig';
 import { modelCache, cloneShared, disposeObject3D } from '../../3d';
+import CageMetricsOverlay from './CageMetricsOverlay';
+import HudSparkChart from './HudSparkChart';
+import {
+  cableUnplugAlertKey,
+  collectOutletCableWarnings,
+  isCableUnplugRackAlert,
+} from '../../utils/neuralOpsAlerts';
+import { aggregateCageMetrics } from '../../utils/cageMetrics';
+import { downloadHallCustomerReport } from '../../utils/hallCustomerReport';
+
+const HUD_CARD = 'rounded-[10px] border border-white/[0.08] bg-[#0c1018]/90 backdrop-blur-sm';
+const HUD_LABEL = 'text-[8px] font-semibold text-[#8A929B] uppercase tracking-[0.12em]';
+const TELEMETRY_CHART = '#00E5FF';
 // NetworkScanner removed — replaced by CommissioningWizard in Dashboard2
 
 // API base URL
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5002';
+const API_BASE = import.meta.env.VITE_API_URL || '';
+
+/** Human-readable rack name — custom label when set, else layout id (Row-02/Rack-01). */
+export const getRackDisplayName = (rack) => {
+  if (!rack) return '';
+  const custom = (rack.label || '').trim();
+  return custom || rack.id || '';
+};
+
+/** Daisy-chain hostname without the trailing -1/-2/-3/-4 unit index. */
+export const pduHostnameStem = (name) => {
+  if (!name) return '';
+  const m = String(name).trim().match(/^(.*)-(\d+)$/);
+  return m ? m[1] : String(name).trim();
+};
+
+/** Commissioned PDU identity (RDC1-PDU-RACK-CN10-1), not the A/B/C/D slot. */
+export const pduDisplayId = (pdu) =>
+  (pdu?.hostname || pdu?.label || pdu?.id || '').trim();
+
+/** Real rack ID from PDU hostnames, e.g. RDC1-PDU-RACK-CN10. */
+export const getRackAssetId = (rack) => {
+  const stems = (rack?.pdus || []).map((p) => pduHostnameStem(pduDisplayId(p))).filter(Boolean);
+  if (!stems.length) return '';
+  const first = stems[0];
+  if (stems.every((s) => s === first)) return first;
+  let prefix = first;
+  for (const s of stems.slice(1)) {
+    let i = 0;
+    while (i < prefix.length && i < s.length && prefix[i] === s[i]) i += 1;
+    prefix = prefix.slice(0, i);
+  }
+  return prefix.replace(/[-_/]+$/, '') || first;
+};
 
 // Floor Grid Component
 const FloorGrid = ({ hall, tileSize }) => {
@@ -33,6 +79,228 @@ const FloorGrid = ({ hall, tileSize }) => {
       </mesh>
     </group>
   );
+};
+
+// ---------------------------------------------------------------------------
+// Free-placed scene props (visual references the user drops onto the floor)
+// ---------------------------------------------------------------------------
+
+// Catalog of object types available in the palette. Keep `build` purely
+// procedural so no external assets/uploads are required.
+export const SCENE_OBJECT_CATALOG = [
+  { type: 'cage-entrance', label: 'Cage Entrance', icon: 'meeting_room' },
+];
+
+// A chain-link style wire-mesh panel built from thin bars inside a frame.
+const WireMeshPanel = ({ width, height, color, accent }) => {
+  const frame = 0.04;
+  const bar = 0.012;
+  const cols = Math.max(2, Math.round(width / 0.18));
+  const rows = Math.max(2, Math.round(height / 0.18));
+  const verticals = Array.from({ length: cols - 1 }, (_, i) => -width / 2 + (width / cols) * (i + 1));
+  const horizontals = Array.from({ length: rows - 1 }, (_, i) => -height / 2 + (height / rows) * (i + 1));
+  return (
+    <group>
+      {/* Outer frame */}
+      <mesh position={[0, height / 2, 0]}><boxGeometry args={[width, frame, frame]} /><meshStandardMaterial color={accent} metalness={0.7} roughness={0.35} /></mesh>
+      <mesh position={[0, -height / 2, 0]}><boxGeometry args={[width, frame, frame]} /><meshStandardMaterial color={accent} metalness={0.7} roughness={0.35} /></mesh>
+      <mesh position={[-width / 2, 0, 0]}><boxGeometry args={[frame, height, frame]} /><meshStandardMaterial color={accent} metalness={0.7} roughness={0.35} /></mesh>
+      <mesh position={[width / 2, 0, 0]}><boxGeometry args={[frame, height, frame]} /><meshStandardMaterial color={accent} metalness={0.7} roughness={0.35} /></mesh>
+      {/* Wire mesh */}
+      {verticals.map((x, i) => (
+        <mesh key={`v${i}`} position={[x, 0, 0]}><boxGeometry args={[bar, height, bar]} /><meshStandardMaterial color={color} metalness={0.5} roughness={0.5} /></mesh>
+      ))}
+      {horizontals.map((y, i) => (
+        <mesh key={`h${i}`} position={[0, y, 0]}><boxGeometry args={[width, bar, bar]} /><meshStandardMaterial color={color} metalness={0.5} roughness={0.5} /></mesh>
+      ))}
+    </group>
+  );
+};
+
+// Cage entrance: two posts, a top header beam, fixed side panels, and an
+// open swing-gate. Origin is at floor level, centered on the doorway.
+const CageEntrance = ({ selected }) => {
+  const accent = selected ? '#00E5FF' : '#6b8595';
+  const mesh = selected ? '#9fd9e6' : '#8aa0ad';
+  const height = 2.1;
+  const postT = 0.08;
+  const openingHalf = 0.8;     // doorway half-width
+  const sidePanelW = 0.9;      // fixed cage wall on each side
+  const totalHalf = openingHalf + sidePanelW;
+  return (
+    <group>
+      {/* Top header beam spanning the whole entrance */}
+      <mesh position={[0, height + 0.05, 0]}>
+        <boxGeometry args={[totalHalf * 2 + postT, 0.12, 0.1]} />
+        <meshStandardMaterial color={accent} metalness={0.7} roughness={0.35} />
+      </mesh>
+      {/* Posts: outer + doorway jambs */}
+      {[-totalHalf, -openingHalf, openingHalf, totalHalf].map((x, i) => (
+        <mesh key={i} position={[x, height / 2, 0]}>
+          <boxGeometry args={[postT, height, postT]} />
+          <meshStandardMaterial color={accent} metalness={0.7} roughness={0.35} />
+        </mesh>
+      ))}
+      {/* Fixed side cage walls */}
+      <group position={[-(openingHalf + sidePanelW / 2), height / 2, 0]}>
+        <WireMeshPanel width={sidePanelW} height={height} color={mesh} accent={accent} />
+      </group>
+      <group position={[openingHalf + sidePanelW / 2, height / 2, 0]}>
+        <WireMeshPanel width={sidePanelW} height={height} color={mesh} accent={accent} />
+      </group>
+      {/* Swing gate, hinged on the left jamb and opened ~55° */}
+      <group position={[-openingHalf, 0, 0]} rotation={[0, -0.95, 0]}>
+        <group position={[openingHalf, height / 2, 0]}>
+          <WireMeshPanel width={openingHalf * 2 - 0.04} height={height - 0.06} color={mesh} accent={'#cfe9f1'} />
+        </group>
+        {/* Gate handle */}
+        <mesh position={[openingHalf * 2 - 0.12, height / 2, 0.04]}>
+          <boxGeometry args={[0.04, 0.25, 0.04]} />
+          <meshStandardMaterial color="#d0d8de" metalness={0.8} roughness={0.3} />
+        </mesh>
+      </group>
+      {/* Signage above the doorway */}
+      <Text position={[0, height + 0.22, 0.06]} fontSize={0.16} color={selected ? '#00E5FF' : '#cbd5e1'} anchorX="center" anchorY="bottom">
+        ENTRANCE
+      </Text>
+    </group>
+  );
+};
+
+// Renders one placed scene prop. When selected (and editable) it is wrapped in
+// a TransformControls gizmo so it can be dragged / rotated on the floor.
+const SceneProp = ({ obj, selected, editable, transformMode, onSelect, onCommit }) => {
+  const ref = useRef();
+
+  const renderModel = () => {
+    switch (obj.type) {
+      case 'cage-entrance':
+      default:
+        return <CageEntrance selected={selected} />;
+    }
+  };
+
+  // Invisible bounding box so the (mostly hollow) prop is easy to click.
+  // visible={false} would skip raycasting, so we use a fully transparent
+  // material that still receives pointer events.
+  const hb = { w: 3.7, h: 2.5, d: 1.4, cy: 1.2 }; // cage-entrance footprint
+  const selectHandlers = editable ? {
+    onClick: (e) => { e.stopPropagation(); onSelect(obj.id); },
+    onPointerDown: (e) => { e.stopPropagation(); },
+  } : {};
+
+  const commit = () => {
+    const o = ref.current;
+    if (!o || !onCommit) return;
+    onCommit(obj.id, {
+      position: { x: o.position.x, y: o.position.y, z: o.position.z },
+      rotation: { x: o.rotation.x, y: o.rotation.y, z: o.rotation.z },
+      scale: o.scale.x,
+    });
+  };
+
+  // The object group and the gizmo are SIBLINGS — the gizmo attaches directly
+  // to this group via `object={ref}`, so it tracks the object and edits it in
+  // place (the children-wrapping form detaches the gizmo and loses the commit).
+  return (
+    <>
+      <group
+        ref={ref}
+        position={[obj.position.x, obj.position.y || 0, obj.position.z]}
+        rotation={[obj.rotation?.x || 0, obj.rotation?.y || 0, obj.rotation?.z || 0]}
+        scale={obj.scale || 1}
+      >
+        <mesh position={[0, hb.cy, 0]} {...selectHandlers}>
+          <boxGeometry args={[hb.w, hb.h, hb.d]} />
+          <meshBasicMaterial transparent opacity={selected ? 0.06 : 0} depthWrite={false} color="#00E5FF" />
+        </mesh>
+        {renderModel()}
+      </group>
+
+      {selected && editable && (
+        <TransformControls
+          object={ref}
+          mode={transformMode}
+          size={1.1}
+          showX={transformMode !== 'rotate'}
+          showZ={transformMode !== 'rotate'}
+          showY={transformMode !== 'translate'}
+          translationSnap={0.5}
+          rotationSnap={Math.PI / 12}
+          scaleSnap={0.1}
+          onMouseUp={commit}
+        />
+      )}
+    </>
+  );
+};
+
+// Captures the live three.js camera so HTML drag-drop can raycast onto the
+// floor plane to compute a world drop position.
+const CameraBridge = ({ apiRef }) => {
+  const { camera, raycaster } = useThree();
+  useEffect(() => {
+    apiRef.current = { camera, raycaster };
+  }, [camera, raycaster, apiRef]);
+  return null;
+};
+
+/** Keep R3F's size store + the WebGL buffer matched to the wrap.
+ *  Calling gl.setSize alone leaves R3F at 0×0 after a 0-height first paint;
+ *  switching Stencil ↔ Switchboard was the only thing that retriggered measure. */
+const FitCanvas = ({ wrapRef, layoutEpoch = 0 }) => {
+  const { camera, invalidate, setSize, setDpr } = useThree();
+  useLayoutEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return undefined;
+    let raf = 0;
+    let alive = true;
+    let lastW = 0;
+    let lastH = 0;
+
+    const apply = () => {
+      if (!alive) return;
+      const w = Math.round(el.clientWidth);
+      const h = Math.round(el.clientHeight);
+      if (w < 8 || h < 8) {
+        raf = requestAnimationFrame(apply);
+        return;
+      }
+      if (w === lastW && h === lastH) return;
+      lastW = w;
+      lastH = h;
+      setDpr(Math.min(window.devicePixelRatio || 1, 2));
+      setSize(w, h);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      invalidate();
+    };
+
+    apply();
+    const ro = new ResizeObserver(() => {
+      lastW = 0;
+      lastH = 0;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(apply);
+    });
+    ro.observe(el);
+    window.addEventListener('resize', apply);
+    const t1 = setTimeout(apply, 50);
+    const t2 = setTimeout(apply, 250);
+    const t3 = setTimeout(apply, 800);
+    const t4 = setTimeout(apply, 1600);
+    return () => {
+      alive = false;
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+      window.removeEventListener('resize', apply);
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      clearTimeout(t4);
+    };
+  }, [camera, invalidate, setSize, setDpr, wrapRef, layoutEpoch]);
+  return null;
 };
 
 /**
@@ -189,8 +457,31 @@ const CustomRackModel = ({ url, dimensions, colors, onClick, onPointerOver, onPo
 };
 
 // Rack 3D Component
-const Rack3D = ({ rack, isSelected, isHovered, alertLevel, alertInfo, showLabel, onSelect, onHover, customModelUrl, customModelAssets, hasPdus, pduCount, heatmapLevel }) => {
+const Rack3D = ({ rack, isSelected, isHovered, alertLevel, alertInfo, showLabel, onSelect, onHover, customModelUrl, customModelAssets, hasPdus, pduCount, heatmapLevel, commissioned = false, live = false }) => {
   const { position, dimensions } = rack;
+
+  // Rack status dot semantics:
+  //   red    = critical alarm (solid)
+  //   amber  = soft/warning alarm (blinking)
+  //   green  = commissioned + at least one live PDU, no active alarm
+  //   white  = uncommissioned, or commissioned but offline (no live PDU)
+  const statusColor =
+    alertLevel === 'critical' ? '#ff2d2d'
+    : alertLevel === 'warning' ? '#ffae00'
+    : (commissioned && live) ? '#19ff5a'
+    : '#ffffff';
+  const statusBlinks = alertLevel === 'warning';
+
+  // Refs for the blinking warning state (pulse emissiveIntensity over time).
+  const ledRef = useRef();
+  const beaconRef = useRef();
+  useFrame(({ clock }) => {
+    if (!statusBlinks) return;
+    // ~1.5 Hz pulse between dim and bright amber.
+    const pulse = 0.6 + 0.9 * (0.5 + 0.5 * Math.sin(clock.elapsedTime * 9));
+    if (ledRef.current) ledRef.current.emissiveIntensity = pulse;
+    if (beaconRef.current) beaconRef.current.emissiveIntensity = pulse * 1.6;
+  });
   
   // Determine colors based on alert level or load heatmap
   const getColors = () => {
@@ -226,10 +517,6 @@ const Rack3D = ({ rack, isSelected, isHovered, alertLevel, alertInfo, showLabel,
   
   const colors = getColors();
   const labelColor = alertLevel === 'critical' ? '#EF4444' : alertLevel === 'warning' ? '#F59E0B' : '#00E5FF';
-  
-  // Hologram colors based on alert level
-  const holoColor = alertLevel === 'critical' ? '#EF4444' : '#F59E0B';
-  const holoHeight = 0.6;
   
   // Track if custom model loaded successfully
   const [customModelLoaded, setCustomModelLoaded] = useState(false);
@@ -274,13 +561,16 @@ const Rack3D = ({ rack, isSelected, isHovered, alertLevel, alertInfo, showLabel,
             />
           </mesh>
           
-          {/* Status LED indicator */}
+          {/* Status LED indicator — toneMapped:false keeps the color a pure,
+              saturated LED instead of a washed-out halo. */}
           <mesh position={[dimensions.width * 0.35, dimensions.height * 0.4, -dimensions.depth / 2 + 0.02]}>
-            <sphereGeometry args={[0.03, 8, 8]} />
-            <meshStandardMaterial 
-              color={alertLevel === 'critical' ? '#ef4444' : alertLevel === 'warning' ? '#f59e0b' : '#22c55e'}
-              emissive={alertLevel === 'critical' ? '#ef4444' : alertLevel === 'warning' ? '#f59e0b' : '#22c55e'}
-              emissiveIntensity={1.5}
+            <sphereGeometry args={[0.035, 12, 12]} />
+            <meshStandardMaterial
+              ref={ledRef}
+              color={statusColor}
+              emissive={statusColor}
+              emissiveIntensity={2}
+              toneMapped={false}
             />
           </mesh>
         </group>
@@ -309,105 +599,51 @@ const Rack3D = ({ rack, isSelected, isHovered, alertLevel, alertInfo, showLabel,
         </lineSegments>
       )}
       
-      {/* Flat Hologram Alert Panel - floats above rack */}
-      {alertLevel && (
-        <group position={[0, dimensions.height / 2 + holoHeight / 2 + 0.35, 0]}>
-          {/* Flat panel with minimal depth */}
-          <mesh>
-            <boxGeometry args={[dimensions.width * 1.2, holoHeight, 0.02]} />
-            <meshStandardMaterial 
-              color={holoColor}
-              emissive={holoColor}
-              emissiveIntensity={0.3}
-              transparent
-              opacity={0.25}
-            />
-          </mesh>
-          
-          {/* Panel outline */}
-          <lineSegments>
-            <edgesGeometry args={[new THREE.BoxGeometry(dimensions.width * 1.2, holoHeight, 0.02)]} />
-            <lineBasicMaterial color={holoColor} transparent opacity={0.8} />
-          </lineSegments>
-          
-          {/* Alert title */}
-          <Text
-            position={[0, holoHeight * 0.25, 0.02]}
-            fontSize={0.07}
-            color={holoColor}
-            anchorX="center"
-            anchorY="middle"
-            fontWeight="bold"
-          >
-            {alertLevel === 'critical' ? '⚠ CRITICAL' : '⚡ WARNING'}
-          </Text>
-          
-          {/* Alert details */}
-          <Text
-            position={[0, 0, 0.02]}
-            fontSize={0.05}
-            color="#ffffff"
-            anchorX="center"
-            anchorY="middle"
-            maxWidth={dimensions.width * 1.1}
-          >
-            {alertInfo?.title || 'PDU Alert'}
-          </Text>
-          
-          {/* PDU info */}
-          <Text
-            position={[0, -holoHeight * 0.25, 0.02]}
-            fontSize={0.04}
-            color={holoColor}
-            anchorX="center"
-            anchorY="middle"
-          >
-            {alertInfo?.pduPosition || 'PDU-A'} | {alertInfo?.ip || '10.20.0.x'}
-          </Text>
-          
-          {/* Connecting beam from rack to panel */}
-          <mesh position={[0, -holoHeight / 2 - 0.15, 0]}>
-            <cylinderGeometry args={[0.01, 0.025, 0.3, 6]} />
-            <meshStandardMaterial color={holoColor} emissive={holoColor} emissiveIntensity={0.6} transparent opacity={0.4} />
-          </mesh>
-        </group>
-      )}
-      
-      {/* Rack label */}
-      {showLabel && !alertLevel && (
+      {/* Rack label — real asset ID (RDC1-PDU-RACK-CN10) when PDUs are assigned */}
+      {(showLabel || isHovered) && !alertLevel && (
         <Text
           position={[0, dimensions.height / 2 + 0.15, 0]}
-          fontSize={0.12}
+          fontSize={0.08}
           color={labelColor}
           anchorX="center"
           anchorY="bottom"
+          maxWidth={1.8}
         >
-          {rack.id.split('/')[1]}
+          {getRackAssetId(rack) || getRackDisplayName(rack)}
         </Text>
       )}
 
-      {/* PDU indicator — small glowing beacon on top of racks with commissioned PDUs */}
+      {/* PDU indicator — glowing beacon on racks with commissioned PDUs.
+          Color follows live status: green (live), amber blink (warning),
+          red (critical), white (commissioned but offline). */}
       {hasPdus && (
         <group position={[0, dimensions.height / 2 + 0.08, -dimensions.depth / 2 + 0.05]}>
+          {/* Solid LED core — toneMapped:false = pure saturated colour (real LED),
+              not the ACES-washed pale halo. */}
           <mesh>
-            <sphereGeometry args={[0.045, 12, 12]} />
+            <sphereGeometry args={[0.055, 16, 16]} />
             <meshStandardMaterial
-              color="#00E5FF"
-              emissive="#00E5FF"
-              emissiveIntensity={2.5}
-              transparent
-              opacity={0.95}
+              ref={beaconRef}
+              color={statusColor}
+              emissive={statusColor}
+              emissiveIntensity={3}
+              toneMapped={false}
             />
           </mesh>
+          {/* Soft surrounding glow */}
           <mesh>
-            <ringGeometry args={[0.06, 0.09, 16]} />
-            <meshBasicMaterial color="#00E5FF" transparent opacity={0.3} side={THREE.DoubleSide} />
+            <sphereGeometry args={[0.085, 16, 16]} />
+            <meshBasicMaterial color={statusColor} transparent opacity={0.22} toneMapped={false} />
+          </mesh>
+          <mesh>
+            <ringGeometry args={[0.1, 0.14, 24]} />
+            <meshBasicMaterial color={statusColor} transparent opacity={0.35} side={THREE.DoubleSide} toneMapped={false} />
           </mesh>
           {pduCount > 1 && (
             <Text
               position={[0.12, 0, 0]}
               fontSize={0.07}
-              color="#00E5FF"
+              color={statusColor}
               anchorX="left"
               anchorY="middle"
             >
@@ -468,8 +704,39 @@ const Walls = ({ hall }) => {
   );
 };
 
+// Orbit controls with optional view-pan mode (left-drag pans, right-drag rotates)
+const SceneOrbitControls = ({ hall, viewOffset = { x: 0, z: 0 }, viewPanMode = false }) => {
+  const controlsRef = useRef();
+  const targetX = hall.length / 2 + viewOffset.x;
+  const targetZ = hall.width / 2 + viewOffset.z;
+
+  useEffect(() => {
+    const ctrl = controlsRef.current;
+    if (!ctrl) return;
+    ctrl.target.set(targetX, 0, targetZ);
+    ctrl.update();
+  }, [targetX, targetZ]);
+
+  return (
+    <OrbitControls
+      ref={controlsRef}
+      makeDefault
+      minPolarAngle={0.1}
+      maxPolarAngle={Math.PI / 2.1}
+      minDistance={5}
+      maxDistance={50}
+      target={[targetX, 0, targetZ]}
+      mouseButtons={{
+        LEFT: viewPanMode ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE,
+        MIDDLE: THREE.MOUSE.DOLLY,
+        RIGHT: viewPanMode ? THREE.MOUSE.ROTATE : THREE.MOUSE.PAN,
+      }}
+    />
+  );
+};
+
 // Main 3D Scene
-const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showLabels, onSelectRack, onHoverRack, customRackModelUrl, customRackModelAssets, lighting, heatmapByRack }) => {
+const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showLabels, onSelectRack, onHoverRack, customRackModelUrl, customRackModelAssets, lighting, heatmapByRack, pduLiveStatus = {}, sceneObjects = [], selectedObjectId = null, onSelectObject, onCommitObject, transformMode = 'translate', objectsEditable = false, cameraApiRef, viewOffset = { x: 0, z: 0 }, viewPanMode = false }) => {
   // Debug: Log when customRackModelUrl changes
   useEffect(() => {
     console.log('[DataHallScene] customRackModelUrl:', customRackModelUrl);
@@ -488,14 +755,21 @@ const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showLabels, 
   // Get alert info for a rack based on its PDUs
   const getRackAlertInfo = (rack) => {
     for (const pdu of rack.pdus) {
-      const alert = alerts.find(a => a.pduId === pdu.id || a.rackId === rack.id);
+      const alert = alerts.find(a =>
+        a.pduIp === pdu.ip ||
+        a.pduId === pdu.id ||
+        a.pduId === pdu.dbId ||
+        a.rackId === rack.id ||
+        a.rackId === rack.rackCode
+      );
       if (alert) {
         return {
           level: alert.severity,
           title: alert.title,
           message: alert.message,
           pduPosition: pdu.position,
-          ip: pdu.ip
+          ip: pdu.ip,
+          category: alert.category,
         };
       }
     }
@@ -524,6 +798,11 @@ const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showLabels, 
       {/* Racks */}
       {racks.map(rack => {
         const alertInfo = getRackAlertInfo(rack);
+        const hasPdus = rack.pdus && rack.pdus.length > 0;
+        // A rack is "live" when at least one of its commissioned PDUs is online.
+        const live = hasPdus && rack.pdus.some(
+          (p) => pduLiveStatus[p.ip] === 'online'
+        );
         return (
           <Rack3D
             key={rack.id}
@@ -537,29 +816,39 @@ const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showLabels, 
             onHover={onHoverRack}
             customModelUrl={customRackModelUrl}
             customModelAssets={customRackModelAssets}
-            hasPdus={rack.pdus && rack.pdus.length > 0}
+            hasPdus={hasPdus}
             pduCount={rack.pdus ? rack.pdus.length : 0}
             heatmapLevel={heatmapByRack?.[rack.id] ?? null}
+            commissioned={hasPdus}
+            live={live}
           />
         );
       })}
       
-      {/* Camera Controls */}
-      <OrbitControls
-        makeDefault
-        minPolarAngle={0.1}
-        maxPolarAngle={Math.PI / 2.1}
-        minDistance={5}
-        maxDistance={50}
-        target={[hall.length / 2, 0, hall.width / 2]}
-      />
+      {/* Free-placed scene props (cage entrances, etc.) */}
+      {sceneObjects.map(obj => (
+        <SceneProp
+          key={obj.id}
+          obj={obj}
+          selected={selectedObjectId === obj.id}
+          editable={objectsEditable}
+          transformMode={transformMode}
+          onSelect={onSelectObject}
+          onCommit={onCommitObject}
+        />
+      ))}
+
+      {/* Bridge to expose camera for drag-drop placement */}
+      {cameraApiRef && <CameraBridge apiRef={cameraApiRef} />}
+
+      <SceneOrbitControls hall={hall} viewOffset={viewOffset} viewPanMode={viewPanMode} />
     </>
   );
 };
 
 // Collapsible accordion section for the Parameters panel
-const AccordionSection = ({ id, title, icon, children }) => {
-  const [open, setOpen] = useState(false);
+const AccordionSection = ({ id, title, icon, children, defaultOpen = false }) => {
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <div className="mb-1 border border-[#233544] rounded-lg overflow-hidden">
       <button
@@ -645,27 +934,82 @@ const ParamSelect = ({ label, value, onChange, options }) => (
 );
 
 // Rack Details Panel
-const RackDetailsPanel = ({ rack, alerts = [], onClose, onPduClick }) => {
+const RackDetailsPanel = ({ rack, alerts = [], onClose, onPduClick, onSaveLabel, readOnly = false }) => {
+  const [labelDraft, setLabelDraft] = useState('');
+  const [savingLabel, setSavingLabel] = useState(false);
+
+  useEffect(() => {
+    setLabelDraft((rack?.label || '').trim());
+  }, [rack?.id, rack?.label]);
+
   if (!rack) return null;
-  
+
+  const displayName = getRackAssetId(rack) || getRackDisplayName(rack);
+  const layoutName = getRackDisplayName(rack);
+  const hasCustomLabel = !!(rack.label || '').trim() || !!(getRackAssetId(rack) && layoutName !== displayName);
+
   // Get alerts for this rack
-  const rackAlerts = alerts.filter(a => a.rackId === rack.id);
+  const rackAlerts = alerts.filter(a => a.rackId === rack.id || a.rackId === rack.rackCode);
   const hasAlerts = rackAlerts.length > 0;
   const hasCritical = rackAlerts.some(a => a.severity === 'critical');
-  
+
+  const handleSaveLabel = async () => {
+    if (!onSaveLabel || readOnly) return;
+    setSavingLabel(true);
+    try {
+      await onSaveLabel(rack, labelDraft.trim());
+    } finally {
+      setSavingLabel(false);
+    }
+  };
+
   return (
-    <div className={`absolute bottom-4 right-4 w-72 max-w-[calc(100%-2rem)] bg-[#161E2E] border ${hasCritical ? 'border-red-500' : hasAlerts ? 'border-amber-500' : 'border-[#233544]'} rounded-xl p-4 shadow-2xl z-10`}>
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          {hasCritical && <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>}
-          {!hasCritical && hasAlerts && <span className="w-2 h-2 rounded-full bg-amber-500"></span>}
-          <h3 className={`text-sm font-bold font-mono ${hasCritical ? 'text-red-400' : hasAlerts ? 'text-amber-400' : 'text-[#00E5FF]'}`}>{rack.id}</h3>
+    <div className={`absolute bottom-4 right-4 w-72 max-w-[calc(100%-2rem)] max-h-[calc(100vh-8rem)] flex flex-col overflow-hidden bg-[#161E2E] border ${hasCritical ? 'border-red-500' : hasAlerts ? 'border-amber-500' : 'border-[#233544]'} rounded-xl p-4 shadow-2xl z-10`}>
+      <div className="flex items-center justify-between mb-3 flex-shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
+          {hasCritical && <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse flex-shrink-0"></span>}
+          {!hasCritical && hasAlerts && <span className="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0"></span>}
+          <div className="min-w-0">
+            <h3 className={`text-sm font-bold truncate ${hasCritical ? 'text-red-400' : hasAlerts ? 'text-amber-400' : 'text-[#00E5FF]'}`}>
+              {displayName}
+            </h3>
+            {hasCustomLabel && (
+              <p className="text-[9px] text-slate-500 font-mono truncate">{layoutName}{rack.id && layoutName !== rack.id ? ` · ${rack.id}` : ''}</p>
+            )}
+          </div>
         </div>
-        <button onClick={onClose} className="text-slate-400 hover:text-white">
+        <button onClick={onClose} className="text-slate-400 hover:text-white flex-shrink-0">
           <span className="material-icons-outlined text-sm">close</span>
         </button>
       </div>
-      
+
+      {!readOnly && onSaveLabel && (
+        <div className="mb-4 flex-shrink-0 bg-[#0B1120] border border-[#233544] rounded-lg p-2.5">
+          <p className="text-[9px] text-slate-500 uppercase tracking-wider mb-1.5">Rack Label</p>
+          <div className="flex gap-1.5">
+            <input
+              type="text"
+              value={labelDraft}
+              onChange={(e) => setLabelDraft(e.target.value)}
+              placeholder={rack.id}
+              className="flex-1 min-w-0 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-xs text-white font-mono focus:outline-none focus:border-[#00E5FF]"
+              onKeyDown={(e) => { if (e.key === 'Enter') handleSaveLabel(); }}
+            />
+            <button
+              type="button"
+              onClick={handleSaveLabel}
+              disabled={savingLabel || labelDraft.trim() === (rack.label || '').trim()}
+              className="px-2 py-1 rounded bg-[#00E5FF]/15 border border-[#00E5FF]/40 text-[#00E5FF] text-[10px] font-bold uppercase disabled:opacity-40"
+            >
+              {savingLabel ? '…' : 'Save'}
+            </button>
+          </div>
+          <p className="text-[8px] text-slate-600 mt-1">Shown on 3D hover and telemetry overlay</p>
+        </div>
+      )}
+
+      {/* Scrollable body so the panel never overflows the screen */}
+      <div className="overflow-y-auto flex-1 min-h-0 -mr-2 pr-2">
       {/* Alerts Section */}
       {hasAlerts && (
         <div className="mb-4 space-y-2">
@@ -724,7 +1068,7 @@ const RackDetailsPanel = ({ rack, alerts = [], onClose, onPduClick }) => {
                   onClick={() => onPduClick && onPduClick(pdu)}
                   className={`w-full flex items-center justify-between p-2 rounded cursor-pointer hover:ring-1 hover:ring-[#00E5FF]/50 transition-all ${pduAlert ? (pduAlert.severity === 'critical' ? 'bg-red-500/10 hover:bg-red-500/20' : 'bg-amber-500/10 hover:bg-amber-500/20') : 'bg-[#0B1120] hover:bg-[#1a2535]'}`}
                 >
-                  <div className="flex items-center">
+                  <div className="flex items-center min-w-0">
                     <span className="w-4 flex-shrink-0">
                       {pduAlert ? (
                         <span className={`w-1.5 h-1.5 rounded-full inline-block ${pduAlert.severity === 'critical' ? 'bg-red-500' : 'bg-amber-500'}`}></span>
@@ -734,8 +1078,12 @@ const RackDetailsPanel = ({ rack, alerts = [], onClose, onPduClick }) => {
                         <span className="w-1.5 h-1.5 rounded-full inline-block bg-slate-600 border border-dashed border-slate-500"></span>
                       )}
                     </span>
-                    <span className="text-[#00E5FF] w-4">{pdu.position}</span>
-                    <span className="text-slate-500 ml-2">{pdu.model}</span>
+                    <div className="min-w-0 ml-1">
+                      <span className="text-[#00E5FF] text-[10px] font-mono truncate block" title={pduDisplayId(pdu)}>
+                        {pduDisplayId(pdu) || `PDU ${pdu.position}`}
+                      </span>
+                      <span className="text-slate-500 text-[8px]">{pdu.position}{pdu.ip ? ` · ${pdu.ip}` : ''}</span>
+                    </div>
                   </div>
                   <div className="flex items-center gap-2">
                     {isCommissioned ? (
@@ -751,210 +1099,193 @@ const RackDetailsPanel = ({ rack, alerts = [], onClose, onPduClick }) => {
           </div>
         </div>
       </div>
+      </div>
     </div>
   );
 };
 
-// Sparkline SVG generator - converts data points to SVG path
-const generateSparklinePath = (data, width = 100, height = 20) => {
-  if (!data || data.length < 2) return '';
-  const min = Math.min(...data);
-  const max = Math.max(...data);
-  const range = max - min || 1;
-  
-  const points = data.map((val, i) => {
-    const x = (i / (data.length - 1)) * width;
-    const y = height - ((val - min) / range) * (height - 4) - 2;
-    return `${x},${y}`;
-  });
-  
-  return `M${points.join(' L')}`;
+// Parse the leading numeric part of a value like "224.6V" / "0.500kW" / 1.2
+const parseLeadingNumber = (raw) => {
+  if (raw == null) return null;
+  if (typeof raw === 'number') return raw;
+  const m = String(raw).replace(/"/g, '').trim().match(/^-?[\d.]+/);
+  return m ? parseFloat(m[0]) : null;
 };
 
-// Enhanced Rack Telemetry Tooltip Component
+// Enhanced Rack Telemetry Tooltip Component — pulls REAL-TIME values from the
+// /live endpoint (same source the main dashboard uses), mapping NPDU MIB OID
+// names first and falling back to web-admin CGI field names.
 const RackTelemetryTooltip = ({ rack, onClose }) => {
   const [telemetryData, setTelemetryData] = useState({});
   const [loading, setLoading] = useState(true);
-  
+
   useEffect(() => {
     if (!rack?.pdus?.length) return;
-    
-    const fetchTelemetry = async () => {
-      setLoading(true);
+    let cancelled = false;
+
+    const fetchAll = async () => {
       const results = {};
-      
-      for (const pdu of rack.pdus) {
-        if (!pdu.ip) continue;
+      await Promise.all(rack.pdus.map(async (pdu) => {
+        if (!pdu.ip) { results[pdu.id] = { online: false }; return; }
         try {
-          // Fetch latest telemetry
-          const latestRes = await fetch(`${API_BASE}/api/pdus/by-ip/${pdu.ip}/telemetry/latest`);
-          const latest = latestRes.ok ? await latestRes.json() : null;
-          
-          // Fetch chart data for sparklines (last 30 minutes)
-          const chartRes = await fetch(`${API_BASE}/api/pdus/by-ip/${pdu.ip}/telemetry/chart?minutes=30`);
+          const rh = pdu.remote_host ? `?remote_host=${encodeURIComponent(pdu.remote_host)}` : '';
+          const [liveRes, chartRes] = await Promise.all([
+            fetch(`${API_BASE}/api/pdus/by-ip/${pdu.ip}/live${rh}`),
+            fetch(`${API_BASE}/api/pdus/by-ip/${pdu.ip}/telemetry/chart?period=day`),
+          ]);
+          const live = liveRes.ok ? await liveRes.json() : null;
           const chart = chartRes.ok ? await chartRes.json() : null;
-          
-          results[pdu.id] = {
-            latest: latest?.telemetry || null,
-            history: chart?.data || [],
-            online: !!latest?.telemetry
+          const rows = live?.results || [];
+
+          const pick = (...names) => {
+            for (const n of names) {
+              const it = rows.find(r => r.name === n);
+              if (it && it.value != null) return parseLeadingNumber(it.value);
+            }
+            return null;
           };
+
+          const current = pick('MasterCurrentP1', 'l1_current', 'total_current');
+          const voltage = pick('MasterVoltageP1', 'l1_voltage');
+          const power   = pick('MasterPowerP1', 'total_active_power', 'l1_active_power');
+          const pf      = pick('MasterPFP1', 'total_pf', 'l1_pf');
+          const energy  = pick('MasterEnergyP1', 'total_active_energy');
+
+          const spark = (chart?.data || [])
+            .slice(-24)
+            .map(d => (typeof d.current === 'number' ? d.current : parseLeadingNumber(d.current)))
+            .filter(v => v != null);
+
+          const online = rows.length > 0 && ((current ?? 0) > 0 || (voltage ?? 0) > 0);
+          results[pdu.id] = { online, current, voltage, power, pf, energy, spark };
         } catch (err) {
-          results[pdu.id] = { latest: null, history: [], online: false };
+          results[pdu.id] = { online: false };
         }
-      }
-      
-      setTelemetryData(results);
-      setLoading(false);
+      }));
+      if (!cancelled) { setTelemetryData(results); setLoading(false); }
     };
-    
-    fetchTelemetry();
-    const interval = setInterval(fetchTelemetry, 10000); // Refresh every 10s
-    return () => clearInterval(interval);
+
+    setLoading(true);
+    fetchAll();
+    const interval = setInterval(fetchAll, 5000); // Refresh every 5s
+    return () => { cancelled = true; clearInterval(interval); };
   }, [rack]);
-  
+
   if (!rack) return null;
-  
-  const hasAnyTelemetry = Object.values(telemetryData).some(t => t.online);
-  
+
+  const onlineCount = Object.values(telemetryData).filter(t => t.online).length;
+  const hasAnyTelemetry = onlineCount > 0;
+  const fmt = (v, digits) => (typeof v === 'number' ? v.toFixed(digits) : '--');
+
   return (
-    <div 
-      className="absolute top-14 right-4 z-30 w-80 rounded-xl overflow-hidden pointer-events-auto"
-      style={{
-        background: 'rgba(15, 23, 42, 0.85)',
-        backdropFilter: 'blur(12px)',
-        WebkitBackdropFilter: 'blur(12px)',
-        border: '1px solid rgba(255, 255, 255, 0.1)',
-        boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.8)'
-      }}
+    <aside
+      className="absolute top-14 left-4 z-30 w-[min(400px,92vw)] max-h-[calc(100%-5rem)] pointer-events-none flex flex-col bg-[#070a10]/92 backdrop-blur-md border border-white/[0.08] rounded-[10px]"
+      aria-label="Rack telemetry"
     >
-      {/* Header */}
-      <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between">
-        <div>
-          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-1">
-            Telemetry Overlay
-          </div>
-          <div className="text-sm font-bold flex items-center gap-2">
-            {rack.id}
-            <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
-              hasAnyTelemetry 
-                ? 'bg-[#00d1ff]/10 text-[#00d1ff]' 
-                : 'bg-slate-500/10 text-slate-400'
-            }`}>
-              {loading ? 'LOADING...' : hasAnyTelemetry ? 'ONLINE' : 'OFFLINE'}
+      <div className="px-3 py-2.5 border-b border-white/[0.06] flex-shrink-0">
+        <div className="flex items-center gap-2 mb-1.5">
+          <span className="w-5 h-5 rounded-md border border-white/10 flex items-center justify-center">
+            <span className="material-icons-outlined text-[11px] text-[#8A929B]">sensors</span>
+          </span>
+          <span className={HUD_LABEL}>Telemetry Overlay</span>
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <span className="text-[15px] font-semibold text-white tracking-tight block truncate" title={getRackAssetId(rack) || getRackDisplayName(rack)}>
+              {getRackAssetId(rack) || getRackDisplayName(rack)}
+            </span>
+            <span className="text-[9px] text-[#6b7280] font-mono truncate block">
+              {getRackDisplayName(rack)}
+              {rack.id && getRackDisplayName(rack) !== rack.id ? ` · ${rack.id}` : ''}
             </span>
           </div>
+          <span className={`text-[8px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full border flex-shrink-0 ${
+            hasAnyTelemetry
+              ? 'border-emerald-500/40 text-emerald-400/90 bg-emerald-500/10'
+              : 'border-white/10 text-[#6b7280] bg-white/[0.03]'
+          }`}>
+            {loading ? 'Loading…' : hasAnyTelemetry ? `${onlineCount}/${rack.pdus.length} Online` : 'Offline'}
+          </span>
         </div>
-        <span className="material-icons-outlined text-slate-400 text-lg">info</span>
       </div>
-      
-      {/* PDU Telemetry Cards */}
-      <div className="p-4 space-y-4 max-h-[400px] overflow-y-auto">
-        {rack.pdus.map((pdu, idx) => {
-          const data = telemetryData[pdu.id] || { latest: null, history: [], online: false };
-          const current = data.latest?.total_current_a ?? data.latest?.current_a ?? '--';
-          const voltage = data.latest?.voltage_v ?? '--';
-          const pf = data.latest?.power_factor ?? '--';
-          const power = data.latest?.total_power_w ?? data.latest?.power_w ?? '--';
-          
-          // Extract current values from history for sparkline
-          const sparkData = data.history
-            .slice(-20)
-            .map(h => h.total_current_a ?? h.current_a ?? 0)
-            .filter(v => v > 0);
-          
+
+      <div className="flex-1 overflow-y-auto px-2.5 py-2 space-y-2 min-h-0">
+        {rack.pdus.map((pdu) => {
+          const data = telemetryData[pdu.id] || { online: false };
+          const spark = data.spark || [];
+
           return (
-            <div key={pdu.id}>
-              {idx > 0 && (
-                <div className="h-[1px] bg-gradient-to-r from-transparent via-white/10 to-transparent mb-4" />
-              )}
-              
-              <div className="space-y-3">
-                {/* PDU Header */}
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className={`w-1.5 h-1.5 rounded-full ${
-                      data.online ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-slate-500'
-                    }`} />
-                    <span className="text-[11px] font-bold text-slate-300 uppercase tracking-wide">
-                      PDU {pdu.position}
+            <div key={pdu.id} className={`${HUD_CARD} px-3 py-2.5`}>
+              <div className="flex items-center justify-between mb-2 gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${data.online ? 'bg-emerald-500/90' : 'bg-red-500/80'}`} />
+                  <div className="min-w-0">
+                    <span className="text-[9px] font-semibold text-white tracking-wide block truncate" title={pduDisplayId(pdu)}>
+                      {pduDisplayId(pdu) || `PDU ${pdu.position}`}
                     </span>
-                    <span className="text-[10px] text-slate-500 font-mono">{pdu.ip || 'N/A'}</span>
-                  </div>
-                  <div className="text-lg font-bold font-mono text-[#00d1ff]">
-                    {typeof current === 'number' ? current.toFixed(2) : current}
-                    <span className="text-xs ml-0.5 opacity-60">A</span>
+                    <span className="text-[8px] text-[#6b7280] font-mono truncate block">
+                      {pdu.position ? `${pdu.position} · ` : ''}{pdu.ip || 'N/A'}
+                    </span>
                   </div>
                 </div>
-                
-                {/* Sparkline */}
-                <div 
-                  className="h-8 w-full rounded border border-white/5 relative overflow-hidden"
-                  style={{ background: 'rgba(0,0,0,0.2)' }}
-                >
-                  {sparkData.length > 1 ? (
-                    <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 100 20">
-                      <path 
-                        d={generateSparklinePath(sparkData)} 
-                        fill="none"
-                        stroke="#00d1ff"
-                        strokeWidth="1.5"
-                        style={{ filter: 'drop-shadow(0 0 2px rgba(0, 209, 255, 0.5))' }}
-                      />
-                    </svg>
-                  ) : (
-                    <div className="flex items-center justify-center h-full text-[9px] text-slate-500">
-                      No telemetry data
-                    </div>
-                  )}
-                  <div className="absolute top-1 right-1 text-[8px] text-slate-500 font-medium uppercase tracking-tighter">
-                    30m Load
-                  </div>
+                <div className="text-[15px] font-semibold text-white tabular-nums flex-shrink-0">
+                  {fmt(data.current, 2)}
+                  <span className="text-[10px] text-[#8A929B] ml-0.5">A</span>
                 </div>
-                
-                {/* Metrics Grid */}
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="bg-white/5 p-2 rounded-md border border-white/5 text-center">
-                    <div className="text-[8px] text-slate-500 uppercase font-bold mb-0.5">Current</div>
-                    <div className="text-[11px] font-mono font-semibold">
-                      {typeof current === 'number' ? `${current.toFixed(2)}A` : '--'}
+              </div>
+
+              <div className="mb-2">
+                <div className="text-[7px] text-[#6b7280] uppercase tracking-wider mb-1">24h Load</div>
+                {spark.length > 1 ? (
+                  <HudSparkChart
+                    data={spark}
+                    id={`rt-${pdu.id}`}
+                    h={28}
+                    className="h-7"
+                    color={TELEMETRY_CHART}
+                    showDots="last"
+                  />
+                ) : (
+                  <div className="h-7 flex items-center justify-center text-[8px] text-[#4a5568]">
+                    {data.online ? 'Building history…' : 'No telemetry data'}
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-4 gap-1">
+                {[
+                  { label: 'Curr', value: fmt(data.current, 2), unit: 'A' },
+                  { label: 'Volt', value: fmt(data.voltage, 1), unit: 'V' },
+                  { label: 'Power', value: fmt(data.power, 2), unit: 'kW' },
+                  { label: 'PF', value: fmt(data.pf, 2), unit: '' },
+                ].map((m) => (
+                  <div key={m.label} className="text-center py-1 border-t border-white/[0.06]">
+                    <div className="text-[7px] text-[#6b7280] uppercase tracking-wider">{m.label}</div>
+                    <div className="text-[10px] text-white font-medium tabular-nums">
+                      {m.value}
+                      {m.unit && <span className="text-[7px] text-[#6b7280] ml-0.5">{m.unit}</span>}
                     </div>
                   </div>
-                  <div className="bg-white/5 p-2 rounded-md border border-white/5 text-center">
-                    <div className="text-[8px] text-slate-500 uppercase font-bold mb-0.5">Voltage</div>
-                    <div className="text-[11px] font-mono font-semibold">
-                      {typeof voltage === 'number' ? `${voltage.toFixed(0)}V` : '--'}
-                    </div>
-                  </div>
-                  <div className="bg-white/5 p-2 rounded-md border border-white/5 text-center">
-                    <div className="text-[8px] text-slate-500 uppercase font-bold mb-0.5">Power</div>
-                    <div className="text-[11px] font-mono font-semibold">
-                      {typeof power === 'number' ? `${power.toFixed(0)}W` : '--'}
-                    </div>
-                  </div>
-                </div>
+                ))}
               </div>
             </div>
           );
         })}
-        
+
         {rack.pdus.length === 0 && (
-          <div className="text-center py-4 text-slate-500 text-xs">
+          <div className="text-center py-4 text-[#6b7280] text-[10px]">
             No PDUs configured in this rack
           </div>
         )}
       </div>
-      
-      {/* Footer */}
-      <div className="bg-black/20 px-4 py-2 flex items-center justify-between">
-        <span className="text-[9px] text-slate-500 uppercase tracking-tight">
-          {loading ? 'Fetching telemetry...' : 'Syncing real-time...'}
+
+      <div className="px-3 py-1.5 border-t border-white/[0.06] flex items-center justify-between flex-shrink-0">
+        <span className="text-[7px] text-[#4a5568] uppercase tracking-[0.15em]">
+          {loading ? 'Fetching…' : 'Live sync'}
         </span>
-        <div className="flex gap-2">
-          <span className={`w-1 h-1 rounded-full ${loading ? 'bg-amber-400' : 'bg-[#00d1ff]'} animate-pulse`} />
-        </div>
+        <span className={`w-1.5 h-1.5 rounded-full ${loading ? 'bg-white/40' : 'bg-emerald-500/80'} animate-pulse`} />
       </div>
-    </div>
+    </aside>
   );
 };
 
@@ -1083,10 +1414,48 @@ const MibDropZone = ({ hallId }) => {
 };
 
 // Main Component
-const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onHallChange, onConfigSaved, alerts: externalAlerts, readOnly = false, heatmapByRack = {} }) => {
+const DataHallDesigner = ({
+  onNavigateToPdu,
+  selectedHallId: externalHallId,
+  onHallChange,
+  onConfigSaved,
+  alerts: externalAlerts,
+  readOnly = false,
+  heatmapByRack = {},
+  fullBleed = false,
+  neuralMode = false,
+  showNeuralToggle = false,
+  showIntegrationsGear = false,
+  onOpenIntegrations,
+  neuralOpsEnabled = false,
+  onNeuralOpsChange,
+  opsPanelOpen = true,
+  onToggleOpsPanel,
+  hallRefreshTrigger = 0,
+  pduLiveStatus = {},
+  hallPDUs = [],
+  pduAlarms = {},
+  pduEnv = {},
+  fleetPduResults = {},
+}) => {
+  const readCagePulsePref = useCallback((isNeural) => {
+    const key = isNeural ? 'pdumind_cage_pulse_switchboard' : 'pdumind_cage_pulse';
+    const stored = localStorage.getItem(key);
+    if (stored != null) return stored === '1';
+    return !isNeural; // Stencil: default on · Switchboard: default off
+  }, []);
+  const [cagePulseOn, setCagePulseOn] = useState(() => readCagePulsePref(neuralMode));
+  const [viewPanMode, setViewPanMode] = useState(
+    () => localStorage.getItem('pdumind_view_pan') === '1',
+  );
+  const [viewOffset, setViewOffset] = useState({ x: 0, z: 0 });
+  const cageShiftApplied = useRef(false);
   const [config, setConfig] = useState(defaultDataHallConfig);
   const [selectedRack, setSelectedRack] = useState(null);
   const [hoveredRack, setHoveredRack] = useState(null);
+  const prevCableWarningIdsRef = useRef(new Set());
+  const openedCableWarningIdsRef = useRef(new Set());
+  const dismissedCableRackRef = useRef(new Set());
   const [showLabels, setShowLabels] = useState(false);
   const [panelCollapsed, setPanelCollapsed] = useState(readOnly);
   
@@ -1116,6 +1485,37 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
   const [renameValue, setRenameValue] = useState('');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [storedPdus, setStoredPdus] = useState([]); // PDUs from database with actual IPs
+  const [storedRacks, setStoredRacks] = useState([]); // DB racks for rack_code mapping
+
+  // Scene props (free-placed reference objects like cage entrances)
+  const [selectedObjectId, setSelectedObjectId] = useState(null);
+  const [transformMode, setTransformMode] = useState('translate'); // 'translate' | 'rotate'
+  const cameraApiRef = useRef(null);
+  const canvasWrapRef = useRef(null);
+  
+  useEffect(() => {
+    if (neuralMode) setPanelCollapsed(true);
+  }, [neuralMode]);
+
+  useEffect(() => {
+    setCagePulseOn(readCagePulsePref(neuralMode));
+    cageShiftApplied.current = false;
+  }, [neuralMode, readCagePulsePref]);
+
+  useEffect(() => {
+    if (neuralMode) setShowLightingPanel(false);
+  }, [neuralMode]);
+
+  // FIX blank-canvas-on-first-load WITHOUT remounting the Canvas (remounting
+  // destroys/recreates the WebGL context → "Context Lost" → blue canvas).
+  // Mount immediately; FitCanvas + ResizeObserver size the GL buffer once the
+  // flex parent actually has a box (refresh often measures 0×0 on the first frame).
+  // Bumped to force a fresh <Canvas> (new WebGL context) after a context loss
+  // that the browser doesn't auto-restore. Without this the canvas stays blank.
+  const [glEpoch, setGlEpoch] = useState(0);
+  const glRestoreTimer = useRef(null);
+  const glAttempts = useRef(0);
+  useEffect(() => () => { if (glRestoreTimer.current) clearTimeout(glRestoreTimer.current); }, []);
   
   // Fetch all halls
   const fetchHalls = useCallback(async () => {
@@ -1142,6 +1542,57 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
   useEffect(() => { hallIdRef.current = hallId; }, [hallId]);
   useEffect(() => { configRef.current = config; }, [config]);
 
+  const buildRackSavePayload = useCallback((layoutRacks, racksFromDb = storedRacks) => {
+    return layoutRacks.map((rack) => {
+      const dbRack = racksFromDb.find(
+        (r) => r.row_index === rack.rowIndex && r.position_index === rack.positionInRow,
+      );
+      const payload = {
+        rack_code: rack.id,
+        row_index: rack.rowIndex,
+        position_index: rack.positionInRow,
+        x_m: rack.position.x,
+        y_m: rack.position.y,
+        z_m: rack.position.z,
+        width_mm: Math.round(rack.dimensions.width * 1000),
+        depth_mm: Math.round(rack.dimensions.depth * 1000),
+        height_u: rack.heightU,
+        model: rack.model,
+      };
+      if (dbRack?.label) payload.label = dbRack.label;
+      return payload;
+    });
+  }, [storedRacks]);
+
+  const saveRackLabel = useCallback(async (rack, label) => {
+    const dbRack = storedRacks.find(
+      (r) => r.row_index === rack.rowIndex && r.position_index === rack.positionInRow,
+    ) || (rack.dbRackId ? storedRacks.find((r) => r.id === rack.dbRackId) : null);
+    if (!dbRack?.id) return;
+    const trimmed = label.trim();
+    try {
+      const res = await fetch(`${API_BASE}/api/racks/${dbRack.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: trimmed || null }),
+      });
+      if (!res.ok) return;
+      const normalized = trimmed || null;
+      setStoredRacks((prev) => prev.map((r) => (
+        r.id === dbRack.id ? { ...r, label: normalized } : r
+      )));
+      const patch = (prev) => (
+        prev && prev.rowIndex === rack.rowIndex && prev.positionInRow === rack.positionInRow
+          ? { ...prev, label: normalized }
+          : prev
+      );
+      setSelectedRack(patch);
+      setHoveredRack(patch);
+    } catch (e) {
+      console.error('[DataHallDesigner] Failed to save rack label:', e);
+    }
+  }, [storedRacks]);
+
   // Immediately flush any pending save (called before switching halls)
   const flushSave = useCallback(async () => {
     if (saveTimerRef.current) {
@@ -1153,18 +1604,7 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
     if (!hid) return;
     try {
       const layout = generateDataHallLayout(cfg);
-      const racks = layout.success ? layout.layout.racks.map(rack => ({
-        rack_code: rack.id,
-        row_index: rack.rowIndex,
-        position_index: rack.positionInRow,
-        x_m: rack.position.x,
-        y_m: rack.position.y,
-        z_m: rack.position.z,
-        width_mm: Math.round(rack.dimensions.width * 1000),
-        depth_mm: Math.round(rack.dimensions.depth * 1000),
-        height_u: rack.heightU,
-        model: rack.model
-      })) : [];
+      const racks = layout.success ? buildRackSavePayload(layout.layout.racks) : [];
       await fetch(`${API_BASE}/api/halls/${hid}/state`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1174,7 +1614,7 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
     } catch (e) {
       console.error('[DataHallDesigner] Flush save failed:', e);
     }
-  }, []);
+  }, [buildRackSavePayload]);
 
   // Load specific hall state
   const loadHallState = useCallback(async (id) => {
@@ -1199,6 +1639,11 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
         } else {
           setStoredPdus([]);
         }
+        if (data.racks) {
+          setStoredRacks(data.racks);
+        } else {
+          setStoredRacks([]);
+        }
         setLastSaved(null);
       }
     } catch (error) {
@@ -1207,6 +1652,24 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
       setIsLoading(false);
       // Small delay so the auto-save effect doesn't fire on the loaded config
       setTimeout(() => { isLoadingRef.current = false; }, 500);
+    }
+  }, []);
+
+  // Refresh only the commissioned PDUs / DB racks for the current hall WITHOUT
+  // overwriting the in-memory config. Used by external refresh triggers (e.g.
+  // PDU assignment) so the designer's parametric config + placed scene objects
+  // are never clobbered by an unrelated reload.
+  const reloadPdusAndRacks = useCallback(async (id) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/halls/${id}/state`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data.hall) setCurrentHall(data.hall);
+        setStoredPdus(data.pdus || []);
+        setStoredRacks(data.racks || []);
+      }
+    } catch (error) {
+      console.log('[DataHallDesigner] Failed to reload PDUs/racks:', error);
     }
   }, []);
   
@@ -1303,12 +1766,51 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
       })();
     }
   }, [externalHallId, hallId, isLoading, loadHallState, flushSave]);
-  
-  // Save on page unload so closing/refreshing doesn't lose changes
+
+  // Reload PDUs/racks when parent triggers refresh (e.g. demo rack assign).
+  // Flush any pending config save first, then refresh ONLY the PDUs/racks so the
+  // user's parametric config + placed scene objects are preserved.
   useEffect(() => {
-    const handleBeforeUnload = () => { flushSave(); };
+    if (!hallId || !hallRefreshTrigger) return;
+    (async () => {
+      await flushSave();
+      await reloadPdusAndRacks(hallId);
+    })();
+  }, [hallRefreshTrigger, hallId, reloadPdusAndRacks, flushSave]);
+  
+  // Save on page unload so closing/refreshing doesn't lose changes. A regular
+  // fetch is frequently aborted during unload, so use sendBeacon which the
+  // browser guarantees to deliver even as the page is tearing down.
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      const hid = hallIdRef.current;
+      const cfg = configRef.current;
+      if (readOnly || !hid) return;
+      try {
+        const layout = generateDataHallLayout(cfg);
+        const racks = layout.success ? buildRackSavePayload(layout.layout.racks) : [];
+        const payload = JSON.stringify({ config: cfg, racks, pdus: [] });
+        const blob = new Blob([payload], { type: 'application/json' });
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon(`${API_BASE}/api/halls/${hid}/state`, blob);
+        } else {
+          flushSave();
+        }
+      } catch (e) {
+        flushSave();
+      }
+    };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [flushSave, readOnly, buildRackSavePayload]);
+
+  // Flush pending edits when the designer unmounts (e.g. switching to another
+  // page/tab inside the app). Without this, an in-flight debounced save is
+  // cancelled by the auto-save cleanup and the change (e.g. a repositioned
+  // cage entrance) is silently lost. flushSave reads the latest config/hall
+  // from refs, so it persists whatever was last edited.
+  useEffect(() => {
+    return () => { flushSave(); };
   }, [flushSave]);
   
   // Save hall state
@@ -1319,18 +1821,7 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
       setIsSaving(true);
       const layout = generateDataHallLayout(config);
       
-      const racks = layout.success ? layout.layout.racks.map(rack => ({
-        rack_code: rack.id,
-        row_index: rack.rowIndex,
-        position_index: rack.positionInRow,
-        x_m: rack.position.x,
-        y_m: rack.position.y,
-        z_m: rack.position.z,
-        width_mm: Math.round(rack.dimensions.width * 1000),
-        depth_mm: Math.round(rack.dimensions.depth * 1000),
-        height_u: rack.heightU,
-        model: rack.model
-      })) : [];
+      const racks = layout.success ? buildRackSavePayload(layout.layout.racks) : [];
       
       const response = await fetch(`${API_BASE}/api/halls/${hallId}/state`, {
         method: 'POST',
@@ -1350,15 +1841,28 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
     } finally {
       setIsSaving(false);
     }
-  }, [hallId, config, onConfigSaved]);
-  
-  // Auto-save on config change (debounced) — uses ref guard to prevent saving during load
+  }, [hallId, config, onConfigSaved, buildRackSavePayload]);
+
+  // Keep a stable ref to the latest saveHallState so the debounce effect does
+  // NOT depend on its identity. saveHallState changes every render (its dep
+  // `onConfigSaved` is an inline arrow from the parent, and the parent
+  // re-renders constantly from live telemetry). If the debounce effect
+  // depended on it, the 1.5s timer would be cleared and restarted on every
+  // parent re-render and the save would never actually fire.
+  const saveHallStateRef = useRef(saveHallState);
+  useEffect(() => { saveHallStateRef.current = saveHallState; }, [saveHallState]);
+
+  // Auto-save on config change (debounced). Depends only on `config` identity
+  // (which changes solely on real edits / loads), so unrelated re-renders
+  // never reset the timer. We intentionally do NOT bail when a load is in
+  // flight — the debounce (1.5s) outlasts the load guard (cleared ~500ms after
+  // load), and saveHallState() re-checks the guard at fire time.
   useEffect(() => {
-    if (readOnly || !hallId || isLoadingRef.current) return;
+    if (readOnly || !hallId) return;
     
     saveTimerRef.current = setTimeout(() => {
       saveTimerRef.current = null;
-      saveHallState();
+      saveHallStateRef.current?.();
     }, 1500);
     
     return () => {
@@ -1367,7 +1871,7 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
         saveTimerRef.current = null;
       }
     };
-  }, [config, hallId, saveHallState, readOnly]);
+  }, [config, hallId, readOnly]);
   
   // Generate layout from config
   const layoutResult = useMemo(() => generateDataHallLayout(config), [config]);
@@ -1378,24 +1882,72 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
     if (!layoutResult.success) return layoutResult;
     
     const pdusByRack = {};
+    const pdusByRackId = {};
+    const makePduEntry = (pdu, rackCode) => ({
+      id: pdu.label || pdu.hostname || `${rackCode || pdu.rack_code || 'rack'}/PDU-${pdu.mount_position || 'A'}`,
+      hostname: pdu.hostname || pdu.label || '',
+      label: pdu.label || pdu.hostname || '',
+      rackId: rackCode || pdu.rack_code,
+      position: pdu.mount_position || 'A',
+      model: pdu.model || 'PDU',
+      ip: pdu.ip_address,
+      remote_host: pdu.remote_host || null,
+      dbId: pdu.id,
+    });
+
     for (const pdu of storedPdus) {
       const rackCode = pdu.rack_code;
-      if (!rackCode) continue;
-      if (!pdusByRack[rackCode]) pdusByRack[rackCode] = [];
-      pdusByRack[rackCode].push({
-        id: pdu.label || `${rackCode}/PDU-${pdu.mount_position || 'A'}`,
-        rackId: rackCode,
-        position: pdu.mount_position || 'A',
-        model: pdu.model || 'PDU',
-        ip: pdu.ip_address,
-        dbId: pdu.id
-      });
+      const entry = makePduEntry(pdu, rackCode);
+      if (rackCode) {
+        if (!pdusByRack[rackCode]) pdusByRack[rackCode] = [];
+        pdusByRack[rackCode].push(entry);
+      }
+      if (pdu.rack_id) {
+        if (!pdusByRackId[pdu.rack_id]) pdusByRackId[pdu.rack_id] = [];
+        pdusByRackId[pdu.rack_id].push(entry);
+      }
     }
+
+    const rackCodeForLayout = (rack) => {
+      const match = storedRacks.find(
+        (r) => r.row_index === rack.rowIndex && r.position_index === rack.positionInRow
+      );
+      return match?.rack_code || rack.id;
+    };
     
-    const mergedRacks = layoutResult.layout.racks.map(rack => ({
-      ...rack,
-      pdus: pdusByRack[rack.id] || []
-    }));
+    const mergedRacks = layoutResult.layout.racks.map(rack => {
+      const code = rackCodeForLayout(rack);
+      const dbRack = storedRacks.find(
+        (r) => r.row_index === rack.rowIndex && r.position_index === rack.positionInRow
+      );
+      const pdus =
+        pdusByRack[code] ||
+        pdusByRack[rack.id] ||
+        (dbRack ? pdusByRackId[dbRack.id] : null) ||
+        [];
+      return {
+        ...rack,
+        rackCode: code,
+        label: dbRack?.label || null,
+        dbRackId: dbRack?.id || null,
+        pdus,
+      };
+    });
+
+    // Spread any unassigned PDUs onto empty racks (demo recovery)
+    const assignedIps = new Set();
+    mergedRacks.forEach((r) => r.pdus.forEach((p) => assignedIps.add(p.ip)));
+    const unassigned = storedPdus.filter((p) => p.ip_address && !assignedIps.has(p.ip_address));
+    if (unassigned.length > 0) {
+      let ui = 0;
+      for (const rack of mergedRacks) {
+        if (ui >= unassigned.length) break;
+        if (rack.pdus.length === 0) {
+          const pdu = unassigned[ui++];
+          rack.pdus.push(makePduEntry(pdu, rack.rackCode));
+        }
+      }
+    }
     
     return {
       ...layoutResult,
@@ -1404,7 +1956,7 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
         racks: mergedRacks
       }
     };
-  }, [layoutResult, storedPdus]);
+  }, [layoutResult, storedPdus, storedRacks]);
   
   // Use real alerts from parent (Dashboard2) or empty array
   const alerts = externalAlerts || [];
@@ -1424,11 +1976,236 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
   }, []);
   
   const layout = mergedLayoutResult.success ? mergedLayoutResult.layout : null;
+
+  // Rack floor positions + labels for Cage Pulse cable-unplugged coordinates
+  const rackMetaByCode = useMemo(() => {
+    const map = {};
+    if (!layout?.racks) return map;
+    for (const rack of layout.racks) {
+      const code = rack.rackCode || rack.id;
+      const dbRack = storedRacks.find(
+        (r) => r.row_index === rack.rowIndex && r.position_index === rack.positionInRow,
+      );
+      map[code] = {
+        label: rack.label || dbRack?.label || null,
+        x: dbRack?.x_m ?? rack.position?.x ?? 0,
+        z: dbRack?.z_m ?? rack.position?.z ?? 0,
+        rowIndex: rack.rowIndex,
+        positionInRow: rack.positionInRow,
+        heightU: rack.heightU || dbRack?.height_u || 42,
+      };
+    }
+    return map;
+  }, [layout, storedRacks]);
+
+  // PDUs for cage metrics — prefer parent hall list, fall back to DB-stored PDUs
+  const effectiveHallPDUs = useMemo(() => {
+    if (hallPDUs?.length) {
+      return hallPDUs.map((p) => ({
+        ...p,
+        rack_label: p.rack_label || rackMetaByCode[p.rack_code || p.location]?.label || null,
+      }));
+    }
+    return (storedPdus || [])
+      .filter((p) => p.ip_address)
+      .map((p) => ({
+        ip: p.ip_address,
+        hostname: p.hostname || p.label || '',
+        label: p.label || p.hostname || p.ip_address,
+        mount_position: p.mount_position,
+        rack_code: p.rack_code,
+        rack_label: rackMetaByCode[p.rack_code]?.label || null,
+      }));
+  }, [hallPDUs, storedPdus, rackMetaByCode]);
+
+  const findRackForCableEvent = useCallback((layoutRacks, { rackCode, rackId, pduIp } = {}, hallPduList = []) => {
+    if (!layoutRacks?.length) return null;
+    let code = rackCode || rackId;
+    if ((!code || code === 'Unknown') && pduIp) {
+      const pdu = hallPduList.find((p) => p.ip === pduIp);
+      code = pdu?.rack_code || pdu?.location || code;
+    }
+    return (
+      layoutRacks.find((r) => (code && code !== 'Unknown' && (r.rackCode === code || r.id === code)))
+      || layoutRacks.find((r) => pduIp && r.pdus?.some((p) => p.ip === pduIp))
+      || null
+    );
+  }, []);
+
+  const handleCloseRackPanel = useCallback(() => {
+    setSelectedRack((rack) => {
+      if (rack?.id) dismissedCableRackRef.current.add(rack.id);
+      return null;
+    });
+  }, []);
+
+  // Auto-open rack details when a cable-unplug warning appears (same moment as amber rack).
+  useEffect(() => {
+    if (!layout?.racks?.length) return;
+
+    const outletWarnings = collectOutletCableWarnings(effectiveHallPDUs, pduAlarms, rackMetaByCode);
+    const rackCableAlerts = (alerts || []).filter(isCableUnplugRackAlert);
+
+    const currentKeys = new Set([
+      ...outletWarnings.map((w) => w.id),
+      ...rackCableAlerts.map(cableUnplugAlertKey),
+    ]);
+
+    for (const key of [...prevCableWarningIdsRef.current]) {
+      if (!currentKeys.has(key)) {
+        prevCableWarningIdsRef.current.delete(key);
+        openedCableWarningIdsRef.current.delete(key);
+      }
+    }
+
+    const activeRackIds = new Set();
+    const resolveRack = (meta) => findRackForCableEvent(layout.racks, meta, effectiveHallPDUs);
+    for (const w of outletWarnings) {
+      const rack = resolveRack({ rackCode: w.rackCode, pduIp: w.pduIp });
+      if (rack?.id) activeRackIds.add(rack.id);
+    }
+    for (const a of rackCableAlerts) {
+      const rack = resolveRack({ rackId: a.rackId, pduIp: a.pduIp });
+      if (rack?.id) activeRackIds.add(rack.id);
+    }
+    for (const rackId of [...dismissedCableRackRef.current]) {
+      if (!activeRackIds.has(rackId)) dismissedCableRackRef.current.delete(rackId);
+    }
+
+    const pendingKeys = [...currentKeys].filter(
+      (key) => !openedCableWarningIdsRef.current.has(key),
+    );
+    if (pendingKeys.length === 0) {
+      prevCableWarningIdsRef.current = currentKeys;
+      return;
+    }
+
+    const isNewKey = (key) => !prevCableWarningIdsRef.current.has(key);
+    const pickWarning = outletWarnings.find((w) => pendingKeys.includes(w.id) && isNewKey(w.id))
+      || outletWarnings.find((w) => pendingKeys.includes(w.id));
+    const pickAlert = rackCableAlerts.find((a) => pendingKeys.includes(cableUnplugAlertKey(a)) && isNewKey(cableUnplugAlertKey(a)))
+      || rackCableAlerts.find((a) => pendingKeys.includes(cableUnplugAlertKey(a)));
+
+    prevCableWarningIdsRef.current = currentKeys;
+    if (!pickWarning && !pickAlert) return;
+
+    const rack = pickWarning
+      ? resolveRack({ rackCode: pickWarning.rackCode, pduIp: pickWarning.pduIp })
+      : resolveRack({ rackId: pickAlert.rackId, pduIp: pickAlert.pduIp });
+    if (!rack || dismissedCableRackRef.current.has(rack.id)) return;
+
+    setSelectedRack(rack);
+    for (const key of pendingKeys) openedCableWarningIdsRef.current.add(key);
+  }, [layout, alerts, effectiveHallPDUs, pduAlarms, rackMetaByCode, findRackForCableEvent, storedPdus]);
+
+  const showCageMetrics = cagePulseOn && effectiveHallPDUs.length > 0;
+
+  const toggleCagePulse = useCallback(() => {
+    setCagePulseOn((on) => {
+      const next = !on;
+      const key = neuralMode ? 'pdumind_cage_pulse_switchboard' : 'pdumind_cage_pulse';
+      localStorage.setItem(key, next ? '1' : '0');
+      return next;
+    });
+  }, [neuralMode]);
+
+  const toggleViewPan = useCallback(() => {
+    setViewPanMode((on) => {
+      const next = !on;
+      localStorage.setItem('pdumind_view_pan', next ? '1' : '0');
+      return next;
+    });
+  }, []);
+
+  const resetViewOffset = useCallback(() => {
+    setViewOffset({ x: 0, z: 0 });
+    cageShiftApplied.current = false;
+  }, []);
+
+  useEffect(() => {
+    if (showCageMetrics && !cageShiftApplied.current) {
+      setViewOffset({ x: -5, z: 0 });
+      cageShiftApplied.current = true;
+    }
+    if (!showCageMetrics) {
+      cageShiftApplied.current = false;
+    }
+  }, [showCageMetrics]);
+
+  // Show the "select a data hall" landing on first load (before any hall is
+  // loaded) and whenever the 3D scene has nothing to render (no layout / zero
+  // racks). This guarantees a friendly screen on page landing/refresh instead
+  // of an empty blue canvas, until a real hall is loaded.
+  const showLanding = !isLoading && (!hallId || !layout || (layout?.stats?.totalRacks ?? 0) === 0);
+
+  // Switch to a hall (flush pending edits first, then load + notify parent).
+  const selectHall = useCallback(async (id) => {
+    if (!id || id === hallId) return;
+    await flushSave();
+    await loadHallState(id);
+    if (onHallChange) onHallChange(id);
+  }, [hallId, flushSave, loadHallState, onHallChange]);
+
+  // ---- Scene props (cage entrances etc.) -----------------------------------
+  const sceneObjects = config.sceneObjects || [];
+  const objectsEditable = !readOnly && !neuralMode;
+
+  const addSceneObject = useCallback((type, position) => {
+    const catalog = SCENE_OBJECT_CATALOG.find(c => c.type === type) || SCENE_OBJECT_CATALOG[0];
+    // Default drop point: center of the hall floor.
+    const hall = layout?.hall || { length: config.hall.length, width: config.hall.width };
+    const pos = position || { x: hall.length / 2, y: 0, z: hall.width / 2 };
+    const newObj = {
+      id: `obj-${Date.now()}-${Math.round(Math.random() * 1000)}`,
+      type: catalog.type,
+      label: catalog.label,
+      position: { x: pos.x, y: pos.y || 0, z: pos.z },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: 1,
+    };
+    updateConfig('sceneObjects', [...sceneObjects, newObj]);
+    setSelectedObjectId(newObj.id);
+  }, [sceneObjects, updateConfig, layout, config.hall.length, config.hall.width]);
+
+  const commitSceneObject = useCallback((id, patch) => {
+    updateConfig('sceneObjects', sceneObjects.map(o => o.id === id ? { ...o, ...patch } : o));
+  }, [sceneObjects, updateConfig]);
+
+  const deleteSceneObject = useCallback((id) => {
+    updateConfig('sceneObjects', sceneObjects.filter(o => o.id !== id));
+    setSelectedObjectId(prev => prev === id ? null : prev);
+  }, [sceneObjects, updateConfig]);
+
+  // Compute a world position on the floor (y=0) from a screen drag-drop event.
+  const screenToFloor = useCallback((clientX, clientY) => {
+    const api = cameraApiRef.current;
+    const wrap = canvasWrapRef.current;
+    if (!api || !wrap) return null;
+    const rect = wrap.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1
+    );
+    api.raycaster.setFromCamera(ndc, api.camera);
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const hit = new THREE.Vector3();
+    const ok = api.raycaster.ray.intersectPlane(plane, hit);
+    return ok ? { x: hit.x, y: 0, z: hit.z } : null;
+  }, []);
+
+  const handleCanvasDrop = useCallback((e) => {
+    if (!objectsEditable) return;
+    const type = e.dataTransfer.getData('application/x-scene-object');
+    if (!type) return;
+    e.preventDefault();
+    const pos = screenToFloor(e.clientX, e.clientY);
+    addSceneObject(type, pos);
+  }, [objectsEditable, screenToFloor, addSceneObject]);
   
   return (
-    <div className={`flex ${readOnly ? 'h-full' : 'h-[calc(100vh-8rem)]'} bg-[#0B1120] relative`}>
-      {/* Left Panel - Parameters (Collapsible) — hidden in read-only viewer mode */}
-      {!readOnly && (
+    <div className="flex flex-1 min-h-0 h-full bg-[#0B1120] relative">
+      {/* Left Panel - Parameters (Collapsible) — hidden in read-only / neural mode */}
+      {!readOnly && !neuralMode && (
       <div className={`${panelCollapsed ? 'w-0' : 'w-80'} border-r ${panelCollapsed ? 'border-transparent' : 'border-[#233544]'} bg-[#0B1120] transition-all duration-300 flex-shrink-0 relative overflow-hidden flex flex-col`}>
         <div className={`${panelCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100'} transition-opacity duration-200 w-80 flex flex-col h-full`}>
           <div className="sticky top-0 z-20 bg-[#0B1120] px-4 pt-4 pb-2 border-b border-[#233544]">
@@ -1668,7 +2445,7 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
               <ParamSelect label="Assignment" value={config.ipPlanning.assignmentStrategy} onChange={(v) => updateConfig('ipPlanning.assignmentStrategy', v)} options={[{ value: 'sequential', label: 'Sequential' }, { value: 'perRowBlock', label: 'Per Row Block' }]} />
             </>
           )},
-          { id: 'view', title: 'View Options', icon: 'visibility', content: (
+          { id: 'view', title: 'View Options', icon: 'visibility', panel: 'view', content: (
             <div className="flex items-center justify-between py-2 border-b border-[#233544]">
               <label className="text-xs text-slate-400">Show Rack Labels</label>
               <button onClick={() => setShowLabels(!showLabels)} className={`w-12 h-6 rounded-full transition-all ${showLabels ? 'bg-[#00E5FF]' : 'bg-[#233544]'} relative`}>
@@ -1676,8 +2453,67 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
               </button>
             </div>
           )},
+          ...(objectsEditable ? [{ id: 'sceneObjects', title: 'Scene Objects', icon: 'category', panel: 'view', content: (
+            <>
+              <div className="space-y-1.5">
+                {SCENE_OBJECT_CATALOG.map(item => (
+                  <div
+                    key={item.type}
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('application/x-scene-object', item.type);
+                      e.dataTransfer.effectAllowed = 'copy';
+                    }}
+                    onDoubleClick={() => addSceneObject(item.type)}
+                    className="group flex items-center gap-2 px-2 py-2 bg-[#0B1120] border border-[#233544] rounded-lg cursor-grab active:cursor-grabbing hover:border-[#00E5FF]/60 hover:bg-[#00E5FF]/5 transition-all"
+                    title="Drag onto the 3D floor (or double-click to add at center)"
+                  >
+                    <span className="material-icons-outlined text-[#00E5FF] text-lg">{item.icon}</span>
+                    <span className="text-xs text-slate-300 flex-1">{item.label}</span>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); addSceneObject(item.type); }}
+                      className="opacity-0 group-hover:opacity-100 text-[#00E5FF] hover:text-white transition-all"
+                      title="Add to center"
+                    >
+                      <span className="material-icons-outlined text-sm">add_circle</span>
+                    </button>
+                  </div>
+                ))}
+                <p className="text-[9px] text-slate-600 px-1 leading-tight">
+                  Drag onto the floor, or double-click. Click a placed object to move / rotate it.
+                </p>
+              </div>
+              {sceneObjects.length > 0 && (
+                <div className="mt-2 pt-2 border-t border-[#233544] max-h-40 overflow-y-auto space-y-1">
+                  {sceneObjects.map(obj => (
+                    <div
+                      key={obj.id}
+                      onClick={() => setSelectedObjectId(obj.id)}
+                      className={`flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-all ${
+                        selectedObjectId === obj.id
+                          ? 'bg-[#00E5FF]/15 border border-[#00E5FF]/50'
+                          : 'bg-[#0B1120] border border-transparent hover:border-[#233544]'
+                      }`}
+                    >
+                      <span className="material-icons-outlined text-slate-400 text-sm">meeting_room</span>
+                      <span className="text-[11px] text-slate-300 flex-1 truncate">{obj.label}</span>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); deleteSceneObject(obj.id); }}
+                        className="text-red-400 hover:text-red-300"
+                        title="Remove object"
+                      >
+                        <span className="material-icons-outlined text-sm">delete</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}] : []),
         ].map(section => (
-          <AccordionSection key={section.id} id={section.id} title={section.title} icon={section.icon}>
+          <AccordionSection key={section.id} id={section.id} title={section.title} icon={section.icon} defaultOpen={section.defaultOpen}>
             {section.content}
           </AccordionSection>
         ))}
@@ -1848,7 +2684,7 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
       )}
 
       {/* Collapse Toggle Button */}
-      {!readOnly && (
+      {!readOnly && !neuralMode && (
       <button
         onClick={() => setPanelCollapsed(!panelCollapsed)}
         className={`flex-shrink-0 w-5 h-10 bg-[#161E2E] border-y border-r border-[#00E5FF]/30 rounded-r flex items-center justify-center hover:bg-[#233544] transition-colors self-center -ml-px`}
@@ -1859,15 +2695,65 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
       </button>
       )}
       
-      {/* Right Panel - 3D View */}
-      <div className="flex-1 relative overflow-hidden" style={{ isolation: 'isolate' }}>
-        <Canvas
-          camera={{ position: [15, 12, 15], fov: 50 }}
-          gl={{ antialias: true }}
-          style={{ background: '#0a1520' }}
-          className="!absolute !inset-0"
-          onPointerMissed={() => setHoveredRack(null)}
+      {/* Right Panel - 3D View + footer controls */}
+      <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden" style={{ isolation: 'isolate' }}>
+        <div className="relative flex-1 min-h-0 min-w-0 w-full">
+        <div
+          ref={canvasWrapRef}
+          className="absolute inset-0 overflow-hidden"
+          onDragOver={(e) => { if (objectsEditable) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } }}
+          onDrop={handleCanvasDrop}
         >
+        <Canvas
+          // Stable key — never remount on mode/full-bleed change. Remounting
+          // tears down & recreates the WebGL context ("Context Lost" → blue
+          // canvas). FitCanvas resizes the GL buffer in place when the layout
+          // (neural / full-bleed / ops panel) flips.
+          key={`dh-canvas-${glEpoch}`}
+          camera={{ position: [15, 12, 15], fov: 50 }}
+          // 'default' (not 'high-performance') avoids the discrete-GPU switch on
+          // dual-GPU MacBooks, which is a common trigger of spurious context loss.
+          gl={{ antialias: true, powerPreference: 'default', preserveDrawingBuffer: false }}
+          resize={{ scroll: false, debounce: 0, offsetSize: true }}
+          style={{ background: '#0a1520', display: 'block', width: '100%', height: '100%' }}
+          className="!block !h-full !w-full"
+          onPointerMissed={() => { setHoveredRack(null); setSelectedObjectId(null); }}
+          onCreated={({ gl, invalidate, setSize }) => {
+            const canvasEl = gl.domElement;
+            const wrap = canvasWrapRef.current;
+            if (wrap && wrap.clientWidth > 8 && wrap.clientHeight > 8) {
+              setSize(wrap.clientWidth, wrap.clientHeight);
+              invalidate();
+            }
+            if (glRestoreTimer.current) { clearTimeout(glRestoreTimer.current); glRestoreTimer.current = null; }
+            // If this context survives a few seconds, treat recovery as successful
+            // and reset the retry budget for any future (unrelated) loss.
+            setTimeout(() => { glAttempts.current = 0; }, 5000);
+            // On context loss, give the browser a brief window to auto-restore.
+            // If it doesn't, force a fresh <Canvas> (new context) so the user is
+            // never stuck on a dead/blank canvas.
+            canvasEl.addEventListener('webglcontextlost', (e) => {
+              e.preventDefault();
+              console.warn('[DataHallDesigner] WebGL context lost — attempting recovery');
+              if (glRestoreTimer.current) clearTimeout(glRestoreTimer.current);
+              glRestoreTimer.current = setTimeout(() => {
+                if (glAttempts.current >= 5) {
+                  console.error('[DataHallDesigner] WebGL context cannot be restored after repeated attempts');
+                  return;
+                }
+                glAttempts.current += 1;
+                console.warn('[DataHallDesigner] No auto-restore — remounting canvas (attempt', glAttempts.current, ')');
+                setGlEpoch((n) => n + 1);
+              }, 1200);
+            }, false);
+            canvasEl.addEventListener('webglcontextrestored', () => {
+              console.info('[DataHallDesigner] WebGL context restored');
+              if (glRestoreTimer.current) { clearTimeout(glRestoreTimer.current); glRestoreTimer.current = null; }
+              invalidate();
+            }, false);
+          }}
+        >
+          <FitCanvas wrapRef={canvasWrapRef} layoutEpoch={`${neuralMode ? 1 : 0}-${fullBleed ? 1 : 0}-${glEpoch}`} />
           <Suspense fallback={null}>
             <DataHallScene
               layout={layout}
@@ -1881,20 +2767,156 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
               customRackModelAssets={config.rackModel?.assets}
               lighting={lighting}
               heatmapByRack={heatmapByRack}
+              pduLiveStatus={pduLiveStatus}
+              sceneObjects={sceneObjects}
+              selectedObjectId={selectedObjectId}
+              onSelectObject={setSelectedObjectId}
+              onCommitObject={commitSceneObject}
+              transformMode={transformMode}
+              objectsEditable={objectsEditable}
+              cameraApiRef={cameraApiRef}
+              viewOffset={viewOffset}
+              viewPanMode={viewPanMode}
             />
           </Suspense>
         </Canvas>
-        
+
+        {/* Empty-state landing — Hyperspace-style portal + data hall picker */}
+        {showLanding && (
+          <div
+            className="absolute inset-0 z-20 flex flex-col items-center justify-center px-6 overflow-y-auto"
+            style={{
+              background: 'radial-gradient(circle at 50% 42%, rgba(0,229,255,0.10), rgba(10,21,32,0.96) 60%, #0a1520 100%)',
+            }}
+          >
+            {/* Hyperspace portal emblem */}
+            <div className="relative mb-7 flex items-center justify-center" style={{ width: 150, height: 150 }}>
+              <div className="absolute inset-0 rounded-full" style={{ boxShadow: '0 0 80px 10px rgba(0,229,255,0.25)' }} />
+              <svg viewBox="0 0 200 200" width="150" height="150" className="relative">
+                <defs>
+                  <radialGradient id="hsCore" cx="50%" cy="50%" r="50%">
+                    <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
+                    <stop offset="45%" stopColor="#9beaf6" stopOpacity="0.9" />
+                    <stop offset="100%" stopColor="#00E5FF" stopOpacity="0" />
+                  </radialGradient>
+                </defs>
+                {/* Radiating warp lines */}
+                {Array.from({ length: 30 }).map((_, i) => {
+                  const a = (i / 30) * Math.PI * 2;
+                  const r1 = 36 + (i % 3) * 4;
+                  const r2 = 92 - (i % 4) * 6;
+                  const op = 0.25 + (i % 5) * 0.13;
+                  return (
+                    <line
+                      key={i}
+                      x1={100 + Math.cos(a) * r1}
+                      y1={100 + Math.sin(a) * r1}
+                      x2={100 + Math.cos(a) * r2}
+                      y2={100 + Math.sin(a) * r2}
+                      stroke="#ffffff"
+                      strokeOpacity={op}
+                      strokeWidth={1}
+                      strokeLinecap="round"
+                    />
+                  );
+                })}
+                {/* Portal rings */}
+                <circle cx="100" cy="100" r="58" fill="none" stroke="#ffffff" strokeOpacity="0.18" strokeWidth="1" />
+                <circle cx="100" cy="100" r="34" fill="none" stroke="#00E5FF" strokeOpacity="0.55" strokeWidth="1.5" />
+                {/* Glowing core */}
+                <circle cx="100" cy="100" r="22" fill="url(#hsCore)" className="animate-pulse" />
+              </svg>
+            </div>
+
+            <h2 className="text-2xl font-bold text-white tracking-tight mb-1.5 text-center">
+              Select your Data Hall
+            </h2>
+            <p className="text-sm text-slate-400 mb-7 text-center max-w-md">
+              Choose a data center below to load its 3D layout, or configure this hall's rows and racks to populate the scene.
+            </p>
+
+            {/* Hall picker */}
+            <div className="w-full max-w-2xl">
+              {halls.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {halls.map((hall) => {
+                    const active = hall.id === hallId;
+                    return (
+                      <button
+                        key={hall.id}
+                        onClick={() => selectHall(hall.id)}
+                        className={`group text-left rounded-xl border px-4 py-3.5 transition-all backdrop-blur-sm ${
+                          active
+                            ? 'border-[#00E5FF]/70 bg-[#00E5FF]/10 shadow-[0_0_24px_rgba(0,229,255,0.18)]'
+                            : 'border-[#233544] bg-[#161E2E]/70 hover:border-[#00E5FF]/50 hover:bg-[#00E5FF]/5'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className={`material-icons-outlined text-xl ${active ? 'text-[#00E5FF]' : 'text-slate-400 group-hover:text-[#00E5FF]'}`}>
+                            dns
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-bold text-white truncate flex items-center gap-2">
+                              {hall.name}
+                              {active && <span className="text-[9px] font-medium px-1.5 py-0.5 rounded bg-[#00E5FF]/15 text-[#00E5FF]">SELECTED</span>}
+                            </div>
+                            <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                              ID {hall.id}{hall.created_at ? ` • ${new Date(hall.created_at).toLocaleDateString()}` : ''}
+                            </div>
+                          </div>
+                          <span className="material-icons-outlined text-slate-600 group-hover:text-[#00E5FF] transition-colors">chevron_right</span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-center text-slate-500 text-sm py-6">
+                  No data halls yet.
+                </div>
+              )}
+
+              {!readOnly && (
+                <div className="mt-5 flex justify-center">
+                  <button
+                    onClick={() => { setPanelCollapsed(false); setShowNewHallDialog(true); }}
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#00E5FF]/10 border border-[#00E5FF]/40 text-[#00E5FF] text-sm font-medium hover:bg-[#00E5FF]/20 transition-all"
+                  >
+                    <span className="material-icons-outlined text-base">add</span>
+                    New Data Hall
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Cage-level metrics dashboard (consolidated PDU telemetry) */}
+        {showCageMetrics && !showLanding && (
+          <CageMetricsOverlay
+            hallPDUs={effectiveHallPDUs}
+            pduLiveStatus={pduLiveStatus}
+            pduAlarms={pduAlarms}
+            pduEnv={pduEnv}
+            fleetPduResults={fleetPduResults}
+            rackMetaByCode={rackMetaByCode}
+            hallName={currentHall?.name}
+            compact={neuralMode}
+          />
+        )}
+
         {/* Rack Details Panel */}
         <RackDetailsPanel 
           rack={selectedRack} 
           alerts={alerts} 
-          onClose={() => setSelectedRack(null)} 
+          onClose={handleCloseRackPanel}
           onPduClick={(pdu) => onNavigateToPdu && onNavigateToPdu(pdu)}
+          onSaveLabel={saveRackLabel}
+          readOnly={readOnly}
         />
         
         {/* Alert / Heatmap Legend */}
-        <div className="absolute top-4 left-4 z-20 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-4 py-3">
+        <div className="absolute z-20 top-4 left-4 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-4 py-3">
           <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">
             {readOnly ? 'Load Heatmap' : 'Status Legend'}
           </p>
@@ -1928,56 +2950,252 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
           </div>
         </div>
         
-        {/* Save Status Indicator */}
-        {!readOnly && (
-        <div className="absolute top-4 right-4 z-20 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-3 py-2 text-[10px] font-mono w-36">
-          {currentHall && (
-            <div className="text-[#00E5FF] font-bold mb-1 truncate">{currentHall.name}</div>
-          )}
-          <div className="h-4">
+        {/* Save status — only while loading/saving (avoids Cage Pulse overlap) */}
+        {!readOnly && (isLoading || isSaving) && (
+          <div className="absolute bottom-12 left-4 z-20 bg-[#0c1018]/90 border border-white/[0.08] rounded-lg px-3 py-2 text-[10px] font-mono">
+            {currentHall && (
+              <div className="text-white/80 font-semibold mb-0.5 truncate max-w-[140px]">{currentHall.name}</div>
+            )}
             {isLoading ? (
-              <span className="text-slate-400 flex items-center gap-1">
-                <span className="animate-pulse">●</span> Loading...
+              <span className="text-[#8A929B] flex items-center gap-1">
+                <span className="animate-pulse">●</span> Loading…
               </span>
-            ) : isSaving ? (
-              <span className="text-amber-400 flex items-center gap-1">
-                <span className="animate-spin">⟳</span> Saving...
-              </span>
-            ) : lastSaved ? (
-              <span className="text-emerald-400">✓ Saved {lastSaved}</span>
             ) : (
-              <span className="text-slate-500">Auto-save enabled</span>
+              <span className="text-amber-400/90 flex items-center gap-1">
+                <span className="animate-spin">⟳</span> Saving…
+              </span>
             )}
           </div>
-        </div>
         )}
         
-        {/* View Controls Legend + Lighting Toggle */}
-        <div className="absolute bottom-4 left-4 z-20 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-3 py-2 text-[10px] font-mono text-slate-400 flex items-center gap-3">
-          <span>🖱️ Orbit: Drag</span>
-          <span>⚙️ Pan: Right-drag</span>
-          <span>🔍 Zoom: Scroll</span>
-          {!readOnly && (
-          <>
-          <span className="w-px h-4 bg-[#233544]"></span>
-          <button
-            onClick={() => setShowLightingPanel(!showLightingPanel)}
-            className={`flex items-center gap-1 px-2 py-1 rounded transition-all ${showLightingPanel ? 'bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/40' : 'hover:text-[#00E5FF]'}`}
-          >
-            💡 Lighting
-          </button>
-          </>
-          )}
-        </div>
-        
-        {/* Lighting Controls Panel */}
-        {!readOnly && showLightingPanel && (
-          <div className="absolute bottom-14 left-4 z-30 bg-[#161E2E] border border-[#00E5FF]/50 rounded-lg p-4 w-80 shadow-xl max-h-[70vh] overflow-y-auto">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-xs font-bold text-[#00E5FF] uppercase tracking-wider">Lighting Tuner</h3>
-              <button onClick={() => setShowLightingPanel(false)} className="text-slate-500 hover:text-white text-lg">×</button>
+        {/* Sticky canvas footer — nav hints | mode toggle (center) | lighting */}
+        {/* Mode toggle — centered over canvas, original pill style (no fascia) */}
+        {showNeuralToggle && (
+          <div className="absolute bottom-12 left-1/2 -translate-x-1/2 z-30 pointer-events-auto">
+            <div className="flex items-center bg-[#161E2E]/95 border border-[#233544] rounded-full p-1 shadow-xl backdrop-blur-sm">
+              <button
+                type="button"
+                onClick={() => onNeuralOpsChange?.(false)}
+                className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all whitespace-nowrap ${
+                  !neuralOpsEnabled
+                    ? 'bg-[#233544] text-white'
+                    : 'text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                Stencil
+              </button>
+              <button
+                type="button"
+                onClick={() => onNeuralOpsChange?.(true)}
+                className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 whitespace-nowrap ${
+                  neuralOpsEnabled
+                    ? 'bg-gradient-to-r from-[#00E5FF]/30 to-purple-500/30 text-[#00E5FF] border border-[#00E5FF]/40'
+                    : 'text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                <span className="material-icons-outlined text-sm">dashboard</span>
+                Switchboard
+              </button>
             </div>
-            
+          </div>
+        )}
+
+        {/* Enhanced Rack Telemetry Tooltip */}
+        {hoveredRack && !selectedRack && (
+          <RackTelemetryTooltip rack={hoveredRack} />
+        )}
+
+        {/* Selected-object transform toolbar (move / rotate / delete) */}
+        {objectsEditable && selectedObjectId && (
+          <div className="absolute top-1/2 left-4 -translate-y-1/2 z-30 flex flex-col gap-1 bg-[#161E2E]/95 border border-[#233544] rounded-xl p-1.5 shadow-2xl backdrop-blur-sm">
+            <button
+              onClick={() => setTransformMode('translate')}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all ${
+                transformMode === 'translate' ? 'bg-[#00E5FF]/20 text-[#00E5FF]' : 'text-slate-400 hover:bg-[#233544]'
+              }`}
+              title="Move (drag on floor)"
+            >
+              <span className="material-icons-outlined text-lg">open_with</span>
+            </button>
+            <button
+              onClick={() => setTransformMode('rotate')}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all ${
+                transformMode === 'rotate' ? 'bg-[#00E5FF]/20 text-[#00E5FF]' : 'text-slate-400 hover:bg-[#233544]'
+              }`}
+              title="Rotate"
+            >
+              <span className="material-icons-outlined text-lg">rotate_right</span>
+            </button>
+            <button
+              onClick={() => setTransformMode('scale')}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all ${
+                transformMode === 'scale' ? 'bg-[#00E5FF]/20 text-[#00E5FF]' : 'text-slate-400 hover:bg-[#233544]'
+              }`}
+              title="Resize"
+            >
+              <span className="material-icons-outlined text-lg">aspect_ratio</span>
+            </button>
+            <div className="h-px bg-[#233544] mx-1" />
+            <button
+              onClick={() => deleteSceneObject(selectedObjectId)}
+              className="w-9 h-9 rounded-lg flex items-center justify-center text-red-400 hover:bg-red-500/20 transition-all"
+              title="Delete object"
+            >
+              <span className="material-icons-outlined text-lg">delete</span>
+            </button>
+          </div>
+        )}
+        </div>
+        </div>
+
+        {/* Dedicated footer bar — controls only, not overlaid on toggle */}
+        <div className="relative flex-shrink-0 h-10 border-t border-[#233544]/70 bg-[#0a1520] flex items-center justify-between px-4 z-20">
+          <div className="flex items-center gap-4 text-[10px] font-mono text-slate-500">
+            {viewPanMode ? (
+              <>
+                <span>↔️ Pan: Drag</span>
+                <span className="hidden sm:inline">🔄 Rotate: Right-drag</span>
+              </>
+            ) : (
+              <>
+                <span>🖱️ Orbit: Drag</span>
+                <span className="hidden sm:inline">⚙️ Pan: Right-drag</span>
+              </>
+            )}
+            <span>🔍 Zoom: Scroll</span>
+            {(viewOffset.x !== 0 || viewOffset.z !== 0) && (
+              <button
+                type="button"
+                onClick={resetViewOffset}
+                className="text-[#8A929B] hover:text-white transition-colors uppercase tracking-wider"
+              >
+                Reset view
+              </button>
+            )}
+          </div>
+
+          {/* Footer pill toggles — Hyperspace style (Cage Pulse, Lighting, Integrations) */}
+          <div className="absolute left-1/2 -translate-x-1/2 flex items-center bg-[#161E2E]/95 border border-[#233544] rounded-full p-1 shadow-xl backdrop-blur-sm">
+            <button
+              type="button"
+              onClick={toggleCagePulse}
+              disabled={effectiveHallPDUs.length === 0}
+              className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 whitespace-nowrap disabled:opacity-40 ${
+                showCageMetrics
+                  ? 'bg-[#233544] text-white'
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+              title={effectiveHallPDUs.length === 0 ? 'Commission PDUs to enable cage metrics' : 'Cage-level PDU metrics'}
+            >
+              <span className="material-icons-outlined text-sm">monitoring</span>
+              Cage Pulse
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                const metrics = aggregateCageMetrics(
+                  effectiveHallPDUs,
+                  pduLiveStatus,
+                  pduAlarms,
+                  pduEnv,
+                  fleetPduResults,
+                );
+                try {
+                  await downloadHallCustomerReport({
+                    hallName: currentHall?.name || 'Data hall',
+                    metrics,
+                    cableWarnings: collectOutletCableWarnings(effectiveHallPDUs, pduAlarms, rackMetaByCode),
+                  });
+                } catch (err) {
+                  console.error('Hall report PDF failed', err);
+                }
+              }}
+              disabled={effectiveHallPDUs.length === 0}
+              className="px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 whitespace-nowrap text-slate-500 hover:text-slate-300 disabled:opacity-40"
+              title={effectiveHallPDUs.length === 0 ? 'Commission PDUs to download a hall report' : 'Download customer hall report'}
+            >
+              <span className="material-icons-outlined text-sm">download</span>
+              Report
+            </button>
+            <button
+              type="button"
+              onClick={toggleViewPan}
+              className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 whitespace-nowrap ${
+                viewPanMode
+                  ? 'bg-[#233544] text-white'
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+              title="Drag to pan the 3D view — useful when Cage Pulse covers racks"
+            >
+              <span className="material-icons-outlined text-sm">open_with</span>
+              Shift View
+            </button>
+            {neuralMode && onToggleOpsPanel && (
+              <button
+                type="button"
+                onClick={onToggleOpsPanel}
+                className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 whitespace-nowrap ${
+                  opsPanelOpen
+                    ? 'bg-[#233544] text-white'
+                    : 'text-slate-500 hover:text-slate-300'
+                }`}
+                title="Alerts, environment & attention queue"
+              >
+                <span className="material-icons-outlined text-sm">dashboard</span>
+                Ops Panel
+              </button>
+            )}
+            {!readOnly && (
+              <button
+                type="button"
+                onClick={() => setShowLabels(!showLabels)}
+                className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 whitespace-nowrap ${
+                  showLabels
+                    ? 'bg-[#233544] text-white'
+                    : 'text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                <span className="material-icons-outlined text-sm">label</span>
+                Labels
+              </button>
+            )}
+            {!readOnly && !neuralMode && (
+              <button
+                type="button"
+                onClick={() => setShowLightingPanel(!showLightingPanel)}
+                className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 whitespace-nowrap ${
+                  showLightingPanel
+                    ? 'bg-[#233544] text-white'
+                    : 'text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                <span className="material-icons-outlined text-sm">light_mode</span>
+                Lighting
+              </button>
+            )}
+          </div>
+
+          {!readOnly && !neuralMode && showIntegrationsGear && (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => onOpenIntegrations?.()}
+                className="flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-mono transition-all text-slate-500 hover:text-[#00E5FF]"
+                title="Stencil integrations"
+              >
+                <span className="material-icons-outlined text-sm">settings</span>
+                Integrations
+              </button>
+            </div>
+          )}
+
+          {/* Lighting panel — pops up from footer */}
+          {!readOnly && !neuralMode && showLightingPanel && (
+            <div className="absolute bottom-full right-3 mb-1 z-40 bg-[#161E2E] border border-[#00E5FF]/50 rounded-lg p-4 w-80 shadow-xl max-h-[55vh] overflow-y-auto">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-bold text-[#00E5FF] uppercase tracking-wider">Lighting Tuner</h3>
+                <button type="button" onClick={() => setShowLightingPanel(false)} className="text-slate-500 hover:text-white text-lg leading-none">×</button>
+              </div>
             {/* Ambient Light */}
             <div className="mb-3">
               <div className="flex justify-between text-[10px] mb-1">
@@ -2091,13 +3309,9 @@ const DataHallDesigner = ({ onNavigateToPdu, selectedHallId: externalHallId, onH
                 TopPos: ({lighting.topPos.x},{lighting.topPos.y},{lighting.topPos.z})
               </p>
             </div>
-          </div>
-        )}
-        
-        {/* Enhanced Rack Telemetry Tooltip */}
-        {hoveredRack && !selectedRack && (
-          <RackTelemetryTooltip rack={hoveredRack} />
-        )}
+              </div>
+            )}
+        </div>
       </div>
       
     </div>

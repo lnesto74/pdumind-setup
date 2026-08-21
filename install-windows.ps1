@@ -198,11 +198,17 @@ if (Test-Path $envFile) {
 if ($hubIp) {
     $envLines += "HUB_LAN_IP=$hubIp"
     $envLines += "HUB_PORT=3000"
-    $envLines | Set-Content $envFile -Encoding UTF8
+}
+if (-not ($envLines | Where-Object { $_ -match '^\s*PDUMIND_OPS_ENABLED=' })) {
+    $envLines += "PDUMIND_OPS_ENABLED=1"
+}
+$envLines | Set-Content $envFile -Encoding UTF8
+if ($hubIp) {
     Write-Ok "Hub LAN IP: $hubIp (viewer link: http://${hubIp}:3000/view)"
 } else {
     Write-Warn "Could not detect LAN IP — set HUB_LAN_IP in $envFile manually"
 }
+Write-Ok "Stencil / Switchboard enabled (PDUMIND_OPS_ENABLED=1)"
 
 # ── 8. Build and launch with Docker Compose ────────────────────────────
 Write-Step "Building and starting PDUMind (first build takes 3-5 minutes)..."

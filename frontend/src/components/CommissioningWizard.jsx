@@ -14,6 +14,26 @@ import {
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
+/** Demo cage defaults — keep in sync with backend/demo/config.py */
+const DEMO_SCAN_DEFAULTS = {
+  scan_subnet: '10.99.1.206-213',
+  scan_subnet_cidr: '10.99.1.192/27',
+  factory_ip: '192.168.0.163',
+  community: 'private',
+  pdu_ip_range: '10.99.1.206 – 10.99.1.213',
+};
+
+function isDemoUserFromStorage() {
+  try {
+    const user = JSON.parse(localStorage.getItem('pdumind_user') || '{}');
+    return !!user.demo_mode;
+  } catch {
+    return false;
+  }
+}
+
+const demoUserOnMount = isDemoUserFromStorage();
+
 const wizardPwClass =
   'bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF] pr-9';
 const repairPwClass =
@@ -78,11 +98,12 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
   const [loading, setLoading] = useState(false);
 
   // Step 1: Scan
-  const [scanMode, setScanMode] = useState('factory');
-  const [factoryIp, setFactoryIp] = useState('192.168.0.163');
+  const [isDemoMode, setIsDemoMode] = useState(demoUserOnMount);
+  const [scanMode, setScanMode] = useState(demoUserOnMount ? 'batch' : 'factory');
+  const [factoryIp, setFactoryIp] = useState(demoUserOnMount ? DEMO_SCAN_DEFAULTS.factory_ip : '192.168.0.163');
   const [manualIp, setManualIp] = useState('');
-  const [subnet, setSubnet] = useState('192.168.1.0/24');
-  const [community, setCommunity] = useState('public');
+  const [subnet, setSubnet] = useState(demoUserOnMount ? DEMO_SCAN_DEFAULTS.scan_subnet : '192.168.1.0/24');
+  const [community, setCommunity] = useState(demoUserOnMount ? DEMO_SCAN_DEFAULTS.community : 'public');
   const [detectedDevice, setDetectedDevice] = useState(null);
   const [subnetDevices, setSubnetDevices] = useState([]);
 
@@ -142,6 +163,18 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
   const [batchRackMap, setBatchRackMap] = useState({}); // { pduKey: { rack_id, rack_code, slot } }
   const [dragPdu, setDragPdu] = useState(null); // currently dragged PDU key
 
+  // Guided inventory commissioning (factory-default → assigned IP, one PDU at a time)
+  const [invTargets, setInvTargets] = useState([]); // [{sr_no, hostname, ip, mask, gateway, site, rack, status}]
+  const [invFileName, setInvFileName] = useState('');
+  const [invSiteFilter, setInvSiteFilter] = useState('all');
+  const [invFactoryIp, setInvFactoryIp] = useState('192.168.0.163');
+  const [invDetected, setInvDetected] = useState(null); // factory PDU detected at invFactoryIp
+  const [invBusy, setInvBusy] = useState(false);
+  const [invStage, setInvStage] = useState('idle'); // idle | detecting | applying | rebooting | done
+  const [invLastResult, setInvLastResult] = useState(null);
+  const [invDiag, setInvDiag] = useState(null); // web-admin login diagnostic report
+  const [invSelectedIp, setInvSelectedIp] = useState(null); // manually chosen target (overrides auto-next)
+
   // Web credential repair (uses hall DB + live probe — no manual curl)
   const [repairPdus, setRepairPdus] = useState([]);
   const [repairSelected, setRepairSelected] = useState(new Set());
@@ -154,7 +187,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
 
   const currentStep = STEPS[step];
 
-  // Demo account: pre-fill batch scan range and SNMP community
+  // Demo account: confirm pre-fill from API (subnet, factory IP, batch tab)
   useEffect(() => {
     const token = localStorage.getItem('pdumind_token');
     if (!token) return;
@@ -164,12 +197,44 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (!data?.demo_mode) return;
-        if (data.scan_subnet) setSubnet(data.scan_subnet);
-        setCommunity('private');
+        setIsDemoMode(true);
         setScanMode('batch');
+        setSubnet(data.scan_subnet || DEMO_SCAN_DEFAULTS.scan_subnet);
+        setCommunity(DEMO_SCAN_DEFAULTS.community);
+        setFactoryIp(data.factory_ip || DEMO_SCAN_DEFAULTS.factory_ip);
+        setBatchTemplate((prev) => ({
+          ...prev,
+          current_credentials: { username: 'admin', password: 'demo' },
+        }));
       })
       .catch(() => {});
   }, []);
+
+  const resetDemoForCommissioning = async () => {
+    if (!confirm('Factory reset? Clears commissioned PDUs so batch scan can find 8 devices on 10.99.1.206-213.')) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const token = localStorage.getItem('pdumind_token');
+      const res = await fetch(`${API_BASE}/api/demo/reset`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'factory' }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Reset failed');
+      setBatchDevices([]);
+      setBatchSelected(new Set());
+      setBatchStep(0);
+      setBatchJobId(null);
+      setBatchProgress(null);
+      setBatchRackMap({});
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Fetch data when entering step 1 (Configure)
   useEffect(() => {
@@ -515,12 +580,30 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
     setBatchDevices([]);
     setBatchSelected(new Set());
     try {
+      const credUser = batchTemplate.current_credentials?.username || 'admin';
+      const credPass = batchTemplate.current_credentials?.password || 'admin';
       const endpoint = batchScanMethod === 'http'
         ? '/api/network/scan/http'
         : '/api/network/scan';
       const body = batchScanMethod === 'http'
-        ? { subnet: subnet || '192.168.0.0/24', ports: [80, 6662, 8080, 443], connect_timeout: 1.5, http_timeout: 3 }
-        : { subnet: subnet || '192.168.0.0/24', community, timeout: 2 };
+        ? {
+          subnet: subnet || '192.168.0.0/24',
+          ports: [80, 6662, 8080, 443],
+          connect_timeout: 1.5,
+          http_timeout: 3,
+          expand_chains: true,
+          hall_id: hallId,
+          community,
+          current_credentials: { username: credUser, password: credPass },
+        }
+        : {
+          subnet: subnet || '192.168.0.0/24',
+          community,
+          timeout: 2,
+          expand_chains: true,
+          hall_id: hallId,
+          current_credentials: { username: credUser, password: credPass },
+        };
       const res = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -532,14 +615,17 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
         return;
       }
       if (data.discovered && data.discovered.length > 0) {
-        const credUser = batchTemplate.current_credentials?.username || 'admin';
-        const credPass = batchTemplate.current_credentials?.password || 'admin';
-        // For each discovered PDU, try to auto-detect web admin
+        // For each LAN-visible master, try to auto-detect web admin.
+        // Daisy slaves have no NIC — do not HTTP-probe their inventory IPs.
         const enriched = [];
         for (const d of data.discovered) {
           const scanPort = d.web_admin_port || 80;
           const scanHttps = !!d.web_admin_https;
-          const entry = { ...d, web_admin_port: scanPort, mac: '', firmware: '' };
+          const entry = { ...d, web_admin_port: scanPort, mac: d.mac || '', firmware: d.firmware || '' };
+          if (d.chain_role === 'slave') {
+            enriched.push(entry);
+            continue;
+          }
           try {
             const waRes = await fetch(`${API_BASE}/api/pdu-admin/connect`, {
               method: 'POST',
@@ -556,9 +642,10 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
             if (waData.success) {
               entry.web_admin_port = waData.web_port || scanPort;
               entry.web_admin_https = waData.use_https ? 1 : 0;
-              entry.mac = waData.device?.mac || '';
+              entry.mac = waData.device?.mac || entry.mac;
               entry.firmware = waData.device?.firmware || '';
-              entry.name = waData.device?.name || d.name;
+              if (!entry.hostname) entry.hostname = waData.device?.name || d.name;
+              entry.name = entry.hostname || waData.device?.name || d.name;
               entry.dhcp = waData.network?.dhcp || '';
             }
           } catch {}
@@ -567,7 +654,11 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
         setBatchDevices(enriched);
         setBatchSelected(new Set(enriched.map(d => d.ip)));
       } else {
-        setError('No PDUs found on this subnet');
+        setError(
+          isDemoMode
+            ? `No uncommissioned PDUs on ${subnet || DEMO_SCAN_DEFAULTS.scan_subnet}. The demo cage is already commissioned — use Factory reset below (header Reset Demo → Cancel on the dialog), then scan again.`
+            : 'No PDUs found on this subnet'
+        );
       }
     } catch (e) {
       setError(`Scan failed: ${e.message}`);
@@ -625,11 +716,27 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
       web_admin_port: d.web_admin_port || 80,
       web_admin_https: d.web_admin_https ? 1 : 0,
       snmp_version: d.snmp_version || '1',
+      hostname: d.hostname || d.name || '',
+      chain_role: d.chain_role || 'standalone',
+      master_ip: d.master_ip || '',
+      slave_index: d.slave_index || 0,
+      unit_index: d.unit_index || 1,
     }));
     // Tell the backend the order in the payload is authoritative — we already
     // sorted (or the user manually reordered) so the backend should not
     // re-sort and risk shuffling the hostname↔IP pairing.
     const templateForDeploy = { ...batchTemplate, ordering: 'manual' };
+    // "Keep current device name" → never push a hostname/device-name to the PDU
+    // (the full inventory hostname stays in PDUMind's DB regardless). This also
+    // protects NPDU units whose 15-char name field can't hold long hostnames.
+    if (batchTemplate.system?.keep_hostname) {
+      templateForDeploy.system = {
+        ...batchTemplate.system,
+        router_hostname: '',
+        device_name: '',
+        sync_device_name: false,
+      };
+    }
     setBatchPreviewOpen(false);
     try {
       const res = await fetch(`${API_BASE}/api/batch/commission`, {
@@ -661,6 +768,200 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
     } catch (e) {
       setError(`Batch deploy failed: ${e.message}`);
       setLoading(false);
+    }
+  };
+
+  // ---- Guided inventory commissioning -------------------------------------
+  const invStorageKey = `pdumind_inventory_${hallId || 'default'}`;
+
+  // Restore a saved inventory + progress for this hall.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(invStorageKey);
+      if (raw) {
+        const saved = JSON.parse(raw);
+        if (Array.isArray(saved?.targets)) {
+          setInvTargets(saved.targets);
+          setInvFileName(saved.fileName || '');
+        }
+      }
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [invStorageKey]);
+
+  const persistInventory = (targets, fileName) => {
+    try {
+      localStorage.setItem(invStorageKey, JSON.stringify({ targets, fileName, savedAt: Date.now() }));
+    } catch {}
+  };
+
+  const updateInvTargets = (next, fileName) => {
+    setInvTargets(next);
+    persistInventory(next, fileName ?? invFileName);
+  };
+
+  const handleInventoryFile = async (file) => {
+    if (!file) return;
+    setInvBusy(true);
+    setError(null);
+    try {
+      const buf = await file.arrayBuffer();
+      let binary = '';
+      const bytes = new Uint8Array(buf);
+      for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+      const b64 = btoa(binary);
+      const res = await fetch(`${API_BASE}/api/commission/inventory/parse`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: file.name, content_b64: b64 }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setError(data.error || 'Could not parse the inventory file');
+        return;
+      }
+      setInvFileName(file.name);
+      updateInvTargets(data.targets, file.name);
+      setInvSiteFilter('all');
+    } catch (e) {
+      setError(`Inventory upload failed: ${e.message}`);
+    } finally {
+      setInvBusy(false);
+    }
+  };
+
+  const invFiltered = invTargets.filter(t => invSiteFilter === 'all' || t.site === invSiteFilter);
+  const invSites = [...new Set(invTargets.map(t => t.site).filter(Boolean))];
+  const invDone = invTargets.filter(t => t.status === 'done').length;
+  // Auto next = first pending; but the operator can hand-pick any pending target.
+  const invNext = invFiltered.find(t => t.status === 'pending') || null;
+  const invSelected = invSelectedIp
+    ? invFiltered.find(t => t.ip === invSelectedIp && t.status === 'pending') || null
+    : null;
+  const invActive = invSelected || invNext;
+
+  const setTargetStatus = (ip, status, extra = {}) => {
+    const next = invTargets.map(t => (t.ip === ip ? { ...t, status, ...extra } : t));
+    updateInvTargets(next);
+  };
+
+  const detectFactoryPdu = async () => {
+    setInvBusy(true);
+    setInvStage('detecting');
+    setError(null);
+    setInvDetected(null);
+    try {
+      // NPDU-aware HTTP detect first (matches this firmware's /login flow).
+      const res = await fetch(`${API_BASE}/api/commission/guided-detect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          factory_ip: invFactoryIp,
+          current_credentials: { username: 'admin', password: 'admin' },
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.login_ok) {
+        setInvDetected({
+          ip: data.current_ip || invFactoryIp,
+          mac: data.mac || '',
+          firmware: data.firmware || 'NPDU',
+          name: '',
+          mask: data.mask || '',
+          gateway: data.gateway || '',
+          web_admin_port: data.http_port || 80,
+        });
+        setInvStage('idle');
+        return;
+      }
+      // Fall back to the SNMP factory-default scan for presence.
+      const snmpRes = await fetch(`${API_BASE}/api/network/scan/factory-default`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ factory_ip: invFactoryIp, community, scan_subnet: false }),
+      });
+      const snmp = await snmpRes.json();
+      if (snmp.found && snmp.device) {
+        setInvDetected({ ...snmp.device });
+        setInvStage('idle');
+        return;
+      }
+      setError(data.error || snmp.message || `No PDU found at ${invFactoryIp}. Connect one PDU and put your laptop on the 192.168.0.x subnet.`);
+      setInvStage('idle');
+    } catch (e) {
+      setError(`Detect failed: ${e.message}`);
+      setInvStage('idle');
+    } finally {
+      setInvBusy(false);
+    }
+  };
+
+  const testGuidedLogin = async () => {
+    setInvBusy(true);
+    setError(null);
+    setInvDiag(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/commission/guided-detect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          factory_ip: invFactoryIp,
+          current_credentials: { username: 'admin', password: 'admin' },
+        }),
+      });
+      const data = await res.json();
+      setInvDiag(data);
+      if (!data.success && !data.attempts) setError(data.error || 'Login test failed');
+    } catch (e) {
+      setError(`Login test failed: ${e.message}`);
+    } finally {
+      setInvBusy(false);
+    }
+  };
+
+  const applyGuidedTarget = async (target) => {
+    if (!target) return;
+    setInvBusy(true);
+    setInvStage('applying');
+    setError(null);
+    setInvLastResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/commission/guided-apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          factory_ip: invFactoryIp,
+          hall_id: hallId,
+          current_credentials: { username: 'admin', password: 'admin' },
+          web_admin_port: invDetected?.web_admin_port || 443,
+          web_admin_https: (invDetected?.web_admin_port || 443) === 443 ? 1 : 0,
+          target: {
+            ip: target.ip,
+            mask: target.mask,
+            gateway: target.gateway,
+            hostname: target.hostname,
+          },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setTargetStatus(target.ip, 'failed', { error: data.error || 'apply failed' });
+        setError(data.error || `Failed to commission ${target.hostname || target.ip}`);
+        if (data.attempts) setInvDiag({ success: false, attempts: data.attempts, host: invFactoryIp });
+        setInvStage('idle');
+        return;
+      }
+      setTargetStatus(target.ip, 'done', { mac: invDetected?.mac || '', applied_at: new Date().toISOString() });
+      setInvLastResult({ ...data, target });
+      setInvDetected(null);
+      setInvSelectedIp(null);
+      setInvStage('done');
+    } catch (e) {
+      setTargetStatus(target.ip, 'failed', { error: e.message });
+      setError(`Apply failed: ${e.message}`);
+      setInvStage('idle');
+    } finally {
+      setInvBusy(false);
     }
   };
 
@@ -1020,23 +1321,32 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
     const ipStart = (batchTemplate.network?.ip_start || '').trim();
     const ipParts = ipStart.split('.');
     const networkChange = ipParts.length === 4 && ipParts.every(p => /^\d+$/.test(p));
-    return ordered.map((d, idx) => {
+    let netIdx = 0;
+    return ordered.map((d) => {
+      const isSlave = d.chain_role === 'slave';
       let assignedIp = d.ip;
-      if (networkChange) {
-        assignedIp = `${ipParts[0]}.${ipParts[1]}.${ipParts[2]}.${parseInt(ipParts[3], 10) + idx}`;
+      if (networkChange && !isSlave) {
+        assignedIp = `${ipParts[0]}.${ipParts[1]}.${ipParts[2]}.${parseInt(ipParts[3], 10) + netIdx}`;
+        netIdx += 1;
       }
-      const hostname = resolveHostnamePattern(hostnamePat, idx, assignedIp, d.mac || '');
-      const deviceName = syncDevice
+      const keepName = batchTemplate.system?.keep_hostname || isSlave;
+      const hostname = keepName
+        ? (d.hostname || d.name || '')
+        : resolveHostnamePattern(hostnamePat, isSlave ? d.unit_index - 1 : netIdx - 1, assignedIp, d.mac || '');
+      const deviceName = keepName
         ? hostname
-        : resolveHostnamePattern(namePat, idx, assignedIp, d.mac || '');
+        : (syncDevice ? hostname : resolveHostnamePattern(namePat, netIdx - 1, assignedIp, d.mac || ''));
       return {
-        idx,
+        idx: netIdx,
         currentIp: d.ip,
         assignedIp,
         mac: d.mac || '',
         hostname,
         deviceName,
         webPort: d.web_admin_port || 80,
+        chainRole: d.chain_role,
+        masterIp: d.master_ip,
+        unitIndex: d.unit_index,
       };
     });
   };
@@ -1130,6 +1440,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   { id: 'manual', label: 'Manual IP', icon: 'edit' },
                   { id: 'subnet', label: 'Subnet Scan', icon: 'lan' },
                   { id: 'remote', label: 'Remote PDU', icon: 'cloud' },
+                  { id: 'inventory', label: 'Guided (Inventory)', icon: 'list_alt' },
                   { id: 'batch', label: 'Batch', icon: 'dynamic_feed' },
                   { id: 'repair', label: 'Repair', icon: 'healing' },
                 ].map(m => (
@@ -1286,6 +1597,238 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     Connects to the PDU's web admin panel (CGI interface) using HMAC-SHA1 authentication.
                     Reads device info, network config, and SNMP settings.
                   </p>
+                </div>
+              )}
+
+              {/* GUIDED INVENTORY — factory-default → assigned IP, one PDU at a time */}
+              {scanMode === 'inventory' && (
+                <div className="space-y-4">
+                  <div className="p-3 rounded-lg bg-[#00E5FF]/10 border border-[#00E5FF]/30">
+                    <p className="text-xs text-slate-200 leading-relaxed">
+                      <span className="font-semibold text-[#00E5FF]">Guided commissioning.</span> Upload your PDU inventory, then for each
+                      unit: plug your laptop's RJ45 into the PDU, click <span className="font-mono text-white">Detect</span>, then
+                      <span className="font-mono text-white"> Assign</span>. PDUMind pushes the next IP + hostname and reboots the PDU.
+                    </p>
+                    <p className="text-[10px] text-amber-300/90 mt-2 flex items-start gap-1.5">
+                      <span className="material-icons-outlined text-[12px] mt-0.5">info</span>
+                      Keep your laptop on the <span className="font-mono">192.168.0.100 / 255.255.255.0</span> subnet while detecting factory PDUs.
+                      After each reboot the PDU moves to its production IP — verify later with a Batch scan on the customer subnet.
+                    </p>
+                  </div>
+
+                  {/* Upload */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="px-4 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 hover:bg-[#00E5FF]/30 text-[#00E5FF] rounded-lg text-sm flex items-center gap-2 cursor-pointer">
+                      <span className="material-icons-outlined text-sm">upload_file</span>
+                      {invTargets.length > 0 ? 'Replace inventory' : 'Upload inventory (.xlsx)'}
+                      <input type="file" accept=".xlsx,.xls" className="hidden"
+                        onChange={e => { handleInventoryFile(e.target.files?.[0]); e.target.value = ''; }} />
+                    </label>
+                    {invFileName && <span className="text-[11px] text-slate-400 font-mono truncate max-w-[16rem]">{invFileName}</span>}
+                    {invTargets.length > 0 && (
+                      <button onClick={() => { updateInvTargets([], ''); setInvFileName(''); setInvDetected(null); }}
+                        className="text-[10px] text-slate-500 hover:text-red-300 ml-auto">Clear list</button>
+                    )}
+                  </div>
+
+                  {invTargets.length > 0 && (
+                    <>
+                      {/* Progress + filters */}
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <div className="text-xs text-slate-300">
+                            <span className="font-mono text-emerald-400 font-bold">{invDone}</span>
+                            <span className="text-slate-500"> / {invTargets.length} done</span>
+                          </div>
+                          <div className="h-1.5 w-40 rounded-full bg-[#0B1120] overflow-hidden">
+                            <div className="h-full bg-emerald-500 transition-all" style={{ width: `${invTargets.length ? (invDone / invTargets.length) * 100 : 0}%` }} />
+                          </div>
+                        </div>
+                        {invSites.length > 1 && (
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] text-slate-500 uppercase">Site</span>
+                            <select value={invSiteFilter} onChange={e => setInvSiteFilter(e.target.value)}
+                              className="bg-[#0B1120] border border-[#233544] rounded px-2 py-1 text-xs text-white">
+                              <option value="all">All</option>
+                              {invSites.map(s => <option key={s} value={s}>{s}</option>)}
+                            </select>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Current target action card */}
+                      <div className="p-3 rounded-lg bg-[#0B1120] border border-[#233544]">
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider flex items-center gap-1">
+                            <span className="material-icons-outlined text-xs">bolt</span>
+                            {invSelected ? 'Selected PDU to commission' : 'Next PDU to commission'}
+                          </p>
+                          <input value={invFactoryIp} onChange={e => setInvFactoryIp(e.target.value)}
+                            className="w-36 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-white font-mono text-[11px]"
+                            placeholder="192.168.0.163" title="Factory default IP" />
+                        </div>
+
+                        {invActive ? (
+                          <div className="space-y-3">
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                              <div><p className="text-[9px] text-slate-500 uppercase">Hostname</p><p className="font-mono text-white truncate" title={invActive.hostname}>{invActive.hostname || '—'}</p></div>
+                              <div><p className="text-[9px] text-slate-500 uppercase">Assign IP</p><p className="font-mono text-[#00E5FF]">{invActive.ip}/{invActive.cidr}</p></div>
+                              <div><p className="text-[9px] text-slate-500 uppercase">Gateway</p><p className="font-mono text-slate-300">{invActive.gateway}</p></div>
+                              <div><p className="text-[9px] text-slate-500 uppercase">Rack</p><p className="font-mono text-slate-300">{invActive.rack || '—'}</p></div>
+                            </div>
+
+                            {invSelected ? (
+                              <p className="text-[10px] text-[#00E5FF]/90 flex items-center gap-1.5">
+                                <span className="material-icons-outlined text-[12px]">touch_app</span>
+                                Hand-picked target — assigning to the connected PDU instead of the sequential next.
+                                <button onClick={() => setInvSelectedIp(null)} className="ml-1 text-slate-500 hover:text-amber-300 underline">use sequential next</button>
+                              </p>
+                            ) : (
+                              <p className="text-[10px] text-slate-500 flex items-center gap-1.5">
+                                <span className="material-icons-outlined text-[12px]">info</span>
+                                Sequential next. Pick any <span className="text-slate-300">Pending</span> row below to assign a different IP to this PDU.
+                              </p>
+                            )}
+
+                            {invDetected && (
+                              <div className="p-2 rounded bg-emerald-500/10 border border-emerald-500/30 text-[11px] text-emerald-200 flex items-center gap-2">
+                                <span className="material-icons-outlined text-sm">check_circle</span>
+                                Detected factory PDU at {invDetected.ip}
+                                {invDetected.mac && <span className="font-mono text-slate-400">· {invDetected.mac}</span>}
+                                {invDetected.firmware && <span className="text-slate-500">· FW {invDetected.firmware}</span>}
+                              </div>
+                            )}
+
+                            <div className="flex flex-wrap gap-2">
+                              <button onClick={detectFactoryPdu} disabled={invBusy}
+                                className="px-4 py-2 bg-[#161E2E] border border-[#00E5FF]/40 hover:bg-[#00E5FF]/10 disabled:opacity-50 text-[#00E5FF] rounded-lg text-sm flex items-center gap-1.5">
+                                {invBusy && invStage === 'detecting'
+                                  ? <span className="material-icons-outlined text-sm animate-spin">sync</span>
+                                  : <span className="material-icons-outlined text-sm">wifi_find</span>}
+                                1. Detect
+                              </button>
+                              <button onClick={() => applyGuidedTarget(invActive)} disabled={invBusy || !invDetected}
+                                className="px-4 py-2 bg-emerald-500/20 border border-emerald-500/50 hover:bg-emerald-500/30 disabled:opacity-40 text-emerald-300 rounded-lg text-sm flex items-center gap-1.5"
+                                title={!invDetected ? 'Detect a factory PDU first' : ''}>
+                                {invBusy && invStage === 'applying'
+                                  ? <span className="material-icons-outlined text-sm animate-spin">sync</span>
+                                  : <span className="material-icons-outlined text-sm">send</span>}
+                                2. Assign {invActive.ip} &amp; reboot
+                              </button>
+                              <button onClick={testGuidedLogin} disabled={invBusy}
+                                className="px-3 py-2 bg-[#161E2E] border border-[#233544] hover:border-amber-400/50 disabled:opacity-50 text-amber-300 rounded-lg text-xs flex items-center gap-1.5"
+                                title="Probe web-admin login on ports 443/80/6662/8080 with admin/admin">
+                                <span className="material-icons-outlined text-sm">vpn_key</span>
+                                Test login
+                              </button>
+                              <button onClick={() => { setTargetStatus(invActive.ip, 'skipped'); setInvSelectedIp(null); }} disabled={invBusy}
+                                className="px-3 py-2 text-slate-500 hover:text-amber-300 rounded-lg text-xs ml-auto">Skip</button>
+                            </div>
+
+                            {invDiag && (
+                              <div className={`p-2 rounded border text-[11px] ${invDiag.success ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-red-500/10 border-red-500/30'}`}>
+                                <p className={`font-semibold mb-1 ${invDiag.success ? 'text-emerald-300' : 'text-red-300'}`}>
+                                  {invDiag.success
+                                    ? `Login OK on ${invDiag.url} (use admin/admin)`
+                                    : `Login failed on all ports for ${invDiag.host || invFactoryIp}`}
+                                </p>
+                                <div className="space-y-0.5 font-mono text-[10px]">
+                                  {(invDiag.attempts || []).map((a, i) => (
+                                    <div key={i} className="flex items-center gap-2">
+                                      <span className={a.success ? 'text-emerald-400' : a.tcp_reachable ? 'text-amber-400' : 'text-slate-600'}>
+                                        {a.success ? '✓' : a.tcp_reachable ? '!' : '×'}
+                                      </span>
+                                      <span className="text-slate-400">{a.url}</span>
+                                      <span className="text-slate-600 truncate">
+                                        {a.success ? 'login OK' : a.tcp_reachable ? (a.error || 'login rejected') : 'no TCP (port closed/unreachable)'}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                                {!invDiag.success && (
+                                  <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
+                                    If all show <span className="text-slate-300">no TCP</span>: laptop not on the PDU subnet, or Docker can't reach it — check IP <span className="font-mono">192.168.0.100/24</span>.
+                                    If a port is <span className="text-amber-300">reachable but login rejected</span>: the factory password isn't admin/admin — try the label/QR password.
+                                  </p>
+                                )}
+                              </div>
+                            )}
+
+                            {invLastResult && (
+                              <p className="text-[11px] text-emerald-300/90 flex items-center gap-1.5">
+                                <span className="material-icons-outlined text-xs">task_alt</span>
+                                {invLastResult.message}
+                              </p>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-emerald-300 py-2 flex items-center gap-2">
+                            <span className="material-icons-outlined text-base">verified</span>
+                            All PDUs in this view are commissioned. Switch your laptop to the production subnet and run a Batch scan to verify.
+                          </p>
+                        )}
+                      </div>
+
+                      {/* Inventory list */}
+                      <div className="max-h-[320px] overflow-y-auto rounded-lg border border-[#233544]">
+                        <table className="w-full text-xs">
+                          <thead className="sticky top-0 bg-[#0B1120] text-slate-500 text-[10px] uppercase">
+                            <tr>
+                              <th className="text-left px-2 py-1.5">#</th>
+                              <th className="text-left px-2 py-1.5">Hostname</th>
+                              <th className="text-left px-2 py-1.5">IP</th>
+                              <th className="text-left px-2 py-1.5">Gateway</th>
+                              <th className="text-left px-2 py-1.5">Rack</th>
+                              <th className="text-left px-2 py-1.5">Status</th>
+                              <th className="px-2 py-1.5"></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {invFiltered.map((t, i) => {
+                              const isActive = invActive && t.ip === invActive.ip;
+                              const isPicked = invSelected && t.ip === invSelected.ip;
+                              const selectable = t.status === 'pending' && !invBusy;
+                              return (
+                                <tr key={t.ip}
+                                  onClick={selectable ? () => setInvSelectedIp(t.ip) : undefined}
+                                  className={`border-t border-[#233544]/60 ${isActive ? 'bg-[#00E5FF]/10' : ''} ${selectable ? 'cursor-pointer hover:bg-[#00E5FF]/5' : ''}`}>
+                                  <td className="px-2 py-1.5 text-slate-600">
+                                    {isActive
+                                      ? <span className="material-icons-outlined text-[14px] text-[#00E5FF]" title={isPicked ? 'Selected target' : 'Next target'}>{isPicked ? 'radio_button_checked' : 'play_arrow'}</span>
+                                      : (t.sr_no || i + 1)}
+                                  </td>
+                                  <td className="px-2 py-1.5 font-mono text-slate-300 truncate max-w-[14rem]" title={t.hostname}>{t.hostname}</td>
+                                  <td className="px-2 py-1.5 font-mono text-[#00E5FF]">{t.ip}</td>
+                                  <td className="px-2 py-1.5 font-mono text-slate-500">{t.gateway}</td>
+                                  <td className="px-2 py-1.5 font-mono text-slate-500">{t.rack || '—'}</td>
+                                  <td className="px-2 py-1.5">
+                                    {t.status === 'done' && <span className="text-emerald-400 flex items-center gap-1"><span className="material-icons-outlined text-[13px]">check_circle</span>Done</span>}
+                                    {t.status === 'pending' && <span className={isPicked ? 'text-[#00E5FF] font-semibold' : 'text-slate-500'}>{isPicked ? 'Selected' : 'Pending'}</span>}
+                                    {t.status === 'skipped' && <span className="text-amber-400">Skipped</span>}
+                                    {t.status === 'failed' && <span className="text-red-400" title={t.error}>Failed</span>}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                                    {t.status === 'pending' && !isPicked && (
+                                      <button onClick={(e) => { e.stopPropagation(); setInvSelectedIp(t.ip); }}
+                                        className="text-[10px] text-slate-600 hover:text-[#00E5FF]" title="Assign this IP to the connected PDU">select</button>
+                                    )}
+                                    {isPicked && (
+                                      <button onClick={(e) => { e.stopPropagation(); setInvSelectedIp(null); }}
+                                        className="text-[10px] text-[#00E5FF] hover:text-amber-300" title="Clear selection (use sequential next)">clear</button>
+                                    )}
+                                    {t.status !== 'pending' && (
+                                      <button onClick={(e) => { e.stopPropagation(); setTargetStatus(t.ip, 'pending'); }}
+                                        className="text-[10px] text-slate-600 hover:text-[#00E5FF]" title="Reset to pending">redo</button>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
 
@@ -1549,6 +2092,11 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   {batchStep === 0 && (
                     <>
                       <p className="text-xs text-slate-400">Scan a subnet for all DHCP-connected PDUs, then configure them all at once.</p>
+                      <p className="text-[10px] text-slate-500 leading-relaxed px-0.5">
+                        Daisy-chain slaves have no Ethernet — the scan reads them through each master
+                        (<span className="font-mono">getstatus</span> / SNMP <span className="font-mono">.3.2–.3.4</span>).
+                        SNMP in the template is written on the master and applied to the whole chain.
+                      </p>
 
                       {/* Discovery method selector — HTTP mode is for VPN/firewalled networks where SNMP UDP/161 is blocked */}
                       <div className="flex items-center gap-2 p-2 rounded-lg bg-[#0a1222] border border-[#233544]">
@@ -1587,10 +2135,32 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         </p>
                       )}
 
+                      {isDemoMode && (
+                        <div className="flex items-start gap-2 p-2.5 rounded-lg bg-fuchsia-500/10 border border-fuchsia-500/30">
+                          <span className="material-icons-outlined text-sm text-fuchsia-300 mt-0.5">science</span>
+                          <div className="text-[11px] leading-relaxed flex-1 min-w-0">
+                            <p className="font-medium text-fuchsia-200">Demo scan range</p>
+                            <p className="font-mono text-fuchsia-300/90 mt-0.5">{DEMO_SCAN_DEFAULTS.scan_subnet}</p>
+                            <p className="text-slate-500 mt-1">
+                              PDUs {DEMO_SCAN_DEFAULTS.pdu_ip_range} · community <span className="font-mono">private</span>
+                              {' · '}batch scan only finds <span className="text-fuchsia-300/90">uncommissioned</span> units.
+                            </p>
+                            <button
+                              type="button"
+                              onClick={resetDemoForCommissioning}
+                              disabled={loading}
+                              className="mt-2 px-2.5 py-1 rounded border border-fuchsia-500/40 text-fuchsia-200 hover:bg-fuchsia-500/15 text-[10px] font-bold uppercase tracking-wide disabled:opacity-50"
+                            >
+                              Factory reset for commissioning
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
                       <div className="flex gap-2">
                         <input type="text" value={subnet} onChange={e => setSubnet(e.target.value)}
                           className="flex-1 bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
-                          placeholder="10.106.76.206-223 or 192.168.0.0/24" />
+                          placeholder={isDemoMode ? DEMO_SCAN_DEFAULTS.scan_subnet : '10.106.76.206-223 or 192.168.0.0/24'} />
                         {batchScanMethod === 'snmp' && (
                           <input type="text" value={community} onChange={e => setCommunity(e.target.value)}
                             className="w-24 bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
@@ -1606,7 +2176,16 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                       {batchDevices.length > 0 && (
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
-                            <p className="text-xs text-slate-400">Found {batchDevices.length} PDU(s) — select which to commission:</p>
+                            <p className="text-xs text-slate-400">
+                              Found {batchDevices.length} PDU(s)
+                              {batchDevices.some(d => d.chain_role === 'slave') && (
+                                <span className="text-slate-500">
+                                  {' '}· {batchDevices.filter(d => d.chain_role !== 'slave').length} masters,{' '}
+                                  {batchDevices.filter(d => d.chain_role === 'slave').length} daisy slaves
+                                </span>
+                              )}
+                              {' '}— select which to commission:
+                            </p>
                             <button onClick={() => setBatchSelected(prev => prev.size === batchDevices.length ? new Set() : new Set(batchDevices.map(d => d.ip)))}
                               className="text-[10px] text-[#00E5FF] hover:text-[#00E5FF]/80">
                               {batchSelected.size === batchDevices.length ? 'Deselect All' : 'Select All'}
@@ -1616,6 +2195,8 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                             {batchDevices.map(d => (
                               <div key={d.ip} onClick={() => toggleBatchDevice(d.ip)}
                                 className={`p-3 rounded-lg border cursor-pointer transition-all ${
+                                  d.chain_role === 'slave' ? 'ml-4 ' : ''
+                                }${
                                   batchSelected.has(d.ip) ? 'bg-emerald-500/10 border-emerald-500/40' : 'bg-[#0B1120] border-[#233544] hover:border-slate-500'
                                 }`}>
                                 <div className="flex items-center gap-3">
@@ -1625,13 +2206,24 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                     {batchSelected.has(d.ip) && <span className="material-icons-outlined text-emerald-400 text-xs">check</span>}
                                   </div>
                                   <div className="flex-1 min-w-0">
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-2 flex-wrap">
                                       <span className="font-mono text-white text-sm">{d.ip}</span>
                                       {d.mac && <span className="text-[10px] text-slate-500 font-mono">{d.mac}</span>}
+                                      {d.chain_role === 'master' && (d.chain_size || 0) > 1 && (
+                                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-[#00E5FF]/15 text-[#00E5FF] border border-[#00E5FF]/30">Chain master</span>
+                                      )}
+                                      {d.chain_role === 'slave' && (
+                                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/30">
+                                          Daisy -{d.unit_index} via {d.master_ip}
+                                        </span>
+                                      )}
+                                      {d.chain_role === 'slave' && d.chain_live === false && (
+                                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">0 V bus</span>
+                                      )}
                                       {d.dhcp === 'ON' && <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">DHCP</span>}
-                                      {d.web_admin_port && <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">Web:{d.web_admin_port}</span>}
+                                      {d.web_admin_port && d.chain_role !== 'slave' && <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">Web:{d.web_admin_port}</span>}
                                     </div>
-                                    {d.name && <p className="text-[10px] text-slate-500 truncate">{d.name} {d.firmware ? `(FW ${d.firmware})` : ''}</p>}
+                                    {(d.hostname || d.name) && <p className="text-[10px] text-slate-500 truncate">{d.hostname || d.name} {d.firmware ? `(FW ${d.firmware})` : ''}</p>}
                                   </div>
                                 </div>
                               </div>
@@ -1698,10 +2290,19 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                           <span className="material-icons-outlined text-xs">dns</span> System
                         </p>
                         <div className="space-y-2">
-                          <div>
+                          <label className="flex items-center gap-2 cursor-pointer p-2 rounded bg-[#161E2E] border border-[#233544] hover:border-[#00E5FF]/50 transition-colors">
+                            <input type="checkbox"
+                              checked={batchTemplate.system.keep_hostname === true}
+                              onChange={e => setBatchTemplate(p => ({ ...p, system: { ...p.system, keep_hostname: e.target.checked } }))}
+                              className="accent-[#00E5FF]" />
+                            <span className="text-[11px] text-white">Keep current device name (don't change)</span>
+                            <span className="text-[9px] text-slate-500 ml-1">— use when IPs/names were already set in Guided mode</span>
+                          </label>
+                          <div className={batchTemplate.system.keep_hostname ? 'opacity-40 pointer-events-none' : ''}>
                             <label className="text-[9px] text-slate-500 uppercase">Hostname Pattern</label>
                             <input type="text" value={batchTemplate.system.router_hostname}
                               onChange={e => setBatchTemplate(p => ({ ...p, system: { ...p.system, router_hostname: e.target.value } }))}
+                              disabled={batchTemplate.system.keep_hostname === true}
                               className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
                               placeholder="SIN1-PDU-2NBS{10-17}-A" />
                             <div className="text-[9px] text-slate-600 mt-1 space-y-0.5">
@@ -1720,15 +2321,16 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                               </p>
                             </div>
                           </div>
-                          <label className="flex items-center gap-2 cursor-pointer p-2 rounded bg-[#161E2E] border border-[#233544] hover:border-[#00E5FF]/50 transition-colors">
+                          <label className={`flex items-center gap-2 cursor-pointer p-2 rounded bg-[#161E2E] border border-[#233544] hover:border-[#00E5FF]/50 transition-colors ${batchTemplate.system.keep_hostname ? 'opacity-40 pointer-events-none' : ''}`}>
                             <input type="checkbox"
                               checked={batchTemplate.system.sync_device_name !== false}
+                              disabled={batchTemplate.system.keep_hostname === true}
                               onChange={e => setBatchTemplate(p => ({ ...p, system: { ...p.system, sync_device_name: e.target.checked } }))}
                               className="accent-[#00E5FF]" />
                             <span className="text-[11px] text-white">Use hostname as device name</span>
                             <span className="text-[9px] text-slate-500 ml-1">— each PDU's device name will mirror its resolved hostname</span>
                           </label>
-                          {batchTemplate.system.sync_device_name === false && (
+                          {batchTemplate.system.sync_device_name === false && !batchTemplate.system.keep_hostname && (
                             <div>
                               <label className="text-[9px] text-slate-500 uppercase">Device Name (or pattern)</label>
                               <input type="text" value={batchTemplate.system.device_name}
@@ -1801,6 +2403,11 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                           value={batchTemplate.snmp}
                           onChange={snmp => setBatchTemplate(p => ({ ...p, snmp }))}
                         />
+                        <p className="text-[9px] text-slate-500 mt-2 leading-relaxed">
+                          Daisy slaves have no SNMP agent of their own. This write goes to each chain master;
+                          PDUMind stores the same community on every slave and polls them on the master
+                          (<span className="font-mono">.3.2 / .3.3 / .3.4</span>).
+                        </p>
                       </div>
                       {/* NTP */}
                       <div className="p-3 rounded-lg bg-[#0B1120] border border-[#233544]">
@@ -2695,6 +3302,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   <th className="px-3 py-2 text-left w-10">#</th>
                   <th className="px-3 py-2 text-center w-16">Move</th>
                   <th className="px-3 py-2 text-left">IP Address</th>
+                  <th className="px-3 py-2 text-left">Chain</th>
                   <th className="px-3 py-2 text-left">Hostname</th>
                   <th className="px-3 py-2 text-left">Device Name</th>
                   <th className="px-3 py-2 text-left">MAC</th>
@@ -2705,7 +3313,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   const rows = buildBatchPreviewRows();
                   if (rows.length === 0) {
                     return (
-                      <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-500">No PDUs selected.</td></tr>
+                      <tr><td colSpan={7} className="px-4 py-6 text-center text-slate-500">No PDUs selected.</td></tr>
                     );
                   }
                   return rows.map((row, i) => (
@@ -2735,6 +3343,15 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                           <span className="ml-2 text-[10px] text-amber-300">
                             was {row.currentIp}
                           </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {row.chainRole === 'slave' ? (
+                          <span className="text-[10px] text-violet-300">Daisy via {row.masterIp}</span>
+                        ) : row.chainRole === 'master' ? (
+                          <span className="text-[10px] text-[#00E5FF]">Master</span>
+                        ) : (
+                          <span className="text-slate-600">—</span>
                         )}
                       </td>
                       <td className="px-3 py-2 font-mono text-emerald-300">{row.hostname || <span className="text-slate-600">(empty)</span>}</td>

@@ -19,42 +19,35 @@ function gitVersion() {
   }
 }
 
+const apiProxy = {
+  '/api': {
+    target: process.env.API_PROXY_TARGET || 'http://127.0.0.1:5002',
+    changeOrigin: true,
+    secure: false,
+    ws: true,
+  },
+};
+
 export default defineConfig(({ command }) => ({
+  appType: 'spa',
   plugins: [react()],
   define: {
     __APP_VERSION__: JSON.stringify(gitVersion()),
   },
   server: {
     port: 3000,
-    proxy: {
-      '/api': {
-        target: process.env.API_PROXY_TARGET || 'http://127.0.0.1:5002',
-        changeOrigin: true,
-        secure: false,
-        ws: true,
-        configure: (proxy, options) => {
-          proxy.on('error', (err, req, res) => {
-            console.error('PROXY ERROR:', err);
-          });
-          proxy.on('proxyReq', (proxyReq, req, res) => {
-            console.log('PROXY REQUEST:', {
-              method: req.method,
-              url: req.url,
-              headers: req.headers,
-              body: req.body
-            });
-          });
-          proxy.on('proxyRes', (proxyRes, req, res) => {
-            console.log('PROXY RESPONSE:', {
-              statusCode: proxyRes.statusCode,
-              method: req.method,
-              url: req.url,
-              headers: proxyRes.headers
-            });
-          });
-        }
-      }
-    }
+    host: '0.0.0.0',
+    allowedHosts: true,
+    proxy: apiProxy,
+  },
+  // `vite preview` serves the production build (bundled, instant) and is what the
+  // container runs. Same /api proxy so the backend routing (Host rewrite) is
+  // identical to dev.
+  preview: {
+    port: 3000,
+    host: '0.0.0.0',
+    allowedHosts: true,
+    proxy: apiProxy,
   },
   build: {
     outDir: 'dist',

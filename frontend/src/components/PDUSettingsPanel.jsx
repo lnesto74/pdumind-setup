@@ -66,7 +66,7 @@ const StatusBadge = ({ ok, label }) => (
   </span>
 );
 
-const PDUSettingsPanel = ({ pdu }) => {
+const PDUSettingsPanel = ({ pdu, embedded = false }) => {
   const host = pdu?.remote_host || pdu?.ip;
   const credentialsMissing = !pdu?.web_admin_port || !pdu?.web_admin_pass || !pdu?.web_admin_user;
   // When DB lost web-admin fields, prefer HTTPS:443 (common after batch commissioning).
@@ -92,6 +92,7 @@ const PDUSettingsPanel = ({ pdu }) => {
   const [rebootStatus, setRebootStatus] = useState(null);
   const [systemConfig, setSystemConfig] = useState({});
   const [users, setUsers] = useState({});
+  const [chain, setChain] = useState(null);
 
   const telemetryTimer = useRef(null);
 
@@ -119,6 +120,7 @@ const PDUSettingsPanel = ({ pdu }) => {
         setDeviceInfo(data.device || {});
         setSystemConfig(data.system || {});
         setUsers(data.users || {});
+        setChain(data.chain || null);
       } else {
         setError(data.error || 'Failed to read settings');
       }
@@ -413,8 +415,9 @@ const PDUSettingsPanel = ({ pdu }) => {
   }
 
   return (
-    <div>
+    <div className={embedded ? 'min-h-0' : undefined}>
       {/* Header */}
+      {!embedded && (
       <div className="flex justify-between items-start mb-6">
         <div>
           <div className="flex items-center gap-2 mb-1">
@@ -433,12 +436,26 @@ const PDUSettingsPanel = ({ pdu }) => {
           Refresh
         </button>
       </div>
+      )}
+
+      {embedded && (
+        <div className="flex justify-between items-center gap-3 mb-4 flex-wrap">
+          <p className="text-xs text-slate-500 font-mono truncate">
+            {deviceInfo.name || host} · FW {deviceInfo.firmware || '?'}
+          </p>
+          <button onClick={fetchSettings} disabled={loading || credentialsMissing}
+            className="px-3 py-1.5 bg-[#161E2E] border border-[#233544] hover:border-[#00E5FF]/30 text-slate-300 rounded-lg text-xs flex items-center gap-1.5 transition-all flex-shrink-0">
+            <span className={`material-icons-outlined text-sm ${loading ? 'animate-spin' : ''}`}>refresh</span>
+            Refresh
+          </button>
+        </div>
+      )}
 
       {/* Tab Bar */}
-      <div className="flex gap-1 mb-6 bg-[#0a1222] rounded-lg p-1">
+      <div className={`flex gap-1 mb-4 bg-[#0a1222] rounded-lg p-1 overflow-x-auto ${embedded ? 'flex-nowrap' : ''}`}>
         {TABS.map(t => (
           <button key={t.id} onClick={() => setTab(t.id)}
-            className={`flex-1 py-2 px-3 text-xs uppercase rounded-md flex items-center justify-center gap-1.5 transition-all ${
+            className={`${embedded ? 'flex-shrink-0' : 'flex-1'} py-2 px-3 text-xs uppercase rounded-md flex items-center justify-center gap-1.5 transition-all whitespace-nowrap ${
               tab === t.id
                 ? 'bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/40'
                 : 'text-slate-500 hover:text-slate-300 border border-transparent'
@@ -450,6 +467,15 @@ const PDUSettingsPanel = ({ pdu }) => {
       </div>
 
       {/* Banners */}
+      {chain?.role === 'slave' && (
+        <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-amber-200 text-sm flex items-start gap-2">
+          <span className="material-icons-outlined text-sm mt-0.5">cable</span>
+          <span>
+            Daisy slave — this unit has no LAN port. Settings are the chain master
+            {' '}{chain.master_hostname || chain.via} ({chain.via}). Network / SNMP / reboot apply to the whole chain.
+          </span>
+        </div>
+      )}
       {error && (
         <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm flex items-center gap-2">
           <span className="material-icons-outlined text-sm">error</span>

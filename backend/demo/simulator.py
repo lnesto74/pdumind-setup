@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import math
 import random
 import time
 import uuid
@@ -55,12 +56,25 @@ def _init_devices() -> None:
 
 
 def reset_simulator_state() -> None:
+    """In-memory PDU sim back to factory DHCP — uncommissioned, no telemetry cache."""
     with _state_lock:
         _devices.clear()
         _telemetry.clear()
     with _batch_lock:
         _BATCH_JOBS.clear()
     _init_devices()
+
+
+def uncommission_all_devices() -> None:
+    """Mark every sim PDU uncommissioned without wiping the device table (DB cleared separately)."""
+    _init_devices()
+    with _state_lock:
+        for dev in _devices.values():
+            dev["commissioned"] = False
+            dev["sim_offline"] = False
+            dev["hostname"] = ""
+            dev["label"] = ""
+        _telemetry.clear()
 
 
 def _demo_ip_set() -> set:
@@ -226,36 +240,309 @@ def _resolve_name(pattern: str, idx: int, ip: str, mac: str) -> str:
     return result
 
 
+def _demo_entry(name: str, value: Any) -> Dict[str, Any]:
+    return {"name": name, "oid": "demo", "value": str(value)}
+
+
+# PDUs simulated offline while commissioned (seq numbers)
+_DEMO_OFFLINE_SEQS = {6, 8}
+
+
+def _layout_rack_code(row_index: int, position_index: int) -> str:
+    """Match DataHallDesigner generateDataHallLayout rack.id format."""
+    return f"Row-{row_index + 1:02d}/Rack-{position_index + 1:02d}"
+
+
+def ensure_demo_rack_layout(hall_id: int) -> None:
+    """Ensure rack codes align with 3D layout (Row-01/Rack-01, ...)."""
+    activate_demo_db()
+    from db import RackRepo
+
+    racks = []
+    for i in range(8):
+        row = i // 4
+        col = i % 4
+        racks.append({
+            "rack_code": _layout_rack_code(row, col),
+            "row_index": row,
+            "position_index": col,
+            "x_m": 2 + col * 2.2,
+            "y_m": 0,
+            "z_m": 2 + row * 3.5,
+            "width_mm": 600,
+            "depth_mm": 1000,
+            "height_u": 42,
+            "model": "Standard 42U",
+            "label": _layout_rack_code(row, col),
+        })
+
+    for rack in racks:
+        RackRepo.upsert(hall_id, rack["rack_code"], rack)
+
+    new_codes = {r["rack_code"] for r in racks}
+    RackRepo.cleanup_stale(hall_id, new_codes)
+
+
+def assign_demo_pdus_to_racks(hall_id: int, shuffle: bool = True) -> int:
+    """Assign each demo PDU to exactly one rack (shuffled for easy visual spread)."""
+    activate_demo_db()
+    from db import PDURepo, RackRepo
+
+    ensure_demo_rack_layout(hall_id)
+    racks = sorted(
+        RackRepo.get_by_hall(hall_id),
+        key=lambda r: (r.get("row_index") or 0, r.get("position_index") or 0),
+    )
+    layout_racks = [r for r in racks if str(r.get("rack_code", "")).startswith("Row-")]
+    if not layout_racks:
+        layout_racks = racks[:8]
+
+    pdus = [p for p in PDURepo.get_by_hall(hall_id) if p.get("ip_address") in DEMO_IPS]
+    if shuffle:
+        random.shuffle(pdus)
+
+    assigned = 0
+    for idx, pdu in enumerate(pdus):
+        if idx >= len(layout_racks):
+            break
+        rack = layout_racks[idx]
+        ip = pdu["ip_address"]
+        PDURepo.upsert(hall_id, ip, {
+            "rack_id": rack["id"],
+            "mount_position": "A",
+            "hostname": pdu.get("hostname"),
+            "label": pdu.get("label"),
+            "mac_address": pdu.get("mac_address"),
+            "web_admin_port": pdu.get("web_admin_port") or 443,
+            "web_admin_https": True,
+            "web_admin_user": pdu.get("web_admin_user") or "admin",
+            "web_admin_pass": pdu.get("web_admin_pass") or "demo",
+            "is_active": True,
+        })
+        assigned += 1
+
+    if assigned:
+        print(f"[Demo] Assigned {assigned} PDUs to racks (shuffle={shuffle})")
+    return assigned
+
+
+def seed_demo_fleet(hall_id: int) -> int:
+    """Pre-commission all 8 demo PDUs with dummy telemetry. Returns count seeded."""
+    activate_demo_db()
+    from db import PDURepo
+
+    _init_devices()
+    for idx, ip in enumerate(DEMO_IPS):
+        seq = idx + 1
+        hostname = f"NTT-{seq:03d}-{ip.split('.')[-1]}-A"
+        sim_offline = seq in _DEMO_OFFLINE_SEQS
+
+        with _state_lock:
+            _devices[ip].update({
+                "commissioned": True,
+                "sim_offline": sim_offline,
+                "seq": seq,
+                "hostname": hostname,
+                "label": hostname,
+            })
+
+        PDURepo.upsert(hall_id, ip, {
+            "mount_position": "A",
+            "hostname": hostname,
+            "label": hostname,
+            "mac_address": _mac_for_index(idx),
+            "web_admin_port": 443,
+            "web_admin_https": True,
+            "web_admin_user": "admin",
+            "web_admin_pass": "demo",
+            "snmp_port": 161,
+            "snmp_version": "2c",
+            "is_active": True,
+        })
+
+    assign_demo_pdus_to_racks(hall_id, shuffle=True)
+    count = len(DEMO_IPS)
+
+    refresh_telemetry()
+    print(f"[Demo] Pre-seeded {count} PDUs ({len(_DEMO_OFFLINE_SEQS)} simulated offline)")
+    return count
+
+
+def sync_demo_simulator_from_db(hall_id: int) -> None:
+    """Rehydrate in-memory simulator from demo DB (survives backend restarts)."""
+    activate_demo_db()
+    from db import PDURepo
+
+    _init_devices()
+    pdus = PDURepo.get_by_hall(hall_id)
+    if not pdus:
+        return
+    ip_to_idx = {ip: i for i, ip in enumerate(DEMO_IPS)}
+    for pdu in pdus:
+        ip = pdu.get("ip_address")
+        if ip not in _devices:
+            continue
+        idx = ip_to_idx.get(ip, 0)
+        seq = idx + 1
+        with _state_lock:
+            _devices[ip].update({
+                "commissioned": True,
+                "sim_offline": seq in _DEMO_OFFLINE_SEQS,
+                "seq": seq,
+                "hostname": pdu.get("hostname") or pdu.get("label") or ip,
+                "label": pdu.get("label") or pdu.get("hostname") or ip,
+            })
+    refresh_telemetry()
+
+
+def get_demo_fleet_telemetry(hall_id: Optional[int] = None) -> Dict[str, Any]:
+    """Bulk telemetry snapshot for demo dashboard (includes offline stale data)."""
+    _init_devices()
+    if not any(d.get("commissioned") for d in _devices.values()):
+        activate_demo_db()
+        from db import HallRepo
+        if hall_id is None:
+            for h in HallRepo.get_all():
+                if h.get("name") == DEMO_HALL_NAME:
+                    hall_id = h["id"]
+                    break
+        if hall_id:
+            sync_demo_simulator_from_db(hall_id)
+            from db import PDURepo
+            demo_pdus = [p for p in PDURepo.get_by_hall(hall_id) if p.get("ip_address") in DEMO_IPS]
+            if demo_pdus and any(not p.get("rack_id") for p in demo_pdus):
+                assign_demo_pdus_to_racks(hall_id, shuffle=True)
+    refresh_telemetry()
+    pdus = []
+    for idx, ip in enumerate(DEMO_IPS):
+        dev = _devices[ip]
+        online = bool(dev.get("commissioned") and not dev.get("sim_offline"))
+        with _state_lock:
+            tel = _telemetry.get(ip) or _generate_telemetry(ip, dev)
+            if ip not in _telemetry:
+                _telemetry[ip] = tel
+
+        results_list = list(tel.values())
+        flags_entry = tel.get("_alarm_flags", {})
+        count_entry = tel.get("_alarm_count", {})
+        count = int(count_entry.get("value", "0") if isinstance(count_entry, dict) else 0)
+        flags = []
+        try:
+            flags = json.loads(flags_entry.get("value", "[]") if isinstance(flags_entry, dict) else "[]")
+        except Exception:
+            pass
+        alarm_entries = [
+            {"key": k, "value": v.get("value", "")}
+            for k, v in tel.items()
+            if k.startswith("alarm_") and not k.endswith("_color")
+            and k not in ("alarm_status", "alarm_color")
+        ]
+
+        pdus.append({
+            "ip": ip,
+            "seq": dev.get("seq", idx + 1),
+            "online": online,
+            "state": "online" if online else "offline",
+            "label": dev.get("label") or hostname if (hostname := dev.get("hostname")) else ip,
+            "results": results_list if dev.get("commissioned") else [],
+            "alarm_count": count,
+            "alarm_flags": flags,
+            "alarm_entries": alarm_entries,
+            "env": {
+                "temp": tel.get("Temperature1", {}).get("value"),
+                "temp2": tel.get("Temperature2", {}).get("value"),
+                "hum": tel.get("Humidity1", {}).get("value"),
+                "door": tel.get("DoorStatus", {}).get("value"),
+            },
+        })
+    online_n = sum(1 for p in pdus if p["online"])
+    return {
+        "pdus": pdus,
+        "summary": {
+            "total": len(pdus),
+            "online": online_n,
+            "offline": len(pdus) - online_n,
+            "alarm_total": sum(p["alarm_count"] for p in pdus),
+        },
+    }
+
+
+_DEMO_SCENARIOS: Dict[int, Dict[str, Any]] = {
+    1: {"temp": 21.8, "temp2": 22.1, "hum": 38, "door": "Closed"},
+    2: {"temp": 28.6, "temp2": 27.9, "hum": 45, "door": "Closed", "alarm_temp1": "High"},
+    3: {"temp": 24.2, "temp2": 24.5, "hum": 42, "door": "Open", "alarm_sensor1": "Open"},
+    4: {"temp": 23.1, "temp2": 23.4, "hum": 74, "door": "Closed", "alarm_hum1": "High"},
+    5: {"temp": 22.4, "temp2": 22.8, "hum": 41, "door": "Closed", "alarm_l1_current": "High"},
+    6: {"temp": 21.5, "temp2": 21.9, "hum": 37, "door": "Closed"},
+    7: {"temp": 35.4, "temp2": 34.8, "hum": 48, "door": "Closed", "alarm_temp1": "Critical"},
+    8: {"temp": 24.0, "temp2": 24.3, "hum": 44, "door": "Ajar", "alarm_sensor1": "Ajar"},
+}
+
+
 def _generate_telemetry(ip: str, dev: Dict[str, Any]) -> Dict[str, Any]:
     seq = dev.get("seq", 1)
+    scenario = _DEMO_SCENARIOS.get(seq, _DEMO_SCENARIOS[1])
     base_load = 8 + seq * 2.5
     jitter = random.uniform(-1.5, 1.5)
     current = max(0.5, base_load + jitter)
     voltage = 230 + random.uniform(-2, 2)
     power = current * voltage * 0.95
-    results: Dict[str, Any] = {
-        "MasterVoltageP1": {"name": "MasterVoltageP1", "oid": "demo", "value": f"{voltage:.1f}"},
-        "MasterCurrentP1": {"name": "MasterCurrentP1", "oid": "demo", "value": f"{current:.2f}"},
-        "TotalCurrent": {"name": "TotalCurrent", "oid": "demo", "value": f"{current:.2f}"},
-        "TotalPower": {"name": "TotalPower", "oid": "demo", "value": f"{power:.0f}"},
-        "TotalEnergy": {"name": "TotalEnergy", "oid": "demo", "value": f"{1200 + seq * 50 + random.randint(0, 20)}"},
-        "_alarm_count": {"name": "_alarm_count", "oid": "demo", "value": "1" if seq == 3 else "0"},
-        "_alarm_flags": {
-            "name": "_alarm_flags", "oid": "demo",
-            "value": json.dumps([{"param": "DemoHighLoad"}]) if seq == 3 else "[]",
-        },
+
+    drift = math.sin(time.time() / 25 + seq) * 0.35
+    temp1 = scenario["temp"] + drift
+    temp2 = scenario.get("temp2", temp1 + 0.4) + drift * 0.8
+    humidity = scenario["hum"] + math.sin(time.time() / 40 + seq * 2) * 1.2
+    door = scenario["door"]
+
+    alarm_fields: Dict[str, str] = {
+        "alarm_l1_voltage": "Normal",
+        "alarm_l2_voltage": "Normal",
+        "alarm_l3_voltage": "Normal",
+        "alarm_l1_current": scenario.get("alarm_l1_current", "Normal"),
+        "alarm_l2_current": "Normal",
+        "alarm_l3_current": "Normal",
+        "alarm_neutral": "Normal",
+        "alarm_phase_unbalance": "Normal",
+        "alarm_temp1": scenario.get("alarm_temp1", "Normal"),
+        "alarm_temp2": "Normal",
+        "alarm_hum1": scenario.get("alarm_hum1", "Normal"),
+        "alarm_hum2": "Normal",
+        "alarm_sensor1": scenario.get("alarm_sensor1", "Normal" if door == "Closed" else door),
+        "alarm_sensor2": "Normal",
     }
+
+    flags = [{"param": k} for k, v in alarm_fields.items() if v and v.lower() != "normal"]
+    alarm_count = len(flags)
+
+    results: Dict[str, Any] = {
+        "MasterVoltageP1": _demo_entry("MasterVoltageP1", f"{voltage:.1f}"),
+        "MasterVoltageP2": _demo_entry("MasterVoltageP2", f"{voltage - random.uniform(0.5, 1.5):.1f}"),
+        "MasterVoltageP3": _demo_entry("MasterVoltageP3", f"{voltage + random.uniform(0.2, 1.0):.1f}"),
+        "MasterCurrentP1": _demo_entry("MasterCurrentP1", f"{current:.2f}"),
+        "MasterCurrentP2": _demo_entry("MasterCurrentP2", f"{current * 0.98:.2f}"),
+        "MasterCurrentP3": _demo_entry("MasterCurrentP3", f"{current * 1.01:.2f}"),
+        "TotalCurrent": _demo_entry("TotalCurrent", f"{current:.2f}"),
+        "TotalPower": _demo_entry("TotalPower", f"{power:.0f}"),
+        "TotalEnergy": _demo_entry("TotalEnergy", f"{1200 + seq * 50 + random.randint(0, 20)}"),
+        "PowerFactor": _demo_entry("PowerFactor", f"{0.92 + random.uniform(0, 0.06):.2f}"),
+        "Frequency": _demo_entry("Frequency", f"{50.0 + random.uniform(-0.05, 0.05):.2f}"),
+        "Temperature1": _demo_entry("Temperature1", f"{temp1:.1f}"),
+        "Temperature2": _demo_entry("Temperature2", f"{temp2:.1f}"),
+        "Humidity1": _demo_entry("Humidity1", f"{humidity:.1f}"),
+        "Humidity2": _demo_entry("Humidity2", f"{max(30, humidity - random.uniform(2, 5)):.1f}"),
+        "DoorStatus": _demo_entry("DoorStatus", door),
+        "rack_inlet_temp": _demo_entry("rack_inlet_temp", f"{temp1:.1f}"),
+        "_alarm_count": _demo_entry("_alarm_count", alarm_count),
+        "_alarm_flags": _demo_entry("_alarm_flags", json.dumps(flags)),
+    }
+    for key, val in alarm_fields.items():
+        results[key] = _demo_entry(key, val)
+
     for outlet in range(1, 25):
         on = outlet % 3 != 0
         oc = current / 22 if on else 0
-        results[f"Output{outlet}Status"] = {
-            "name": f"Output{outlet}Status", "oid": "demo",
-            "value": "ON" if on else "OFF",
-        }
-        results[f"Output{outlet}Current"] = {
-            "name": f"Output{outlet}Current", "oid": "demo",
-            "value": f"{oc:.2f}",
-        }
+        results[f"Output{outlet}Status"] = _demo_entry(f"Output{outlet}Status", "ON" if on else "OFF")
+        results[f"Output{outlet}Current"] = _demo_entry(f"Output{outlet}Current", f"{oc:.2f}")
     return results
 
 
@@ -277,6 +564,22 @@ def get_live(ip: str) -> Dict[str, Any]:
             "ip": ip, "results": [], "errors": [{"name": "_demo", "error": "Not commissioned yet"}],
             "status": "pending", "source": "demo",
         }
+    if dev.get("sim_offline"):
+        with _state_lock:
+            stale = _telemetry.get(ip) or _generate_telemetry(ip, dev)
+            _telemetry[ip] = stale
+        return {
+            "ip": ip,
+            "results": [],
+            "errors": [{"name": "_demo", "error": "Device unreachable (simulated offline)"}],
+            "status": "error",
+            "source": "demo",
+            "stale_env": {
+                "temp": stale.get("Temperature1", {}).get("value"),
+                "hum": stale.get("Humidity1", {}).get("value"),
+                "door": stale.get("DoorStatus", {}).get("value"),
+            },
+        }
     with _state_lock:
         results = _telemetry.get(ip) or _generate_telemetry(ip, dev)
         _telemetry[ip] = results
@@ -292,8 +595,10 @@ def get_live(ip: str) -> Dict[str, Any]:
 def get_poll_status(ip: str) -> Dict[str, Any]:
     _init_devices()
     dev = _devices.get(ip)
-    if dev and dev.get("commissioned"):
+    if dev and dev.get("commissioned") and not dev.get("sim_offline"):
         return {"state": "online", "source": "demo"}
+    if dev and dev.get("commissioned") and dev.get("sim_offline"):
+        return {"state": "offline", "source": "demo", "message": "Simulated network loss"}
     if dev:
         return {"state": "offline", "source": "demo", "message": "Uncommissioned"}
     return {"state": "offline", "source": "demo"}
@@ -349,11 +654,15 @@ def get_batch_status(job_id: str) -> Optional[Dict[str, Any]]:
 
 def _run_demo_batch(job_id: str, template: dict, pdu_list: list, hall_id: int) -> None:
     activate_demo_db()
-    from db import PDURepo, HallRepo
+    from db import PDURepo, RackRepo
 
     sys_t = template.get("system") or {}
     hostname_pat = sys_t.get("router_hostname") or "NTT-{seq}-{ip}-A"
     sync_name = sys_t.get("sync_device_name", True) is not False
+    racks = sorted(
+        RackRepo.get_by_hall(hall_id),
+        key=lambda r: (r.get("row_index") or 0, r.get("position_index") or 0),
+    )
 
     try:
         for idx, pdu_info in enumerate(pdu_list):
@@ -378,12 +687,15 @@ def _run_demo_batch(job_id: str, template: dict, pdu_list: list, hall_id: int) -
                 if ip in _devices:
                     _devices[ip].update({
                         "commissioned": True,
+                        "sim_offline": (idx + 1) in _DEMO_OFFLINE_SEQS,
                         "hostname": hostname,
                         "label": label,
                         "seq": idx + 1,
                     })
 
+            rack = racks[idx] if idx < len(racks) else None
             pdu_data = {
+                "rack_id": rack["id"] if rack else None,
                 "mount_position": "A",
                 "hostname": hostname,
                 "label": label,
@@ -412,6 +724,7 @@ def _run_demo_batch(job_id: str, template: dict, pdu_list: list, hall_id: int) -
         with _batch_lock:
             _BATCH_JOBS[job_id]["status"] = "completed"
             _BATCH_JOBS[job_id]["finished_at"] = time.time()
+        assign_demo_pdus_to_racks(hall_id, shuffle=True)
         refresh_telemetry()
     except Exception as e:
         import traceback

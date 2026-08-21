@@ -14,7 +14,7 @@ from demo.config import (
     demo_enabled,
 )
 from demo.context import activate_demo_db, deactivate_demo_db
-from demo.simulator import reset_simulator_state, start_demo_poller
+from demo.simulator import reset_simulator_state, seed_demo_fleet, start_demo_poller, uncommission_all_devices
 
 
 DEFAULT_HALL_CONFIG = {
@@ -40,7 +40,7 @@ def _ensure_demo_db_file() -> None:
     deactivate_demo_db()
 
 
-def seed_demo_hall(force: bool = False) -> int:
+def seed_demo_hall(force: bool = False, *, preseed_fleet: bool = True) -> int:
     """Create demo hall with layout. Returns hall_id."""
     activate_demo_db()
     try:
@@ -65,6 +65,13 @@ def seed_demo_hall(force: bool = False) -> int:
         for h in halls:
             if h.get("name") == DEMO_HALL_NAME:
                 if not force:
+                    from db import PDURepo
+                    pdus = PDURepo.get_by_hall(h["id"])
+                    if not pdus and preseed_fleet:
+                        seed_demo_fleet(h["id"])
+                    elif pdus:
+                        from demo.simulator import assign_demo_pdus_to_racks
+                        assign_demo_pdus_to_racks(h["id"], shuffle=True)
                     return h["id"]
 
         hall_id = HallRepo.create(DEMO_HALL_NAME, "Simulated Agoda cage — demo user only")
@@ -74,7 +81,7 @@ def seed_demo_hall(force: bool = False) -> int:
         for i in range(8):
             row = i // 4
             col = i % 4
-            rack_code = f"R{row + 1}{chr(65 + col)}"
+            rack_code = f"Row-{row + 1:02d}/Rack-{col + 1:02d}"
             racks.append({
                 "rack_code": rack_code,
                 "row_index": row,
@@ -91,8 +98,46 @@ def seed_demo_hall(force: bool = False) -> int:
 
         save_hall_state(hall_id, DEFAULT_HALL_CONFIG, racks, [])
         reset_simulator_state()
+        if preseed_fleet:
+            seed_demo_fleet(hall_id)
+        else:
+            uncommission_all_devices()
         start_demo_poller()
         print(f"[Demo] Seeded hall '{DEMO_HALL_NAME}' id={hall_id}")
+        return hall_id
+    finally:
+        deactivate_demo_db()
+
+
+def reset_demo_for_commissioning() -> int:
+    """Clear commissioned PDUs from DB + sim so batch scan finds 8 factory PDUs."""
+    activate_demo_db()
+    try:
+        from db import HallRepo
+        from db.persistence import _connect
+
+        hall_id = None
+        for h in HallRepo.get_all():
+            if h.get("name") == DEMO_HALL_NAME:
+                hall_id = h["id"]
+                break
+        if not hall_id:
+            return seed_demo_hall(force=False, preseed_fleet=False)
+
+        conn = _connect()
+        try:
+            for table in ("telemetry", "events", "pdus"):
+                try:
+                    conn.execute(f"DELETE FROM {table}")
+                except Exception:
+                    pass
+            conn.commit()
+        finally:
+            conn.close()
+
+        uncommission_all_devices()
+        start_demo_poller()
+        print(f"[Demo] Factory reset for commissioning — hall id={hall_id}, 8 uncommissioned PDUs")
         return hall_id
     finally:
         deactivate_demo_db()
@@ -144,3 +189,5 @@ def setup_demo_environment(force_seed: bool = False) -> None:
         deactivate_demo_db()
     ensure_demo_user()
     seed_demo_hall(force=force_seed)
+    from demo.ops_teams import seed_demo_subscribers
+    seed_demo_subscribers()

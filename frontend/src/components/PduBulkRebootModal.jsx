@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5002';
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 const compareIp = (a, b) => {
   const pa = (a || '').split('.').map(n => parseInt(n, 10) || 0);

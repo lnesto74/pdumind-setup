@@ -1,0 +1,6165 @@
+SNMPPDU-MIB DEFINITIONS ::= BEGIN
+
+IMPORTS
+
+    MODULE-IDENTITY, OBJECT-TYPE, Integer32,
+    NOTIFICATION-TYPE                       FROM SNMPv2-SMI
+    SnmpAdminString                         FROM SNMP-FRAMEWORK-MIB
+    RowStatus, StorageType ,DisplayString   FROM SNMPv2-TC;
+
+pdu OBJECT IDENTIFIER ::= { enterprises 23273}
+npdu OBJECT IDENTIFIER ::= { pdu 3 }
+
+
+master OBJECT IDENTIFIER ::= { npdu 1 }
+masterpdu OBJECT IDENTIFIER ::= { master 1 }
+masterInformation OBJECT IDENTIFIER ::= { masterpdu 1 }
+masterP1 OBJECT IDENTIFIER ::= { masterpdu 2 }
+masterP2 OBJECT IDENTIFIER ::= { masterpdu 3 }
+masterP3 OBJECT IDENTIFIER ::= { masterpdu 4 }
+masterOutputName OBJECT IDENTIFIER ::= { masterpdu 5 }
+masterOutputStatus OBJECT IDENTIFIER ::= { masterpdu 6 }
+masterOutputCurrent OBJECT IDENTIFIER ::= { masterpdu 7 }
+masterOutputEnergy OBJECT IDENTIFIER ::= { masterpdu 10 }
+masterSerson OBJECT IDENTIFIER ::= { masterpdu 11 }
+masterGroup OBJECT IDENTIFIER ::= { masterpdu 13 }
+
+MasterDeviceName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    MAX-ACCESS read-write
+    STATUS current
+    DESCRIPTION
+            "device name."
+    ::= { masterInformation 1 }
+    
+MasterDeviceType OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "device type."
+    ::= { masterInformation 2 }
+    
+MasterDeviceOutputNum OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "device output number."
+    ::= { masterInformation 3 }
+    
+MasterDeviceMac OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "device mac."
+    ::= { masterInformation 4 }
+
+
+  
+MasterVoltageP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total voltage."
+    ::= { masterP1 1 }
+    
+MasterCurrentP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total current."
+    ::= { masterP1 2 }
+
+MasterPowerP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total power."
+    ::= { masterP1 3 }
+
+MasterPFP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 pf."
+    ::= { masterP1 4 }
+
+MasterEnergyP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total energy."
+    ::= { masterP1 5 }
+
+    
+
+
+MasterVoltageP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total voltage."
+    ::= { masterP2 1 }
+    
+MasterCurrentP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total current."
+    ::= { masterP2 2 }
+
+MasterPowerP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total power."
+    ::= { masterP2 3 }
+
+MasterPFP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 pf."
+    ::= { masterP2 4 }
+
+MasterEnergyP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total energy."
+    ::= { masterP2 5 }
+    
+
+
+
+
+MasterVoltageP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total voltage."
+    ::= { masterP3 1 }
+    
+MasterCurrentP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total current."
+    ::= { masterP3 2 }
+
+MasterPowerP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total power."
+    ::= { masterP3 3 }
+
+MasterPFP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 pf."
+    ::= { masterP3 4 }
+
+MasterEnergyP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total energy."
+    ::= { masterP3 5 }
+    
+
+
+
+
+MasterOutputOneName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 1 }
+
+MasterOutputTwoName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 2 }
+    
+MasterOutputThreeName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 3 }
+    
+    
+MasterOutputFourName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 4 }
+    
+    
+MasterOutputFiveName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 5 }
+    
+    
+ MasterOutputSixName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 6 }
+    
+    
+MasterOutputSevenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 7 }
+    
+    
+MasterOutputEightName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 8 }
+    
+    
+MasterOutputNineName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 9 }
+    
+MasterOutputTenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 10 }
+    
+MasterOutputElevenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 11 }
+    
+    
+MasterOutputTwelveName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 12 }
+    
+MasterOutputThirteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 13 }
+    
+MasterOutputFourteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 14 }
+    
+MasterOutputFifteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 15 }
+    
+MasterOutputSixteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 16 }
+    
+MasterOutputSeventeenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 17 }
+    
+MasterOutputEighteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 18 }
+    
+MasterOutputNineteenName OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-write
+	STATUS optional
+	DESCRIPTION
+			"output name."
+	::= { masterOutputName 19 }
+    
+MasterOutputTwentyName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 20 }
+    
+MasterOutputTwentyOneName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 21 }
+    
+MasterOutputTwentyTwoName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 22 }
+    
+MasterOutputTwentyThreeName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 23 }
+    
+MasterOutputTwentyFourName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { masterOutputName 24 }
+
+
+
+MasterOutputOneStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 1 }
+
+MasterOutputTwoStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 2 }
+    
+MasterOutputThreeStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 3 }
+    
+    
+MasterOutputFourStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 4 }
+    
+    
+MasterOutputFiveStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 5 }
+    
+    
+ MasterOutputSixStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 6 }
+    
+    
+MasterOutputSevenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 7 }
+    
+    
+MasterOutputEightStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 8 }
+    
+    
+MasterOutputNineStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 9 }
+    
+MasterOutputTenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 10 }
+    
+MasterOutputElevenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 11 }
+    
+    
+MasterOutputTwelveStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 12 }
+    
+MasterOutputThirteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 13 }
+    
+MasterOutputFourteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 14 }
+    
+MasterOutputFifteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 15 }
+    
+MasterOutputSixteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 16 }
+    
+MasterOutputSeventeenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 17 }
+    
+MasterOutputEighteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 18 }
+    
+MasterOutputNineteenStatus OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-write
+	STATUS optional
+	DESCRIPTION
+			"output status."
+	::= { masterOutputStatus 19 }
+    
+MasterOutputTwentyStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 20 }
+    
+MasterOutputTwentyOneStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 21 }
+    
+MasterOutputTwentyTwoStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 22 }
+    
+MasterOutputTwentyThreeStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 23 }
+    
+MasterOutputTwentyFourStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { masterOutputStatus 24 }
+    
+
+
+
+MasterOutputOneCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 1 }
+
+MasterOutputTwoCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 2 }
+    
+MasterOutputThreeCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 3 }
+    
+    
+MasterOutputFourCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 4 }
+    
+    
+MasterOutputFiveCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 5 }
+    
+    
+ MasterOutputSixCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 6 }
+    
+    
+MasterOutputSevenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 7 }
+    
+    
+MasterOutputEightCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 8 }
+    
+    
+MasterOutputNineCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 9 }
+    
+MasterOutputTenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 10 }
+    
+MasterOutputElevenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 11 }
+    
+    
+MasterOutputTwelveCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 12 }
+    
+MasterOutputThirteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 13 }
+    
+MasterOutputFourteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 14 }
+    
+MasterOutputFifteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 15 }
+    
+MasterOutputSixteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 16 }
+    
+MasterOutputSeventeenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 17 }
+    
+MasterOutputEighteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 18 }
+    
+MasterOutputNineteenCurrent OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-only
+	STATUS optional
+	DESCRIPTION
+			"output current."
+	::= { masterOutputCurrent 19 }
+    
+MasterOutputTwentyCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 20 }
+    
+MasterOutputTwentyOneCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 21 }
+    
+MasterOutputTwentyTwoCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 22 }
+    
+MasterOutputTwentyThreeCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 23 }
+    
+MasterOutputTwentyFourCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { masterOutputCurrent 24 }
+
+
+
+
+
+
+
+
+MasterOutputOneEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 1 }
+
+MasterOutputTwoEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 2 }
+    
+MasterOutputThreeEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 3 }
+    
+    
+MasterOutputFourEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 4 }
+    
+    
+MasterOutputFiveEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 5 }
+    
+    
+ MasterOutputSixEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 6 }
+    
+    
+MasterOutputSevenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 7 }
+    
+    
+MasterOutputEightEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 8 }
+    
+    
+MasterOutputNineEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 9 }
+    
+MasterOutputTenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 10 }
+    
+MasterOutputElevenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 11 }
+    
+    
+MasterOutputTwelveEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 12 }
+    
+MasterOutputThirteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 13 }
+    
+MasterOutputFourteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 14 }
+    
+MasterOutputFifteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 15 }
+    
+MasterOutputSixteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 16 }
+    
+MasterOutputSeventeenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 17 }
+    
+MasterOutputEighteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 18 }
+    
+MasterOutputNineteenEnergy OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-only
+	STATUS optional
+	DESCRIPTION
+			"output energy."
+	::= { masterOutputEnergy 19 }
+    
+MasterOutputTwentyEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 20 }
+    
+MasterOutputTwentyOneEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 21 }
+    
+MasterOutputTwentyTwoEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 22 }
+    
+MasterOutputTwentyThreeEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 23 }
+    
+MasterOutputTwentyFourEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { masterOutputEnergy 24 }
+
+
+MasterTemperature1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { masterSerson 1 }
+    
+MasterTemperature2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { masterSerson 2 }
+    
+MasterTemperature3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { masterSerson 3 }
+    
+MasterTemperature4 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { masterSerson 4 }
+    
+MasterHumidity1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { masterSerson 5 }
+    
+MasterHumidity2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { masterSerson 6 }
+    
+MasterHumidity3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { masterSerson 7 }
+    
+MasterHumidity4 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { masterSerson 8 }
+    
+MasterDoor1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { masterSerson 9 }
+    
+MasterDoor2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { masterSerson 10 }
+    
+MasterSmoke OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { masterSerson 11 }
+    
+MasterWater OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { masterSerson 12 }
+     
+MasterOutputGroupOne OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 1 }
+
+MasterOutputGroupTwo OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 2 }
+    
+MasterOutputGroupThree OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 3 }
+    
+    
+MasterOutputGroupFour OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 4 }
+    
+    
+MasterOutputGroupFive OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 5 }
+    
+    
+ MasterOutputGroupSix OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 6 }
+    
+    
+MasterOutputGroupSeven OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 7 }
+    
+    
+MasterOutputGroupEight OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 8 }
+    
+    
+MasterOutputGroupNine OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 9 }
+    
+MasterOutputGroupTen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 10 }
+    
+MasterOutputGroupEleven OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 11 }
+    
+    
+MasterOutputGroupTwelve OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 12 }
+    
+MasterOutputGroupThirteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 13 }
+    
+MasterOutputGroupFourteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 14 }
+    
+MasterOutputGroupFifteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 15 }
+    
+MasterOutputGroupSixteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 16 }
+    
+MasterOutputGroupSeventeen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 17 }
+    
+MasterOutputGroupEighteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 18 }
+    
+MasterOutputGroupNineteen OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-write
+	STATUS optional
+	DESCRIPTION
+			"output group."
+	::= { masterGroup 19 }
+    
+MasterOutputGroupTwenty OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 20 }
+    
+MasterOutputGroupTwentyOne OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 21 }
+    
+MasterOutputGroupTwentyTwo OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 22 }
+    
+MasterOutputGroupTwentyThree OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 23 }
+    
+MasterOutputGroupTwentyFour OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { masterGroup 24 }
+    
+slaveOne OBJECT IDENTIFIER ::= { npdu 2 }
+slaveOnepdu OBJECT IDENTIFIER ::= { slaveOne 1 }
+slaveOneP1 OBJECT IDENTIFIER ::= { slaveOnepdu 2 }
+slaveOneP2 OBJECT IDENTIFIER ::= { slaveOnepdu 3 }
+slaveOneP3 OBJECT IDENTIFIER ::= { slaveOnepdu 4 }
+slaveOneOutputName OBJECT IDENTIFIER ::= { slaveOnepdu 5 }
+slaveOneOutputStatus OBJECT IDENTIFIER ::= { slaveOnepdu 6 }
+slaveOneOutputCurrent OBJECT IDENTIFIER ::= { slaveOnepdu 7 }
+slaveOneOutputEnergy OBJECT IDENTIFIER ::= { slaveOnepdu 10 }
+slaveOneSerson OBJECT IDENTIFIER ::= { slaveOnepdu 11 }
+slaveOneGroup OBJECT IDENTIFIER ::= { slaveOnepdu 13 }
+
+
+  
+SlaveOneVoltageP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total voltage."
+    ::= { slaveOneP1 1 }
+    
+SlaveOneCurrentP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total current."
+    ::= { slaveOneP1 2 }
+
+SlaveOnePowerP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total current."
+    ::= { slaveOneP1 3 }
+
+SlaveOnePFP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total current."
+    ::= { slaveOneP1 4 }
+    
+SlaveOneEnergyP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total current."
+    ::= { slaveOneP1 5 }
+    
+
+    
+SlaveOneVoltageP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total voltage."
+    ::= { slaveOneP2 1 }
+    
+SlaveOneCurrentP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total current."
+    ::= { slaveOneP2 2 }
+
+SlaveOnePowerP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total current."
+    ::= { slaveOneP2 3 }
+
+SlaveOnePFP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total current."
+    ::= { slaveOneP2 4 }
+
+SlaveOneEnergyP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total current."
+    ::= { slaveOneP2 5 }
+    
+
+
+SlaveOneVoltageP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total voltage."
+    ::= { slaveOneP3 1 }
+    
+SlaveOneCurrentP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total current."
+    ::= { slaveOneP3 2 }
+    
+SlaveOnePowerP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total current."
+    ::= { slaveOneP3 3 }
+
+SlaveOnePFP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total current."
+    ::= { slaveOneP3 4 }
+
+SlaveOneEnergyP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total current."
+    ::= { slaveOneP3 5 }
+
+
+SlaveOneOutputOneName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 1 }
+    
+SlaveOneOutputTwoName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 2 }
+    
+SlaveOneOutputThreeName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 3 }
+    
+SlaveOneOutputFourName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 4 }
+    
+SlaveOneOutputFiveName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 5 }
+    
+SlaveOneOutputSixName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 6 }
+    
+SlaveOneOutputSevenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 7 }
+    
+    
+SlaveOneOutputEightName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 8 }
+    
+    
+SlaveOneOutputNineName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 9 }
+    
+SlaveOneOutputTenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 10 }
+    
+SlaveOneOutputElevenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 11 }
+    
+SlaveOneOutputTwelveName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 12 }
+    
+SlaveOneOutputThirteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 13 }
+    
+SlaveOneOutputFourteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 14 }
+    
+SlaveOneOutputFifteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 15 }
+    
+SlaveOneOutputSixteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 16 }
+    
+SlaveOneOutputSeventeenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 17 }
+    
+SlaveOneOutputEighteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 18 }
+    
+SlaveOneOutputNineteenName OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-write
+	STATUS optional
+	DESCRIPTION
+			"output name."
+	::= { slaveOneOutputName 19 }
+    
+SlaveOneOutputTwentyName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 20 }
+    
+SlaveOneOutputTwentyOneName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 21 }
+    
+SlaveOneOutputTwentyTwoName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 22 }
+    
+SlaveOneOutputTwentyThreeName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 23 }
+    
+SlaveOneOutputTwentyFourName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveOneOutputName 24 }
+
+SlaveOneOutputOneStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 1 }
+
+SlaveOneOutputTwoStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 2 }
+    
+SlaveOneOutputThreeStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 3 }
+    
+SlaveOneOutputFourStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 4 }
+    
+    
+SlaveOneOutputFiveStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 5 }
+    
+SlaveOneOutputSixStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 6 }
+    
+    
+SlaveOneOutputSevenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 7 }
+    
+SlaveOneOutputEightStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 8 }
+    
+    
+SlaveOneOutputNineStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 9 }
+    
+SlaveOneOutputTenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 10 }
+    
+SlaveOneOutputElevenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 11 }
+    
+SlaveOneOutputTwelveStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 12 }
+    
+SlaveOneOutputThirteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 13 }
+    
+SlaveOneOutputFourteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 14 }
+    
+SlaveOneOutputFifteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 15 }
+    
+SlaveOneOutputSixteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 16 }
+    
+SlaveOneOutputSeventeenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 17 }
+    
+SlaveOneOutputEighteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 18 }
+    
+SlaveOneOutputNineteenStatus OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-write
+	STATUS optional
+	DESCRIPTION
+			"output status."
+	::= { slaveOneOutputStatus 19 }
+    
+SlaveOneOutputTwentyStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 20 }
+    
+SlaveOneOutputTwentyOneStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 21 }
+    
+SlaveOneOutputTwentyTwoStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 22 }
+    
+SlaveOneOutputTwentyThreeStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 23 }
+    
+SlaveOneOutputTwentyFourStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveOneOutputStatus 24 }
+    
+
+SlaveOneOutputOneCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 1 }
+
+SlaveOneOutputTwoCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 2 }
+    
+SlaveOneOutputThreeCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 3 }
+    
+    
+SlaveOneOutputFourCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 4 }
+    
+    
+SlaveOneOutputFiveCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 5 }
+    
+    
+SlaveOneOutputSixCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 6 }
+    
+    
+SlaveOneOutputSevenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 7 }
+    
+SlaveOneOutputEightCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 8 }
+    
+SlaveOneOutputNineCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 9 }
+    
+SlaveOneOutputTenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 10 }
+    
+SlaveOneOutputElevenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 11 }
+    
+    
+SlaveOneOutputTwelveCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 12 }
+    
+SlaveOneOutputThirteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 13 }
+    
+SlaveOneOutputFourteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 14 }
+    
+SlaveOneOutputFifteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 15 }
+    
+SlaveOneOutputSixteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 16 }
+    
+SlaveOneOutputSeventeenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 17 }
+    
+SlaveOneOutputEighteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 18 }
+    
+SlaveOneOutputNineteenCurrent OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-only
+	STATUS optional
+	DESCRIPTION
+			"output current."
+	::= { slaveOneOutputCurrent 19 }
+    
+SlaveOneOutputTwentyCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 20 }
+    
+SlaveOneOutputTwentyOneCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 21 }
+    
+SlaveOneOutputTwentyTwoCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 22 }
+    
+SlaveOneOutputTwentyThreeCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 23 }
+    
+SlaveOneOutputTwentyFourCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveOneOutputCurrent 24 }
+
+
+
+SlaveOneOutputOneEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 1 }
+
+SlaveOneOutputTwoEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 2 }
+    
+SlaveOneOutputThreeEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 3 }
+    
+    
+SlaveOneOutputFourEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 4 }
+    
+    
+SlaveOneOutputFiveEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 5 }
+    
+    
+SlaveOneOutputSixEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 6 }
+    
+SlaveOneOutputSevenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 7 }
+    
+    
+SlaveOneOutputEightEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 8 }
+    
+SlaveOneOutputNineEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 9 }
+    
+SlaveOneOutputTenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 10 }
+    
+SlaveOneOutputElevenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 11 }
+    
+    
+SlaveOneOutputTwelveEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 12 }
+    
+SlaveOneOutputThirteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 13 }
+    
+SlaveOneOutputFourteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 14 }
+    
+SlaveOneOutputFifteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 15 }
+    
+SlaveOneOutputSixteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 16 }
+    
+SlaveOneOutputSeventeenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 17 }
+    
+SlaveOneOutputEighteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 18 }
+    
+SlaveOneOutputNineteenEnergy OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-only
+	STATUS optional
+	DESCRIPTION
+			"output energy."
+	::= { slaveOneOutputEnergy 19 }
+    
+SlaveOneOutputTwentyEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 20 }
+    
+SlaveOneOutputTwentyOneEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 21 }
+    
+SlaveOneOutputTwentyTwoEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 22 }
+    
+SlaveOneOutputTwentyThreeEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 23 }
+    
+SlaveOneOutputTwentyFourEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveOneOutputEnergy 24 }
+
+SlaveOneTemperature1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveOneSerson 1 }
+    
+SlaveOneTemperature2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveOneSerson 2 }
+    
+SlaveOneTemperature3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveOneSerson 3 }
+    
+SlaveOneTemperature4 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveOneSerson 4 }
+    
+SlaveOneHumidity1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveOneSerson 5 }
+    
+SlaveOneHumidity2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveOneSerson 6 }
+    
+SlaveOneHumidity3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveOneSerson 7 }
+    
+SlaveOneHumidity4 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveOneSerson 8 }
+    
+SlaveOneDoor1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveOneSerson 9 }
+    
+SlaveOneDoor2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveOneSerson 10 }
+    
+SlaveOneSmoke OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveOneSerson 11 }
+    
+SlaveOneWater OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveOneSerson 12 }
+
+
+slaveOneOutputGroupOne OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 1 }
+
+slaveOneOutputGroupTwo OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 2 }
+    
+slaveOneOutputGroupThree OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 3 }
+    
+    
+slaveOneOutputGroupFour OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 4 }
+    
+    
+slaveOneOutputGroupFive OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 5 }
+    
+    
+ slaveOneOutputGroupSix OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 6 }
+    
+    
+slaveOneOutputGroupSeven OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 7 }
+    
+    
+slaveOneOutputGroupEight OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 8 }
+    
+    
+slaveOneOutputGroupNine OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 9 }
+    
+slaveOneOutputGroupTen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 10 }
+    
+slaveOneOutputGroupEleven OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 11 }
+    
+    
+slaveOneOutputGroupTwelve OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 12 }
+    
+slaveOneOutputGroupThirteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 13 }
+    
+slaveOneOutputGroupFourteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 14 }
+    
+slaveOneOutputGroupFifteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 15 }
+    
+slaveOneOutputGroupSixteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 16 }
+    
+slaveOneOutputGroupSeventeen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 17 }
+    
+slaveOneOutputGroupEighteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 18 }
+    
+slaveOneOutputGroupNineteen OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-write
+	STATUS optional
+	DESCRIPTION
+			"output group."
+	::= { slaveOneGroup 19 }
+    
+slaveOneOutputGroupTwenty OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 20 }
+    
+slaveOneOutputGroupTwentyOne OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 21 }
+    
+slaveOneOutputGroupTwentyTwo OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 22 }
+    
+slaveOneOutputGroupTwentyThree OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 23 }
+    
+slaveOneOutputGroupTwentyFour OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveOneGroup 24 }
+
+        
+    
+    
+
+slaveTwo OBJECT IDENTIFIER ::= { npdu 3 }
+slaveTwopdu OBJECT IDENTIFIER ::= { slaveTwo 1 }
+
+slaveTwoP1 OBJECT IDENTIFIER ::= { slaveTwopdu 2 }
+slaveTwoP2 OBJECT IDENTIFIER ::= { slaveTwopdu 3 }
+slaveTwoP3 OBJECT IDENTIFIER ::= { slaveTwopdu 4 }
+slaveTwoOutputName OBJECT IDENTIFIER ::= { slaveTwopdu 5 }
+slaveTwoOutputStatus OBJECT IDENTIFIER ::= { slaveTwopdu 6 }
+slaveTwoOutputCurrent OBJECT IDENTIFIER ::= { slaveTwopdu 7 }
+slaveTwoOutputEnergy OBJECT IDENTIFIER ::= { slaveTwopdu 10 }
+slaveTwoSerson OBJECT IDENTIFIER ::= { slaveTwopdu 11 }
+slaveTwoGroup OBJECT IDENTIFIER ::= { slaveTwopdu 13 }
+  
+SlaveTwoVoltageP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total voltage."
+    ::= { slaveTwoP1 1 }
+    
+SlaveTwoCurrentP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total current."
+    ::= { slaveTwoP1 2 }
+
+SlaveTwoPowerP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total current."
+    ::= { slaveTwoP1 3 }
+
+SlaveTwoPFP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total current."
+    ::= { slaveTwoP1 4 }
+    
+SlaveTwoEnergyP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total current."
+    ::= { slaveTwoP1 5 }
+
+    
+SlaveTwoVoltageP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total voltage."
+    ::= { slaveTwoP2 1 }
+    
+SlaveTwoCurrentP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total current."
+    ::= { slaveTwoP2 2 }
+
+SlaveTwoPowerP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total current."
+    ::= { slaveTwoP2 3 }
+
+SlaveTwoPFP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total current."
+    ::= { slaveTwoP2 4 }
+
+SlaveTwoEnergyP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total current."
+    ::= { slaveTwoP2 5 }
+    
+
+
+SlaveTwoVoltageP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total voltage."
+    ::= { slaveTwoP3 1 }
+    
+SlaveTwoCurrentP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total current."
+    ::= { slaveTwoP3 2 }
+    
+SlaveTwoPowerP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total current."
+    ::= { slaveTwoP3 3 }
+
+SlaveTwoPFP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total current."
+    ::= { slaveTwoP3 4 }
+
+SlaveTwoEnergyP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total current."
+    ::= { slaveTwoP3 5 }
+    
+
+
+SlaveTwoOutputOneName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 1 }
+    
+SlaveTwoOutputTwoName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 2 }
+    
+SlaveTwoOutputThreeName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 3 }
+    
+SlaveTwoOutputFourName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 4 }
+    
+SlaveTwoOutputFiveName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 5 }
+    
+SlaveTwoOutputSixName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 6 }
+    
+SlaveTwoOutputSevenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 7 }
+    
+    
+SlaveTwoOutputEightName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 8 }
+    
+SlaveTwoOutputNineName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 9 }
+    
+SlaveTwoOutputTenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 10 }
+    
+SlaveTwoOutputElevenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 11 }
+    
+SlaveTwoOutputTwelveName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 12 }
+    
+SlaveTwoOutputThirteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 13 }
+    
+SlaveTwoOutputFourteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 14 }
+    
+SlaveTwoOutputFifteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 15 }
+    
+SlaveTwoOutputSixteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 16 }
+    
+SlaveTwoOutputSeventeenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 17 }
+    
+SlaveTwoOutputEighteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 18 }
+    
+SlaveTwoOutputNineteenName OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-write
+	STATUS optional
+	DESCRIPTION
+			"output name."
+	::= { slaveTwoOutputName 19 }
+    
+SlaveTwoOutputTwentyName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 20 }
+    
+SlaveTwoOutputTwentyOneName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 21 }
+    
+SlaveTwoOutputTwentyTwoName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 22 }
+    
+SlaveTwoOutputTwentyThreeName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 23 }
+    
+SlaveTwoOutputTwentyFourName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveTwoOutputName 24 }
+
+SlaveTwoOutputOneStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 1 }
+
+SlaveTwoOutputTwoStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 2 }
+    
+SlaveTwoOutputThreeStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 3 }
+    
+SlaveTwoOutputFourStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 4 }
+    
+SlaveTwoOutputFiveStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 5 }
+    
+SlaveTwoOutputSixStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 6 }
+    
+SlaveTwoOutputSevenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 7 }
+    
+SlaveTwoOutputEightStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 8 }
+    
+SlaveTwoOutputNineStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 9 }
+    
+SlaveTwoOutputTenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 10 }
+    
+SlaveTwoOutputElevenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 11 }
+    
+SlaveTwoOutputTwelveStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 12 }
+    
+SlaveTwoOutputThirteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 13 }
+    
+SlaveTwoOutputFourteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 14 }
+    
+SlaveTwoOutputFifteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 15 }
+    
+SlaveTwoOutputSixteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 16 }
+    
+SlaveTwoOutputSeventeenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 17 }
+    
+SlaveTwoOutputEighteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 18 }
+    
+SlaveTwoOutputNineteenStatus OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-write
+	STATUS optional
+	DESCRIPTION
+			"output status."
+	::= { slaveTwoOutputStatus 19 }
+    
+SlaveTwoOutputTwentyStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 20 }
+    
+SlaveTwoOutputTwentyOneStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 21 }
+    
+SlaveTwoOutputTwentyTwoStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 22 }
+    
+SlaveTwoOutputTwentyThreeStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 23 }
+    
+SlaveTwoOutputTwentyFourStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveTwoOutputStatus 24 }
+    
+
+SlaveTwoOutputOneCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 1 }
+
+SlaveTwoOutputTwoCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 2 }
+    
+SlaveTwoOutputThreeCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 3 }
+    
+    
+SlaveTwoOutputFourCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 4 }
+    
+    
+SlaveTwoOutputFiveCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 5 }
+    
+    
+SlaveTwoOutputSixCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 6 }
+    
+    
+SlaveTwoOutputSevenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 7 }
+    
+SlaveTwoOutputEightCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 8 }
+    
+SlaveTwoOutputNineCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 9 }
+    
+SlaveTwoOutputTenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 10 }
+    
+SlaveTwoOutputElevenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 11 }
+    
+    
+SlaveTwoOutputTwelveCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 12 }
+    
+SlaveTwoOutputThirteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 13 }
+    
+SlaveTwoOutputFourteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 14 }
+    
+SlaveTwoOutputFifteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 15 }
+    
+SlaveTwoOutputSixteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 16 }
+    
+SlaveTwoOutputSeventeenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 17 }
+    
+SlaveTwoOutputEighteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 18 }
+    
+SlaveTwoOutputNineteenCurrent OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-only
+	STATUS optional
+	DESCRIPTION
+			"output current."
+	::= { slaveTwoOutputCurrent 19 }
+    
+SlaveTwoOutputTwentyCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 20 }
+    
+SlaveTwoOutputTwentyOneCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 21 }
+    
+SlaveTwoOutputTwentyTwoCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 22 }
+    
+SlaveTwoOutputTwentyThreeCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 23 }
+    
+SlaveTwoOutputTwentyFourCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveTwoOutputCurrent 24 }
+
+
+
+SlaveTwoOutputOneEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 1 }
+
+SlaveTwoOutputTwoEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 2 }
+    
+SlaveTwoOutputThreeEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 3 }
+    
+    
+SlaveTwoOutputFourEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 4 }
+    
+    
+SlaveTwoOutputFiveEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 5 }
+    
+    
+SlaveTwoOutputSixEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 6 }
+    
+SlaveTwoOutputSevenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 7 }
+    
+SlaveTwoOutputEightEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 8 }
+    
+SlaveTwoOutputNineEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 9 }
+    
+SlaveTwoOutputTenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 10 }
+    
+SlaveTwoOutputElevenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 11 }
+    
+    
+SlaveTwoOutputTwelveEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 12 }
+    
+SlaveTwoOutputThirteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 13 }
+    
+SlaveTwoOutputFourteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 14 }
+    
+SlaveTwoOutputFifteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 15 }
+    
+SlaveTwoOutputSixteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 16 }
+    
+SlaveTwoOutputSeventeenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 17 }
+    
+SlaveTwoOutputEighteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 18 }
+    
+SlaveTwoOutputNineteenEnergy OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-only
+	STATUS optional
+	DESCRIPTION
+			"output energy."
+	::= { slaveTwoOutputEnergy 19 }
+    
+SlaveTwoOutputTwentyEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 20 }
+    
+SlaveTwoOutputTwentyOneEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 21 }
+    
+SlaveTwoOutputTwentyTwoEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 22 }
+    
+SlaveTwoOutputTwentyThreeEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 23 }
+    
+SlaveTwoOutputTwentyFourEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveTwoOutputEnergy 24 }
+
+SlaveTwoTemperature1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveTwoSerson 1 }
+    
+SlaveTwoTemperature2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveTwoSerson 2 }
+    
+SlaveTwoTemperature3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveTwoSerson 3 }
+    
+SlaveTwoTemperature4 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveTwoSerson 4 }
+    
+SlaveTwoHumidity1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveTwoSerson 5 }
+    
+SlaveTwoHumidity2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveTwoSerson 6 }
+    
+SlaveTwoHumidity3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveTwoSerson 7 }
+    
+SlaveTwoHumidity4 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveTwoSerson 8 }
+    
+SlaveTwoDoor1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveTwoSerson 9 }
+    
+SlaveTwoDoor2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveTwoSerson 10 }
+    
+SlaveTwoSmoke OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveTwoSerson 11 }
+    
+SlaveTwoWater OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveTwoSerson 12 }
+slaveTwoOutputGroupOne OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 1 }
+
+slaveTwoOutputGroupTwo OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 2 }
+    
+slaveTwoOutputGroupThree OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 3 }
+    
+    
+slaveTwoOutputGroupFour OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 4 }
+    
+    
+slaveTwoOutputGroupFive OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 5 }
+    
+    
+ slaveTwoOutputGroupSix OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 6 }
+    
+    
+slaveTwoOutputGroupSeven OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 7 }
+    
+    
+slaveTwoOutputGroupEight OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 8 }
+    
+    
+slaveTwoOutputGroupNine OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 9 }
+    
+slaveTwoOutputGroupTen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 10 }
+    
+slaveTwoOutputGroupEleven OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 11 }
+    
+    
+slaveTwoOutputGroupTwelve OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 12 }
+    
+slaveTwoOutputGroupThirteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 13 }
+    
+slaveTwoOutputGroupFourteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 14 }
+    
+slaveTwoOutputGroupFifteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 15 }
+    
+slaveTwoOutputGroupSixteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 16 }
+    
+slaveTwoOutputGroupSeventeen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 17 }
+    
+slaveTwoOutputGroupEighteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 18 }
+    
+slaveTwoOutputGroupNineteen OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-write
+	STATUS optional
+	DESCRIPTION
+			"output group."
+	::= { slaveTwoGroup 19 }
+    
+slaveTwoOutputGroupTwenty OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 20 }
+    
+slaveTwoOutputGroupTwentyOne OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 21 }
+    
+slaveTwoOutputGroupTwentyTwo OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 22 }
+    
+slaveTwoOutputGroupTwentyThree OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 23 }
+    
+slaveTwoOutputGroupTwentyFour OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveTwoGroup 24 }
+
+
+slaveThree OBJECT IDENTIFIER ::= { npdu 4 }
+slaveThreepdu OBJECT IDENTIFIER ::= { slaveThree 1 }
+slaveThreeP1 OBJECT IDENTIFIER ::= { slaveThreepdu 2 }
+slaveThreeP2 OBJECT IDENTIFIER ::= { slaveThreepdu 3 }
+slaveThreeP3 OBJECT IDENTIFIER ::= { slaveThreepdu 4 }
+slaveThreeOutputName OBJECT IDENTIFIER ::= { slaveThreepdu 5 }
+slaveThreeOutputStatus OBJECT IDENTIFIER ::= { slaveThreepdu 6 }
+slaveThreeOutputCurrent OBJECT IDENTIFIER ::= { slaveThreepdu 7 }
+slaveThreeOutputEnergy OBJECT IDENTIFIER ::= { slaveThreepdu 10 }
+slaveThreeSerson OBJECT IDENTIFIER ::= { slaveThreepdu 11 }
+slaveThreeGroup OBJECT IDENTIFIER ::= { slaveThreepdu 13 }
+
+  
+SlaveThreeVoltageP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total voltage."
+    ::= { slaveThreeP1 1 }
+    
+SlaveThreeCurrentP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total current."
+    ::= { slaveThreeP1 2 }
+
+SlaveThreePowerP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total current."
+    ::= { slaveThreeP1 3 }
+
+SlaveThreePFP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total current."
+    ::= { slaveThreeP1 4 }
+    
+SlaveThreeEnergyP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total current."
+    ::= { slaveThreeP1 5 }
+    
+
+    
+SlaveThreeVoltageP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total voltage."
+    ::= { slaveThreeP2 1 }
+    
+SlaveThreeCurrentP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total current."
+    ::= { slaveThreeP2 2 }
+
+SlaveThreePowerP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total current."
+    ::= { slaveThreeP2 3 }
+
+SlaveThreePFP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total current."
+    ::= { slaveThreeP2 4 }
+
+SlaveThreeEnergyP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total current."
+    ::= { slaveThreeP2 5 }
+
+
+SlaveThreeVoltageP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total voltage."
+    ::= { slaveThreeP3 1 }
+    
+SlaveThreeCurrentP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total current."
+    ::= { slaveThreeP3 2 }
+    
+SlaveThreePowerP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total current."
+    ::= { slaveThreeP3 3 }
+
+SlaveThreePFP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total current."
+    ::= { slaveThreeP3 4 }
+
+SlaveThreeEnergyP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total current."
+    ::= { slaveThreeP3 5 }
+    
+
+
+SlaveThreeOutputOneName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 1 }
+    
+SlaveThreeOutputTwoName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 2 }
+    
+SlaveThreeOutputThreeName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 3 }
+    
+SlaveThreeOutputFourName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 4 }
+    
+SlaveThreeOutputFiveName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 5 }
+    
+SlaveThreeOutputSixName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 6 }
+    
+SlaveThreeOutputSevenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 7 }
+    
+    
+SlaveThreeOutputEightName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 8 }
+    
+SlaveThreeOutputNineName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 9 }
+    
+SlaveThreeOutputTenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 10 }
+    
+SlaveThreeOutputElevenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 11 }
+    
+SlaveThreeOutputTwelveName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 12 }
+    
+SlaveThreeOutputThirteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 13 }
+    
+SlaveThreeOutputFourteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 14 }
+    
+SlaveThreeOutputFifteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 15 }
+    
+SlaveThreeOutputSixteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 16 }
+    
+SlaveThreeOutputSeventeenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 17 }
+    
+SlaveThreeOutputEighteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 18 }
+    
+SlaveThreeOutputNineteenName OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-write
+	STATUS optional
+	DESCRIPTION
+			"output name."
+	::= { slaveThreeOutputName 19 }
+    
+SlaveThreeOutputTwentyName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 20 }
+    
+SlaveThreeOutputTwentyOneName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 21 }
+    
+SlaveThreeOutputTwentyTwoName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 22 }
+    
+SlaveThreeOutputTwentyThreeName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 23 }
+    
+SlaveThreeOutputTwentyFourName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveThreeOutputName 24 }
+
+SlaveThreeOutputOneStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 1 }
+
+SlaveThreeOutputTwoStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 2 }
+    
+SlaveThreeOutputThreeStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 3 }
+    
+SlaveThreeOutputFourStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 4 }
+    
+SlaveThreeOutputFiveStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 5 }
+    
+SlaveThreeOutputSixStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 6 }
+    
+SlaveThreeOutputSevenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 7 }
+    
+SlaveThreeOutputEightStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 8 }
+    
+SlaveThreeOutputNineStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 9 }
+    
+SlaveThreeOutputTenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 10 }
+    
+SlaveThreeOutputElevenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 11 }
+    
+SlaveThreeOutputTwelveStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 12 }
+    
+SlaveThreeOutputThirteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 13 }
+    
+SlaveThreeOutputFourteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 14 }
+    
+SlaveThreeOutputFifteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 15 }
+    
+SlaveThreeOutputSixteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 16 }
+    
+SlaveThreeOutputSeventeenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 17 }
+    
+SlaveThreeOutputEighteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 18 }
+    
+SlaveThreeOutputNineteenStatus OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-write
+	STATUS optional
+	DESCRIPTION
+			"output status."
+	::= { slaveThreeOutputStatus 19 }
+    
+SlaveThreeOutputTwentyStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 20 }
+    
+SlaveThreeOutputTwentyOneStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 21 }
+    
+SlaveThreeOutputTwentyTwoStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 22 }
+    
+SlaveThreeOutputTwentyThreeStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 23 }
+    
+SlaveThreeOutputTwentyFourStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveThreeOutputStatus 24 }
+    
+
+SlaveThreeOutputOneCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 1 }
+
+SlaveThreeOutputTwoCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 2 }
+    
+SlaveThreeOutputThreeCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 3 }
+    
+    
+SlaveThreeOutputFourCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 4 }
+    
+    
+SlaveThreeOutputFiveCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 5 }
+    
+    
+SlaveThreeOutputSixCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 6 }
+    
+    
+SlaveThreeOutputSevenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 7 }
+    
+SlaveThreeOutputEightCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 8 }
+    
+SlaveThreeOutputNineCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 9 }
+    
+SlaveThreeOutputTenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 10 }
+    
+SlaveThreeOutputElevenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 11 }
+    
+    
+SlaveThreeOutputTwelveCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 12 }
+    
+SlaveThreeOutputThirteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 13 }
+    
+SlaveThreeOutputFourteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 14 }
+    
+SlaveThreeOutputFifteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 15 }
+    
+SlaveThreeOutputSixteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 16 }
+    
+SlaveThreeOutputSeventeenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 17 }
+    
+SlaveThreeOutputEighteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 18 }
+    
+SlaveThreeOutputNineteenCurrent OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-only
+	STATUS optional
+	DESCRIPTION
+			"output current."
+	::= { slaveThreeOutputCurrent 19 }
+    
+SlaveThreeOutputTwentyCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 20 }
+    
+SlaveThreeOutputTwentyOneCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 21 }
+    
+SlaveThreeOutputTwentyTwoCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 22 }
+    
+SlaveThreeOutputTwentyThreeCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 23 }
+    
+SlaveThreeOutputTwentyFourCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveThreeOutputCurrent 24 }
+
+
+
+SlaveThreeOutputOneEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 1 }
+
+SlaveThreeOutputTwoEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 2 }
+    
+SlaveThreeOutputThreeEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 3 }
+    
+    
+SlaveThreeOutputFourEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 4 }
+    
+    
+SlaveThreeOutputFiveEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 5 }
+    
+    
+SlaveThreeOutputSixEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 6 }
+    
+SlaveThreeOutputSevenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 7 }
+    
+SlaveThreeOutputEightEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 8 }
+    
+SlaveThreeOutputNineEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 9 }
+    
+SlaveThreeOutputTenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 10 }
+    
+SlaveThreeOutputElevenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 11 }
+    
+    
+SlaveThreeOutputTwelveEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 12 }
+    
+SlaveThreeOutputThirteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 13 }
+    
+SlaveThreeOutputFourteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 14 }
+    
+SlaveThreeOutputFifteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 15 }
+    
+SlaveThreeOutputSixteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 16 }
+    
+SlaveThreeOutputSeventeenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 17 }
+    
+SlaveThreeOutputEighteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 18 }
+    
+SlaveThreeOutputNineteenEnergy OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-only
+	STATUS optional
+	DESCRIPTION
+			"output energy."
+	::= { slaveThreeOutputEnergy 19 }
+    
+SlaveThreeOutputTwentyEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 20 }
+    
+SlaveThreeOutputTwentyOneEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 21 }
+    
+SlaveThreeOutputTwentyTwoEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 22 }
+    
+SlaveThreeOutputTwentyThreeEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 23 }
+    
+SlaveThreeOutputTwentyFourEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveThreeOutputEnergy 24 }
+
+SlaveThreeTemperature1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveThreeSerson 1 }
+    
+SlaveThreeTemperature2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveThreeSerson 2 }
+    
+SlaveThreeTemperature3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveThreeSerson 3 }
+    
+SlaveThreeTemperature4 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveThreeSerson 4 }
+    
+SlaveThreeHumidity1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveThreeSerson 5 }
+    
+SlaveThreeHumidity2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveThreeSerson 6 }
+    
+SlaveThreeHumidity3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveThreeSerson 7 }
+    
+SlaveThreeHumidity4 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveThreeSerson 8 }
+    
+SlaveThreeDoor1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveThreeSerson 9 }
+    
+SlaveThreeDoor2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveThreeSerson 10 }
+    
+SlaveThreeSmoke OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveThreeSerson 11 }
+    
+SlaveThreeWater OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveThreeSerson 12 }
+
+slaveThreeOutputGroupOne OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 1 }
+
+slaveThreeOutputGroupTwo OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 2 }
+    
+slaveThreeOutputGroupThree OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 3 }
+    
+    
+slaveThreeOutputGroupFour OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 4 }
+    
+    
+slaveThreeOutputGroupFive OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 5 }
+    
+    
+ slaveThreeOutputGroupSix OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 6 }
+    
+    
+slaveThreeOutputGroupSeven OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 7 }
+    
+    
+slaveThreeOutputGroupEight OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 8 }
+    
+    
+slaveThreeOutputGroupNine OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 9 }
+    
+slaveThreeOutputGroupTen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 10 }
+    
+slaveThreeOutputGroupEleven OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 11 }
+    
+    
+slaveThreeOutputGroupTwelve OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 12 }
+    
+slaveThreeOutputGroupThirteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 13 }
+    
+slaveThreeOutputGroupFourteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 14 }
+    
+slaveThreeOutputGroupFifteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 15 }
+    
+slaveThreeOutputGroupSixteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 16 }
+    
+slaveThreeOutputGroupSeventeen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 17 }
+    
+slaveThreeOutputGroupEighteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 18 }
+    
+slaveThreeOutputGroupNineteen OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-write
+	STATUS optional
+	DESCRIPTION
+			"output group."
+	::= { slaveThreeGroup 19 }
+    
+slaveThreeOutputGroupTwenty OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 20 }
+    
+slaveThreeOutputGroupTwentyOne OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 21 }
+    
+slaveThreeOutputGroupTwentyTwo OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 22 }
+    
+slaveThreeOutputGroupTwentyThree OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 23 }
+    
+slaveThreeOutputGroupTwentyFour OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveThreeGroup 24 }
+
+
+
+slaveFour OBJECT IDENTIFIER ::= { npdu 5 }
+slaveFourpdu OBJECT IDENTIFIER ::= { slaveFour 1 }
+
+slaveFourP1 OBJECT IDENTIFIER ::= { slaveFourpdu 2 }
+slaveFourP2 OBJECT IDENTIFIER ::= { slaveFourpdu 3 }
+slaveFourP3 OBJECT IDENTIFIER ::= { slaveFourpdu 4 }
+slaveFourOutputName OBJECT IDENTIFIER ::= { slaveFourpdu 5 }
+slaveFourOutputStatus OBJECT IDENTIFIER ::= { slaveFourpdu 6 }
+slaveFourOutputCurrent OBJECT IDENTIFIER ::= { slaveFourpdu 7 }
+slaveFourOutputEnergy OBJECT IDENTIFIER ::= { slaveFourpdu 10 }
+slaveFourSerson OBJECT IDENTIFIER ::= { slaveFourpdu 11 }
+slaveFourGroup OBJECT IDENTIFIER ::= { slaveFourpdu 13 }
+
+  
+SlaveFourVoltageP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total voltage."
+    ::= { slaveFourP1 1 }
+    
+SlaveFourCurrentP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total current."
+    ::= { slaveFourP1 2 }
+
+SlaveFourPowerP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total current."
+    ::= { slaveFourP1 3 }
+
+SlaveFourPFP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total current."
+    ::= { slaveFourP1 4 }
+    
+SlaveFourEnergyP1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 1 total current."
+    ::= { slaveFourP1 5 }
+    
+
+    
+SlaveFourVoltageP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total voltage."
+    ::= { slaveFourP2 1 }
+    
+SlaveFourCurrentP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total current."
+    ::= { slaveFourP2 2 }
+
+SlaveFourPowerP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total current."
+    ::= { slaveFourP2 3 }
+
+SlaveFourPFP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total current."
+    ::= { slaveFourP2 4 }
+
+SlaveFourEnergyP2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 2 total current."
+    ::= { slaveFourP2 5 }
+    
+
+
+SlaveFourVoltageP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total voltage."
+    ::= { slaveFourP3 1 }
+    
+SlaveFourCurrentP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total current."
+    ::= { slaveFourP3 2 }
+    
+SlaveFourPowerP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total current."
+    ::= { slaveFourP3 3 }
+
+SlaveFourPFP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total current."
+    ::= { slaveFourP3 4 }
+
+SlaveFourEnergyP3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "Master Line 3 total current."
+    ::= { slaveFourP3 5 }
+    
+
+
+SlaveFourOutputOneName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "device name."
+    ::= { slaveFourOutputName 1 }
+    
+SlaveFourOutputTwoName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 2 }
+    
+SlaveFourOutputThreeName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 3 }
+    
+SlaveFourOutputFourName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 4 }
+    
+SlaveFourOutputFiveName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 5 }
+    
+SlaveFourOutputSixName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 6 }
+    
+SlaveFourOutputSevenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 7 }
+    
+SlaveFourOutputEightName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 8 }
+    
+SlaveFourOutputNineName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 9 }
+    
+SlaveFourOutputTenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 10 }
+    
+SlaveFourOutputElevenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 11 }
+    
+SlaveFourOutputTwelveName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 12 }
+    
+SlaveFourOutputThirteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 13 }
+    
+SlaveFourOutputFourteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 14 }
+    
+SlaveFourOutputFifteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 15 }
+    
+SlaveFourOutputSixteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 16 }
+    
+SlaveFourOutputSeventeenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 17 }
+    
+SlaveFourOutputEighteenName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 18 }
+    
+SlaveFourOutputNineteenName OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-write
+	STATUS optional
+	DESCRIPTION
+			"output name."
+	::= { slaveFourOutputName 19 }
+    
+SlaveFourOutputTwentyName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 20 }
+    
+SlaveFourOutputTwentyOneName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 21 }
+    
+SlaveFourOutputTwentyTwoName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 22 }
+    
+SlaveFourOutputTwentyThreeName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 23 }
+    
+SlaveFourOutputTwentyFourName OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output name."
+    ::= { slaveFourOutputName 24 }
+
+SlaveFourOutputOneStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 1 }
+
+SlaveFourOutputTwoStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 2 }
+    
+SlaveFourOutputThreeStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 3 }
+    
+SlaveFourOutputFourStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 4 }
+    
+SlaveFourOutputFiveStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 5 }
+    
+SlaveFourOutputSixStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 6 }
+    
+SlaveFourOutputSevenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 7 }
+    
+SlaveFourOutputEightStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 8 }
+    
+SlaveFourOutputNineStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 9 }
+    
+SlaveFourOutputTenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 10 }
+    
+SlaveFourOutputElevenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 11 }
+    
+SlaveFourOutputTwelveStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 12 }
+    
+SlaveFourOutputThirteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 13 }
+    
+SlaveFourOutputFourteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 14 }
+    
+SlaveFourOutputFifteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 15 }
+    
+SlaveFourOutputSixteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 16 }
+    
+SlaveFourOutputSeventeenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 17 }
+    
+SlaveFourOutputEighteenStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 18 }
+    
+SlaveFourOutputNineteenStatus OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-write
+	STATUS optional
+	DESCRIPTION
+			"output status."
+	::= { slaveFourOutputStatus 19 }
+    
+SlaveFourOutputTwentyStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 20 }
+    
+SlaveFourOutputTwentyOneStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 21 }
+    
+SlaveFourOutputTwentyTwoStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 22 }
+    
+SlaveFourOutputTwentyThreeStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 23 }
+    
+SlaveFourOutputTwentyFourStatus OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output status."
+    ::= { slaveFourOutputStatus 24 }
+    
+
+SlaveFourOutputOneCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= {  slaveFourOutputCurrent 1 }
+
+SlaveFourOutputTwoCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 2 }
+    
+SlaveFourOutputThreeCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 3 }
+    
+    
+SlaveFourOutputFourCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 4 }
+    
+    
+SlaveFourOutputFiveCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 5 }
+    
+    
+SlaveFourOutputSixCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 6 }
+    
+    
+SlaveFourOutputSevenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 7 }
+    
+SlaveFourOutputEightCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 8 }
+    
+SlaveFourOutputNineCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 9 }
+    
+SlaveFourOutputTenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 10 }
+    
+SlaveFourOutputElevenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 11 }
+    
+    
+SlaveFourOutputTwelveCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 12 }
+    
+SlaveFourOutputThirteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 13 }
+    
+SlaveFourOutputFourteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 14 }
+    
+SlaveFourOutputFifteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 15 }
+    
+SlaveFourOutputSixteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 16 }
+    
+SlaveFourOutputSeventeenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 17 }
+    
+SlaveFourOutputEighteenCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 18 }
+    
+SlaveFourOutputNineteenCurrent OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-only
+	STATUS optional
+	DESCRIPTION
+			"output current."
+	::= { slaveFourOutputCurrent 19 }
+    
+SlaveFourOutputTwentyCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 20 }
+    
+SlaveFourOutputTwentyOneCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 21 }
+    
+SlaveFourOutputTwentyTwoCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 22 }
+    
+SlaveFourOutputTwentyThreeCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 23 }
+    
+SlaveFourOutputTwentyFourCurrent OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output current."
+    ::= { slaveFourOutputCurrent 24 }
+
+
+SlaveFourOutputOneEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 1 }
+
+SlaveFourOutputTwoEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 2 }
+    
+SlaveFourOutputThreeEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 3 }
+    
+    
+SlaveFourOutputFourEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 4 }
+    
+    
+SlaveFourOutputFiveEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 5 }
+    
+    
+SlaveFourOutputSixEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 6 }
+    
+SlaveFourOutputSevenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 7 }
+    
+SlaveFourOutputEightEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 8 }
+    
+SlaveFourOutputNineEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 9 }
+    
+SlaveFourOutputTenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 10 }
+    
+SlaveFourOutputElevenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 11 }
+    
+SlaveFourOutputTwelveEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 12 }
+    
+SlaveFourOutputThirteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 13 }
+    
+SlaveFourOutputFourteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 14 }
+    
+SlaveFourOutputFifteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 15 }
+    
+SlaveFourOutputSixteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 16 }
+    
+SlaveFourOutputSeventeenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 17 }
+    
+SlaveFourOutputEighteenEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 18 }
+    
+SlaveFourOutputNineteenEnergy OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-only
+	STATUS optional
+	DESCRIPTION
+			"output energy."
+	::= { slaveFourOutputEnergy 19 }
+    
+SlaveFourOutputTwentyEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 20 }
+    
+SlaveFourOutputTwentyOneEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 21 }
+    
+SlaveFourOutputTwentyTwoEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 22 }
+    
+SlaveFourOutputTwentyThreeEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 23 }
+    
+SlaveFourOutputTwentyFourEnergy OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "output energy."
+    ::= { slaveFourOutputEnergy 24 }
+
+SlaveFourTemperature1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveFourSerson 1 }
+    
+SlaveFourTemperature2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveFourSerson 2 }
+    
+SlaveFourTemperature3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveFourSerson 3 }
+    
+SlaveFourTemperature4 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveFourSerson 4 }
+    
+SlaveFourHumidity1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveFourSerson 5 }
+    
+SlaveFourHumidity2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveFourSerson 6 }
+    
+SlaveFourHumidity3 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveFourSerson 7 }
+    
+SlaveFourHumidity4 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveFourSerson 8 }
+    
+SlaveFourDoor1 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveFourSerson 9 }
+    
+SlaveFourDoor2 OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveFourSerson 10 }
+    
+SlaveFourSmoke OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveFourSerson 11 }
+    
+SlaveFourWater OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-only
+    STATUS optional
+    DESCRIPTION
+            "serson."
+    ::= { slaveFourSerson 12 }
+    
+slaveFourOutputGroupOne OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 1 }
+
+slaveFourOutputGroupTwo OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 2 }
+    
+slaveFourOutputGroupThree OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 3 }
+    
+    
+slaveFourOutputGroupFour OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 4 }
+    
+    
+slaveFourOutputGroupFive OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 5 }
+    
+    
+ slaveFourOutputGroupSix OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 6 }
+    
+    
+slaveFourOutputGroupSeven OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 7 }
+    
+    
+slaveFourOutputGroupEight OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 8 }
+    
+    
+slaveFourOutputGroupNine OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 9 }
+    
+slaveFourOutputGroupTen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 10 }
+    
+slaveFourOutputGroupEleven OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 11 }
+    
+    
+slaveFourOutputGroupTwelve OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 12 }
+    
+slaveFourOutputGroupThirteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 13 }
+    
+slaveFourOutputGroupFourteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 14 }
+    
+slaveFourOutputGroupFifteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 15 }
+    
+slaveFourOutputGroupSixteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 16 }
+    
+slaveFourOutputGroupSeventeen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 17 }
+    
+slaveFourOutputGroupEighteen OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 18 }
+    
+slaveFourOutputGroupNineteen OBJECT-TYPE
+	SYNTAX DisplayString (SIZE (255))
+	ACCESS read-write
+	STATUS optional
+	DESCRIPTION
+			"output group."
+	::= { slaveFourGroup 19 }
+    
+slaveFourOutputGroupTwenty OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 20 }
+    
+slaveFourOutputGroupTwentyOne OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 21 }
+    
+slaveFourOutputGroupTwentyTwo OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 22 }
+    
+slaveFourOutputGroupTwentyThree OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 23 }
+    
+slaveFourOutputGroupTwentyFour OBJECT-TYPE
+    SYNTAX DisplayString (SIZE (255))
+    ACCESS read-write
+    STATUS optional
+    DESCRIPTION
+            "output group."
+    ::= { slaveFourGroup 24 }
+
+
+END

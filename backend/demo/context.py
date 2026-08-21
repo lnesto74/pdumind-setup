@@ -78,6 +78,8 @@ def _is_localhost_viewer_request() -> bool:
         return True
     if path == "/api/hub/info":
         return True
+    if path.startswith("/api/demo/incident/"):
+        return True
     return False
 
 
@@ -86,6 +88,15 @@ def bind_request_context() -> None:
     if request.path.startswith("/api/auth/"):
         deactivate_demo_db()
         g.demo_mode = False
+        return
+    if demo_enabled() and (
+        request.path.startswith("/api/demo/incident/")
+        or request.path.startswith("/api/demo/teams/invite/")
+        or request.path == "/api/demo/telegram/webhook"
+    ):
+        activate_demo_db()
+        set_demo_mode_flag(True)
+        g.demo_mode = True
         return
     if is_demo_session() or _is_localhost_viewer_request():
         activate_demo_db()

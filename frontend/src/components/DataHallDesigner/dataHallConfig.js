@@ -41,7 +41,11 @@ export const defaultDataHallConfig = {
   ipPlanning: {
     subnet: '10.20.0.0/24',
     assignmentStrategy: 'sequential' // 'sequential' | 'perRowBlock'
-  }
+  },
+
+  // Free-placed scene props (visual references like cage entrances).
+  // Each: { id, type, label, position:{x,y,z}, rotation:{x,y,z}, scale }
+  sceneObjects: []
 };
 
 /**

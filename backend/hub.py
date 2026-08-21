@@ -25,6 +25,8 @@ PUBLIC_GET_PREFIXES = (
     "/api/pdus/by-ip/",
     "/api/events",
     "/api/models/",
+    "/api/demo/incident/",
+    "/api/demo/teams/invite/",
 )
 
 SENSITIVE_GET_PREFIXES = (
@@ -391,6 +393,28 @@ def register_api_guard(app):
         g.coordinator_authenticated = False
 
         if path == "/api/auth/login" and request.method == "POST":
+            return None
+
+        # Demo mobile incident links — token-gated, no coordinator login
+        if path.startswith("/api/demo/incident/"):
+            return None
+
+        # Telegram bot webhook + hall subscribe invite (public)
+        if path == "/api/demo/telegram/webhook" and request.method == "POST":
+            return None
+        if path.startswith("/api/demo/teams/invite/"):
+            return None
+
+        # Production Neural Ops public links — token-gated, no coordinator login
+        if path.startswith("/api/ops/incident/"):
+            return None
+        if path == "/api/ops/telegram/webhook" and request.method == "POST":
+            return None
+        if path.startswith("/api/ops/teams/invite/"):
+            return None
+
+        # Hall report is rendered from Cage Pulse numbers already on screen (same as viewer GET /state).
+        if path == "/api/reporting/hall-customer/pdf" and request.method == "POST":
             return None
 
         if request.method in ("POST", "PUT", "DELETE", "PATCH"):

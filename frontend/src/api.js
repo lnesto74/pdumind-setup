@@ -39,11 +39,21 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// Unpatched fetch for public mobile pages (incident + subscribe links).
+export const publicFetch = window.fetch.bind(window);
+
+const PUBLIC_API_RE = /^\/api\/(ops|demo)\/(incident\/|teams\/invite\/)/;
+
 // Patch global fetch so legacy call sites get auth automatically
-const _fetch = window.fetch.bind(window);
+const _fetch = publicFetch;
 window.fetch = (url, options = {}) => {
   const urlStr = typeof url === 'string' ? url : url?.url || '';
-  if (urlStr.includes('/api/') && !urlStr.includes('/api/auth/login')) {
+  const path = urlStr.replace(/^https?:\/\/[^/]+/, '');
+  if (
+    path.includes('/api/')
+    && !path.includes('/api/auth/login')
+    && !PUBLIC_API_RE.test(path)
+  ) {
     options.headers = authHeaders(options.headers || {});
   }
   return _fetch(url, options);

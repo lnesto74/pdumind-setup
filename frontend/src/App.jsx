@@ -53,12 +53,15 @@ export default function App() {
   };
 
   const resetDemo = async () => {
-    if (!confirm('Reset demo cage? This clears all 8 PDUs back to factory state.')) return;
+    const preload = confirm(
+      'Reset demo PDUs?\n\nOK = Pre-load cage (dashboard alarms & telemetry — batch scan will find nothing)\n\nCancel = Factory reset (uncommissioned PDUs for batch commissioning)'
+    );
     const token = localStorage.getItem('pdumind_token');
     try {
       await fetch('/api/demo/reset', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: preload ? 'cage' : 'factory' }),
       });
       window.location.reload();
     } catch {
@@ -96,9 +99,9 @@ export default function App() {
       <PowerHistoryProvider>
         <SimulationProvider>
           <>
-            <div className="app-container bg-[#0f172a] text-gray-200 min-h-screen flex flex-col">
-              {/* Fixed top navigation bar */}
-              <div className="sticky top-0 z-50 bg-[#0B1120] backdrop-blur-sm border-b border-[#233544] shadow-lg shadow-cyan-500/10 mb-6">
+            <div className="app-container bg-[#0f172a] text-gray-200 h-screen flex flex-col overflow-hidden">
+              {/* Top navigation bar */}
+              <div className="flex-shrink-0 z-50 bg-[#0B1120] backdrop-blur-sm border-b border-[#233544] shadow-lg shadow-cyan-500/10">
                 <div className="w-full px-6 py-2">
                   <nav className="flex items-center justify-between w-full">
                     <div className="flex items-center gap-4">
@@ -160,10 +163,10 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Main content area */}
-              <div className="flex-1">
+              {/* Main content area — flex-1 min-h-0 so canvas footer stays in view without page scroll */}
+              <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
                 {currentView === 'agent' ? (
-                  <div className="max-w-7xl mx-auto px-6 py-4">
+                  <div className="flex-1 min-h-0 overflow-y-auto max-w-7xl mx-auto px-6 py-4 w-full">
                     <AgentVisualization />
                   </div>
                 ) : (
@@ -172,7 +175,7 @@ export default function App() {
               </div>
 
               {/* Footer */}
-              <footer className="border-t border-[#233544] bg-[#0B1120] px-6 py-2 flex items-center justify-between">
+              <footer className="flex-shrink-0 border-t border-[#233544] bg-[#0B1120] px-6 py-2 flex items-center justify-between">
                 <span className="text-[10px] text-slate-600 font-mono">Powered by Aility Pte Ltd</span>
                 <span className="text-[10px] text-slate-600 font-mono">PDUMind {APP_VERSION}</span>
               </footer>

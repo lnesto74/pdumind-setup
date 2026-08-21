@@ -1,12 +1,28 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import api from '../api';
 import DataHallDesigner from './DataHallDesigner/DataHallDesigner';
+import AssignPdusPanel from './AssignPdusPanel';
 import CommissioningWizard from './CommissioningWizard';
 import PDUSettingsPanel from './PDUSettingsPanel';
 import PduBulkRebootModal from './PduBulkRebootModal';
+import DemoIntegrationsPanel from './DemoIntegrationsPanel';
+import DemoNavSidebar from './demo/DemoNavSidebar';
+import { DemoPduDetailShell } from './demo/DemoFleetPanel';
+import DemoStoneReportPanel from './demo/DemoStoneReportPanel';
+import DemoTeamsPanel from './demo/DemoTeamsPanel';
+import DemoIncidentAnalytics from './demo/DemoIncidentAnalytics';
+import DemoLiveDispatchPanel, { DemoAlarmsSubNav, useLiveDispatchPoll } from './demo/DemoLiveDispatchPanel';
+import NeuralOpsPanel from './NeuralOpsPanel';
+import { buildRackAlerts, extractEnvFromLiveResults, formatPduOutletId, parseOutletLoadAlarmKey } from '../utils/neuralOpsAlerts';
+
+const NEURAL_OPS_STORAGE_KEY = 'pdumind_neural_ops';
+const NEURAL_SHELL_STORAGE_KEY = 'pdumind_neural_shell';
+const DEMO_STENCIL_SECTION_KEY = 'pdumind_demo_stencil_section';
+const DEMO_SWITCHBOARD_SECTION_KEY = 'pdumind_demo_switchboard_section';
+const DEMO_ALARMS_SECTION_KEY = 'pdumind_demo_alarms_section';
 
 // API base URL
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5002';
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 // Outlet Card Component matching reference design
 const OutletCard = ({ number, data, pduIp, onToggleComplete, isWebAdmin }) => {
@@ -15,41 +31,48 @@ const OutletCard = ({ number, data, pduIp, onToggleComplete, isWebAdmin }) => {
   const energyItem = data?.results?.find(r => r.name === `OutletEnergy${number}` || r.name === `Output${number}Energy`);
   
   const status = statusItem?.value?.replace(/"/g, '').trim();
-  const current = parseFloat(currentItem?.value?.replace(/"/g, '') || '0');
+  const deviceCurrent = parseFloat(currentItem?.value?.replace(/"/g, '') || '0');
   const energy = parseFloat(energyItem?.value?.replace(/"/g, '') || '0') / 10;
-  
+
   // Web admin returns "Normal"/"Off"/"-" for breakers; SNMP returns "ON"/"OFF"
   const statusLower = (status || '').toLowerCase();
-  const isOn = statusLower === 'on' || statusLower === 'normal';
+  const deviceOn = statusLower === 'on' || statusLower === 'normal';
   const isUninstalled = !status || status === '-';
+
+  const [loading, setLoading] = useState(false);
+  // Optimistic override so the card flips the instant you click, then reconciles
+  // with the next poll (relay switches instantly; backend cache can lag ~1s).
+  const [pendingState, setPendingState] = useState(null); // 'on' | 'off' | null
+
+  useEffect(() => {
+    if (pendingState != null && deviceOn === (pendingState === 'on')) {
+      setPendingState(null); // device caught up — drop the override
+    }
+  }, [deviceOn, pendingState]);
+
+  useEffect(() => {
+    if (pendingState == null) return;
+    const t = setTimeout(() => setPendingState(null), 35000); // never lie forever
+    return () => clearTimeout(t);
+  }, [pendingState]);
+
+  const isOn = pendingState != null ? pendingState === 'on' : deviceOn;
+  const current = pendingState === 'off' ? 0 : deviceCurrent;
   const hasLoad = current > 0;
   const isHighLoad = current > 1.2;
   const isIdle = isOn && !hasLoad;
-  
-  const [loading, setLoading] = useState(false);
 
   const handleToggle = async () => {
     const newState = isOn ? 'off' : 'on';
+    setPendingState(newState); // instant UI feedback
+    setLoading(true);
     try {
-      setLoading(true);
       await api.put(`/api/outlet/${number}/status`, { state: newState, ip: pduIp });
-      // Trigger backend poll to get fresh data from PDU, then refresh UI
-      if (pduIp) {
-        setTimeout(async () => {
-          try {
-            await fetch(`/api/polling/device/${pduIp}/trigger`, { method: 'POST' });
-            // Wait for poll to complete, then refresh
-            setTimeout(() => {
-              if (onToggleComplete) onToggleComplete();
-            }, 1000);
-          } catch (err) {
-            console.error('Poll trigger failed:', err);
-            if (onToggleComplete) onToggleComplete();
-          }
-        }, 500);
-      }
+      // Backend patches the outlet cache on success; nudge a refresh to reconcile.
+      if (onToggleComplete) setTimeout(onToggleComplete, 300);
     } catch (e) {
       console.error(e);
+      setPendingState(null); // revert optimistic flip if the control failed
     } finally {
       setLoading(false);
     }
@@ -186,11 +209,61 @@ const Dashboard2 = () => {
   const [pduLiveStatus, setPduLiveStatus] = useState({}); // { ip: 'online'|'offline' }
   const [pduAlarms, setPduAlarms] = useState({}); // { ip: { count: N, flags: [...] } }
   const [ledgerExpandedPdu, setLedgerExpandedPdu] = useState(null); // IP of expanded PDU in ledger
+
+  // Demo / Neural Operations
+  // isDemoMode = simulated demo session; opsMode = PRODUCTION Neural Ops (real data).
+  // The same UX shell renders for either; only the API prefix + data source differ.
+  const [isDemoMode, setIsDemoMode] = useState(() => {
+    try { return localStorage.getItem(NEURAL_SHELL_STORAGE_KEY) === 'demo'; } catch { return false; }
+  });
+  const [opsMode, setOpsMode] = useState(() => {
+    try { return localStorage.getItem(NEURAL_SHELL_STORAGE_KEY) === 'ops'; } catch { return false; }
+  });
+  const neuralActive = isDemoMode || opsMode;
+  const opsApiPrefix = isDemoMode ? '/api/demo' : '/api/ops';
+  const [neuralOpsMode, setNeuralOpsMode] = useState(() => {
+    try {
+      const stored = localStorage.getItem(NEURAL_OPS_STORAGE_KEY);
+      return stored === null ? true : stored === '1';
+    } catch {
+      return true;
+    }
+  });
+  const [pduEnv, setPduEnv] = useState({}); // { ip: { temp, hum, door } }
+  const [fleetPduResults, setFleetPduResults] = useState({}); // { ip: results[] } live telemetry per PDU
+  const [demoReplayActive, setDemoReplayActive] = useState(false);
+  const [neuralSidebarCollapsed, setNeuralSidebarCollapsed] = useState(true);
+  const [hallRefreshTrigger, setHallRefreshTrigger] = useState(0);
   
   // Commissioning wizard state
   const [showWizard, setShowWizard] = useState(false);
   const [showBulkReboot, setShowBulkReboot] = useState(false);
-  
+  const [showIntegrations, setShowIntegrations] = useState(false);
+
+  // Demo sidebar navigation (demo-only)
+  const [demoStencilSection, setDemoStencilSection] = useState('designer');
+  const [demoSwitchboardSection, setDemoSwitchboardSection] = useState('overview');
+  const [demoAlarmsSection, setDemoAlarmsSection] = useState('dispatch');
+  const [liveDispatchOpenCount, setLiveDispatchOpenCount] = useState(0);
+  const liveDispatch = useLiveDispatchPoll({
+    enabled: neuralActive,
+    apiPrefix: opsApiPrefix,
+    onOpenCountChange: setLiveDispatchOpenCount,
+  });
+  const [integrationsConnected, setIntegrationsConnected] = useState(false);
+  const [fleetSelectedPduId, setFleetSelectedPduId] = useState(null);
+  const [switchboardPanelCollapsed, setSwitchboardPanelCollapsed] = useState(
+    () => localStorage.getItem('pdumind_switchboard_panel') === '1', // default open; '1' = collapsed
+  );
+
+  const toggleSwitchboardPanel = useCallback(() => {
+    setSwitchboardPanelCollapsed((c) => {
+      const next = !c;
+      localStorage.setItem('pdumind_switchboard_panel', next ? '1' : '0');
+      return next;
+    });
+  }, []);
+
   // PDU edit/delete state
   const [editingPduId, setEditingPduId] = useState(null);
   const [editingPduLabel, setEditingPduLabel] = useState('');
@@ -210,6 +283,144 @@ const Dashboard2 = () => {
     return [];
   }, []);
   
+  // Initialize the Neural Ops shell preferences (shared by demo + production ops).
+  // Landing always opens the Data Hall Designer + 3D canvas (overview), regardless
+  // of the last-used section, so login lands on the designer by default.
+  const initNeuralShell = useCallback(() => {
+    const stored = localStorage.getItem(NEURAL_OPS_STORAGE_KEY);
+    const enabled = stored === null ? true : stored === '1';
+    setNeuralOpsMode(enabled);
+    setNeuralSidebarCollapsed(enabled);
+    setDemoStencilSection('designer');
+    setDemoSwitchboardSection('overview');
+    localStorage.setItem(DEMO_STENCIL_SECTION_KEY, 'designer');
+    localStorage.setItem(DEMO_SWITCHBOARD_SECTION_KEY, 'overview');
+    setDemoAlarmsSection(localStorage.getItem(DEMO_ALARMS_SECTION_KEY) || 'dispatch');
+    setActiveTab('datahall');
+  }, []);
+
+  // Detect demo session (simulated) OR production Neural Ops (real data, flag-gated).
+  // Same UX shell either way; demo takes precedence when both are active.
+  useEffect(() => {
+    const token = localStorage.getItem('pdumind_token');
+    if (!token) return;
+    const headers = { Authorization: `Bearer ${token}` };
+    fetch(`${API_BASE}/api/demo/status`, { headers })
+      .then((r) => (r.ok ? r.json() : { demo_mode: false }))
+      .then((data) => {
+        if (data?.demo_mode) {
+          try { localStorage.setItem(NEURAL_SHELL_STORAGE_KEY, 'demo'); } catch {}
+          setIsDemoMode(true);
+          setOpsMode(false);
+          initNeuralShell();
+          return;
+        }
+        // Not a demo session — check the production Neural Ops flag.
+        return fetch(`${API_BASE}/api/ops/status`, { headers })
+          .then((r) => (r.ok ? r.json() : { ops_enabled: false }))
+          .then((ops) => {
+            if (ops?.ops_enabled) {
+              try { localStorage.setItem(NEURAL_SHELL_STORAGE_KEY, 'ops'); } catch {}
+              setOpsMode(true);
+              setIsDemoMode(false);
+              initNeuralShell();
+            } else {
+              try { localStorage.removeItem(NEURAL_SHELL_STORAGE_KEY); } catch {}
+              setOpsMode(false);
+              setIsDemoMode(false);
+            }
+          })
+          .catch(() => {});
+      })
+      .catch(() => {});
+  }, [initNeuralShell]);
+
+  const toggleNeuralOps = useCallback((enabled) => {
+    setNeuralOpsMode(enabled);
+    if (!neuralActive) setNeuralSidebarCollapsed(enabled);
+    localStorage.setItem(NEURAL_OPS_STORAGE_KEY, enabled ? '1' : '0');
+    if (enabled) setActiveTab('datahall');
+  }, [neuralActive]);
+
+  const handleDemoPrimaryModeChange = useCallback((mode) => {
+    const switchboard = mode === 'switchboard';
+    toggleNeuralOps(switchboard);
+    if (switchboard) {
+      const section = localStorage.getItem(DEMO_SWITCHBOARD_SECTION_KEY) || 'overview';
+      setDemoSwitchboardSection(section);
+      if (section === 'alarms') setActiveTab('ledger');
+      else if (section === 'fleet') setActiveTab('telemetry');
+      else setActiveTab('datahall');
+    } else {
+      const section = localStorage.getItem(DEMO_STENCIL_SECTION_KEY) || 'designer';
+      setDemoStencilSection(section);
+      if (section === 'commission') setActiveTab('commission');
+      else if (section === 'teams') setActiveTab('teams');
+      else if (section === 'integrations') setActiveTab('integrations');
+      else setActiveTab('datahall');
+    }
+  }, [toggleNeuralOps]);
+
+  const handleDemoStencilSectionChange = useCallback((section) => {
+    setDemoStencilSection(section);
+    localStorage.setItem(DEMO_STENCIL_SECTION_KEY, section);
+    if (section === 'designer') setActiveTab('datahall');
+    else if (section === 'assign') setActiveTab('assign');
+    else if (section === 'commission') setActiveTab('commission');
+    else if (section === 'teams') setActiveTab('teams');
+    else if (section === 'integrations') setActiveTab('integrations');
+  }, []);
+
+  const handleDemoSwitchboardSectionChange = useCallback((section) => {
+    setDemoSwitchboardSection(section);
+    localStorage.setItem(DEMO_SWITCHBOARD_SECTION_KEY, section);
+    if (section === 'overview') {
+      setActiveTab('datahall');
+    } else if (section === 'alarms') {
+      setActiveTab('ledger');
+      setDemoAlarmsSection('dispatch');
+      localStorage.setItem(DEMO_ALARMS_SECTION_KEY, 'dispatch');
+    } else if (section === 'fleet') {
+      setActiveTab('telemetry');
+    }
+  }, []);
+
+  const handleDemoAlarmsSectionChange = useCallback((section) => {
+    setDemoAlarmsSection(section);
+    localStorage.setItem(DEMO_ALARMS_SECTION_KEY, section);
+  }, []);
+
+  const handleFleetSelectPdu = useCallback((pdu) => {
+    setFleetSelectedPduId(pdu.id);
+    setSelectedPdu({ ip: pdu.ip, port: pdu.port || '161', remote_host: pdu.remote_host });
+  }, []);
+
+  const handleDemoSidebarPduSelect = useCallback((pdu) => {
+    if (!neuralOpsMode) {
+      setNeuralOpsMode(true);
+      localStorage.setItem(NEURAL_OPS_STORAGE_KEY, '1');
+    }
+    setDemoSwitchboardSection('fleet');
+    localStorage.setItem(DEMO_SWITCHBOARD_SECTION_KEY, 'fleet');
+    setFleetSelectedPduId(pdu.id);
+    setSelectedPdu({ ip: pdu.ip, port: pdu.port || '161', remote_host: pdu.remote_host });
+    setActiveTab('telemetry');
+  }, [neuralOpsMode]);
+
+  useEffect(() => {
+    if (!neuralActive) return;
+    const token = localStorage.getItem('pdumind_token');
+    if (!token) return;
+    fetch(`${API_BASE}${opsApiPrefix}/integrations`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data) setIntegrationsConnected(!!data.telegram?.enabled && !!data.telegram?.configured);
+      })
+      .catch(() => {});
+  }, [neuralActive, opsApiPrefix]);
+  
   // Fetch hall state with PDUs (silent=true skips loading indicator to avoid blinking)
   const fetchHallState = useCallback(async (hallId, silent = false) => {
     try {
@@ -221,12 +432,20 @@ const Dashboard2 = () => {
         
         // Only show commissioned PDUs from DB — never generate phantom PDUs from layout
         if (data.pdus && data.pdus.length > 0) {
+          const rackLabelById = Object.fromEntries(
+            (data.racks || []).map((r) => [r.id, r.label || null]),
+          );
           const pdusWithStatus = data.pdus.map((pdu, idx) => ({
             id: pdu.id || `pdu-${pdu.ip_address}-${idx}`,
+            hostname: pdu.hostname || pdu.label || pdu.device_name || '',
             label: pdu.hostname || pdu.label || pdu.device_name || `PDU-${String(idx + 1).padStart(2, '0')}`,
             ip: pdu.ip_address,
             port: pdu.snmp_port || '161',
             location: pdu.rack_code || 'Unknown',
+            rack_code: pdu.rack_code || null,
+            rack_id: pdu.rack_id || null,
+            rack_label: pdu.rack_id ? (rackLabelById[pdu.rack_id] || null) : null,
+            mount_position: pdu.mount_position || 'A',
             status: 'normal',
             dbId: pdu.id,
             mac_address: pdu.mac_address || '',
@@ -265,8 +484,14 @@ const Dashboard2 = () => {
       const hallsList = await fetchHalls();
       setHalls(hallsList);
       if (hallsList.length > 0) {
-        setSelectedHallId(hallsList[0].id);
-        await fetchHallState(hallsList[0].id);
+        // Default to the most recent data hall (by created/updated time, newest first).
+        const mostRecent = [...hallsList].sort((a, b) => {
+          const ta = new Date(a.created_at || a.updated_at || 0).getTime();
+          const tb = new Date(b.created_at || b.updated_at || 0).getTime();
+          return tb - ta;
+        })[0] || hallsList[0];
+        setSelectedHallId(mostRecent.id);
+        await fetchHallState(mostRecent.id);
       } else {
         setHallLoading(false);
       }
@@ -280,55 +505,183 @@ const Dashboard2 = () => {
       fetchHallState(selectedHallId);
     }
   }, [selectedHallId, fetchHallState]);
+
+  // Demo: shuffle PDUs onto racks and refresh hall state for 3D canvas
+  useEffect(() => {
+    if (!isDemoMode || !selectedHallId) return;
+    const token = localStorage.getItem('pdumind_token');
+    const run = async () => {
+      try {
+        await fetch(`${API_BASE}/api/demo/assign-racks`, {
+          method: 'POST',
+          headers: token ? { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } : {},
+        });
+        await fetchHallState(selectedHallId, true);
+        setHallRefreshTrigger((t) => t + 1);
+      } catch {}
+    };
+    run();
+  }, [isDemoMode, selectedHallId, fetchHallState]);
   
   // Fetch live status for all PDUs in the hall
+  // Track demo replay — when active, telemetry is looped from a recording (not live cage SNMP)
+  useEffect(() => {
+    if (!isDemoMode) {
+      setDemoReplayActive(false);
+      return undefined;
+    }
+    const checkReplay = async () => {
+      const token = localStorage.getItem('pdumind_token');
+      try {
+        const res = await fetch(`${API_BASE}/api/demo/snapshots`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (res.ok) {
+          const json = await res.json();
+          setDemoReplayActive(!!json.replay?.active);
+        }
+      } catch { /* ignore */ }
+    };
+    checkReplay();
+    const iv = setInterval(checkReplay, 15000);
+    return () => clearInterval(iv);
+  }, [isDemoMode]);
+
   useEffect(() => {
     if (hallPDUs.length === 0) return;
-    
-    const fetchLiveStatus = async () => {
+
+    const applyDemoFleet = (fleet) => {
       const statusMap = {};
       const alarmMap = {};
-      for (const pdu of hallPDUs) {
-        if (!pdu.ip) continue;
-        try {
-          const rh = pdu.remote_host ? `?remote_host=${encodeURIComponent(pdu.remote_host)}` : '';
-          const response = await fetch(`${API_BASE}/api/polling/device/${pdu.ip}${rh}`);
-          if (response.ok) {
-            const data = await response.json();
-            statusMap[pdu.ip] = data.state?.includes('online') ? 'online' : 'offline';
-          } else {
-            statusMap[pdu.ip] = 'offline';
-          }
-          // Fetch alarm data from live telemetry
-          if (statusMap[pdu.ip] === 'online') {
-            try {
-              const liveRes = await fetch(`${API_BASE}/api/pdus/by-ip/${pdu.ip}/live${rh}`);
-              if (liveRes.ok) {
-                const liveData = await liveRes.json();
-                const flagsEntry = liveData.results?.find(r => r.name === '_alarm_flags');
-                const countEntry = liveData.results?.find(r => r.name === '_alarm_count');
-                const count = parseInt(countEntry?.value || '0', 10);
-                let flags = [];
-                try { flags = JSON.parse(flagsEntry?.value || '[]'); } catch {}
-                const alarmEntries = (liveData.results || [])
-                  .filter(r => r.name.startsWith('alarm_') && !r.name.endsWith('_color') && r.name !== 'alarm_status' && r.name !== 'alarm_color')
-                  .map(r => ({ key: r.name, value: r.value?.replace?.(/"/g, '').trim() || r.value }));
-                alarmMap[pdu.ip] = { count, flags, entries: alarmEntries, ts: new Date().toISOString() };
-              }
-            } catch {}
-          }
-        } catch {
-          statusMap[pdu.ip] = 'offline';
-        }
+      const envMap = {};
+      const resultsMap = {};
+      for (const p of fleet.pdus || []) {
+        statusMap[p.ip] = p.online ? 'online' : 'offline';
+        alarmMap[p.ip] = {
+          count: p.alarm_count || 0,
+          flags: p.alarm_flags || [],
+          entries: p.alarm_entries || [],
+          ts: new Date().toISOString(),
+        };
+        if (p.env) envMap[p.ip] = p.env;
+        if (p.results?.length) resultsMap[p.ip] = p.results;
       }
       setPduLiveStatus(statusMap);
       setPduAlarms(alarmMap);
+      setPduEnv(envMap);
+      setFleetPduResults(resultsMap);
     };
-    
+
+    const fetchDemoFleet = async () => {
+      const token = localStorage.getItem('pdumind_token');
+      try {
+        const res = await fetch(`${API_BASE}/api/demo/telemetry`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (res.ok) applyDemoFleet(await res.json());
+      } catch {}
+    };
+
+    const pduTargets = () =>
+      hallPDUs.filter((p) => p.ip).map((pdu) => ({
+        ip: pdu.ip,
+        rh: pdu.remote_host ? `?remote_host=${encodeURIComponent(pdu.remote_host)}` : '',
+      }));
+
+    const applyLivePollResults = (liveResults) => {
+      const alarmMap = {};
+      const envMap = {};
+      const resultsMap = {};
+      for (const r of liveResults) {
+        if (!r) continue;
+        alarmMap[r.ip] = r.alarm;
+        envMap[r.ip] = r.env;
+        if (r.results?.length) resultsMap[r.ip] = r.results;
+      }
+      setPduAlarms(alarmMap);
+      setPduEnv(envMap);
+      setFleetPduResults(resultsMap);
+    };
+
+    const fetchPduLiveAlarms = async (targets = pduTargets()) => {
+      // Cache reads on the backend — fast path for 3D canvas + Neural Ops alerts.
+      const liveResults = await Promise.all(
+        targets.map(async ({ ip, rh }) => {
+          try {
+            const liveRes = await fetch(`${API_BASE}/api/pdus/by-ip/${ip}/live${rh}`);
+            if (!liveRes.ok) return null;
+            const liveData = await liveRes.json();
+            const flagsEntry = liveData.results?.find(r => r.name === '_alarm_flags');
+            const countEntry = liveData.results?.find(r => r.name === '_alarm_count');
+            const count = parseInt(countEntry?.value || '0', 10);
+            let flags = [];
+            try { flags = JSON.parse(flagsEntry?.value || '[]'); } catch {}
+            const alarmEntries = (liveData.results || [])
+              .filter(r => r.name.startsWith('alarm_') && !r.name.endsWith('_color') && r.name !== 'alarm_status' && r.name !== 'alarm_color')
+              .map(r => ({ key: r.name, value: r.value?.replace?.(/"/g, '').trim() || r.value }));
+            return {
+              ip,
+              results: liveData.results,
+              alarm: { count, flags, entries: alarmEntries, ts: new Date().toISOString() },
+              env: extractEnvFromLiveResults(liveData.results),
+            };
+          } catch {
+            return null;
+          }
+        })
+      );
+      applyLivePollResults(liveResults);
+    };
+
+    const fetchLiveStatus = async () => {
+      const targets = pduTargets();
+
+      // Phase 1 — reachability for every PDU IN PARALLEL. The backend probe is a
+      // blocking TCP connect (up to ~5s for an offline PDU), so doing this
+      // sequentially made a fleet take minutes to refresh; parallel makes the
+      // whole sweep take roughly one probe (~5s worst case).
+      const statusResults = await Promise.all(
+        targets.map(async ({ ip, rh }) => {
+          try {
+            const response = await fetch(`${API_BASE}/api/polling/device/${ip}${rh}`);
+            if (response.ok) {
+              const data = await response.json();
+              return { ip, rh, online: !!data.state?.includes('online') };
+            }
+          } catch { /* treat as offline */ }
+          return { ip, rh, online: false };
+        })
+      );
+
+      const statusMap = {};
+      for (const r of statusResults) statusMap[r.ip] = r.online ? 'online' : 'offline';
+      setPduLiveStatus(statusMap); // dots/sidebar update immediately
+
+      // Phase 2 — pull live telemetry/alarms for every commissioned PDU (cache
+      // reads on the backend). Do not gate on the reachability probe — a PDU can
+      // be unreachable on :161 yet still have fresh web-admin cache with alarms.
+      await fetchPduLiveAlarms(statusResults);
+    };
+
+    const useReplayTelemetry = isDemoMode && demoReplayActive;
+
+    if (useReplayTelemetry) {
+      fetchDemoFleet();
+      const interval = setInterval(fetchDemoFleet, 10000);
+      return () => clearInterval(interval);
+    }
+
+    // Production ops, admin, or demo without replay → live SNMP from the cage
     fetchLiveStatus();
-    const interval = setInterval(fetchLiveStatus, 10000); // Check every 10 seconds
-    return () => clearInterval(interval);
-  }, [hallPDUs]);
+    const reachabilityInterval = setInterval(fetchLiveStatus, 10000);
+    // Cable-unplug alarms: backend fast outlet poller (~1.5s); UI refresh at 2s.
+    fetchPduLiveAlarms();
+    const alarmInterval = setInterval(fetchPduLiveAlarms, 2000);
+    return () => {
+      clearInterval(reachabilityInterval);
+      clearInterval(alarmInterval);
+    };
+  }, [hallPDUs, isDemoMode, demoReplayActive]);
   
   // Filter PDUs based on selected filter
   const filteredPDUs = hallPDUs.filter(pdu => {
@@ -346,27 +699,62 @@ const Dashboard2 = () => {
   const globalAlarmCount = useMemo(() => {
     return Object.values(pduAlarms).reduce((sum, a) => sum + (a.count || 0), 0);
   }, [pduAlarms]);
-  const alarmedPduCount = useMemo(() => {
-    return Object.values(pduAlarms).filter(a => a.count > 0).length;
-  }, [pduAlarms]);
 
-  // Build alerts array for 3D canvas
-  const rackAlerts = useMemo(() => {
-    const alerts = [];
-    for (const pdu of hallPDUs) {
-      const alarm = pduAlarms[pdu.ip];
-      if (alarm && alarm.count > 0) {
-        alerts.push({
-          pduId: pdu.id,
-          rackId: pdu.rack_id,
-          severity: 'critical',
-          title: `${alarm.count} Alarm${alarm.count > 1 ? 's' : ''}`,
-          message: alarm.flags.map(f => f.param).join(', '),
-        });
+  // Build alerts array for 3D canvas + Neural Ops panel
+  const rackAlerts = useMemo(
+    () => buildRackAlerts(hallPDUs, pduAlarms),
+    [hallPDUs, pduAlarms]
+  );
+
+  const neuralLayoutActive = neuralActive && neuralOpsMode && activeTab === 'datahall' && demoSwitchboardSection === 'overview';
+  const showFleetSplit = neuralActive && neuralOpsMode && demoSwitchboardSection === 'fleet';
+  // Stencil + Switchboard 3D canvas share the same full-height layout (footer toggles always visible)
+  const datahallCanvasLayout = activeTab === 'datahall' && !showFleetSplit;
+  const showPduMonitoring = !neuralActive || showFleetSplit;
+  const sidebarHidden = !neuralActive && neuralLayoutActive && neuralSidebarCollapsed;
+  const alarmsDispatchLayout = neuralActive && activeTab === 'ledger' && demoAlarmsSection === 'dispatch';
+  const alarmsReportsLayout = neuralActive && activeTab === 'ledger' && demoAlarmsSection === 'reports';
+  const livePduCount = useMemo(
+    () => hallPDUs.filter((p) => pduLiveStatus[p.ip] === 'online').length,
+    [hallPDUs, pduLiveStatus]
+  );
+
+  useEffect(() => {
+    if (!showFleetSplit || fleetSelectedPduId || generatedPDUs.length === 0) return;
+    const first = generatedPDUs[0];
+    setFleetSelectedPduId(first.id);
+    setSelectedPdu({ ip: first.ip, port: first.port || '161', remote_host: first.remote_host });
+  }, [showFleetSplit, fleetSelectedPduId, generatedPDUs]);
+
+  const handleNeuralSelectAlert = useCallback((alert) => {
+    const pdu = hallPDUs.find((p) => p.ip === alert.pduIp);
+    if (pdu) {
+      if (neuralActive) {
+        setDemoSwitchboardSection('fleet');
+        localStorage.setItem(DEMO_SWITCHBOARD_SECTION_KEY, 'fleet');
+        setFleetSelectedPduId(pdu.id);
+      } else {
+        setExpandedPdu(pdu.id);
       }
+      setSelectedPdu({ ip: pdu.ip, port: pdu.port || '161', remote_host: pdu.remote_host });
+      setActiveTab('warnings');
     }
-    return alerts;
-  }, [hallPDUs, pduAlarms]);
+  }, [hallPDUs, neuralActive]);
+
+  const handleNeuralSelectPdu = useCallback((ip) => {
+    const pdu = hallPDUs.find((p) => p.ip === ip);
+    if (pdu) {
+      if (neuralActive) {
+        setDemoSwitchboardSection('fleet');
+        localStorage.setItem(DEMO_SWITCHBOARD_SECTION_KEY, 'fleet');
+        setFleetSelectedPduId(pdu.id);
+      } else {
+        setExpandedPdu(pdu.id);
+      }
+      setSelectedPdu({ ip: pdu.ip, port: pdu.port || '161', remote_host: pdu.remote_host });
+      setActiveTab('telemetry');
+    }
+  }, [hallPDUs, neuralActive]);
 
   const renamePdu = useCallback(async (pduDbId, newLabel) => {
     if (!pduDbId || !newLabel.trim()) return;
@@ -436,7 +824,10 @@ const Dashboard2 = () => {
 
   // Extract values from data — strips trailing unit suffixes (V, A, kW, kWh, Hz, etc.)
   const getValue = (name) => {
-    const item = data?.results?.find(r => r.name === name);
+    let item = data?.results?.find(r => r.name === name);
+    if (!item && activePdu?.ip && fleetPduResults[activePdu.ip]) {
+      item = fleetPduResults[activePdu.ip].find(r => r.name === name);
+    }
     if (!item) return null;
     const raw = item.value?.replace(/"/g, '') || '0';
     return raw;
@@ -564,59 +955,146 @@ const Dashboard2 = () => {
   const idleOutlets = activeOutlets - loadedOutlets;
 
   return (
-    <div className="min-h-screen bg-[#0B1120] text-slate-100">
-      {/* Global Alarm Banner */}
-      {globalAlarmCount > 0 && (
-        <div className="bg-red-500/15 border-b border-red-500/40 px-6 py-2 flex items-center gap-3 animate-pulse">
-          <span className="material-icons-outlined text-red-400 text-xl">warning</span>
-          <span className="text-red-300 text-sm font-bold">
-            {globalAlarmCount} Active Alarm{globalAlarmCount > 1 ? 's' : ''} on {alarmedPduCount} PDU{alarmedPduCount > 1 ? 's' : ''}
-          </span>
-          <span className="text-red-400/60 text-xs font-mono ml-auto">
-            {Object.entries(pduAlarms).filter(([,a]) => a.count > 0).map(([ip]) => {
-              const pdu = hallPDUs.find(p => p.ip === ip);
-              return pdu?.label || pdu?.ip || ip;
-            }).join(' • ')}
-          </span>
-        </div>
-      )}
-      <div className="flex">
-        {/* Sidebar */}
-        <aside className="w-72 border-r border-[#233544] bg-[#0B1120] min-h-[calc(100vh-4rem)] p-4 overflow-y-auto">
-          {/* Data Hall Designer - Top Section */}
+    <div className={`bg-[#0B1120] text-slate-100 flex flex-col flex-1 min-h-0 ${datahallCanvasLayout || showFleetSplit || (neuralActive && !sidebarHidden) ? 'h-full overflow-hidden' : 'min-h-0 overflow-y-auto'}`}>
+      <div className={`flex flex-1 min-h-0 overflow-hidden ${neuralLayoutActive ? '' : ''}`}>
+        {/* Sidebar — collapsed in Neural Operations mode */}
+        {!sidebarHidden && (
+        neuralActive ? (
+          <DemoNavSidebar
+            primaryMode={neuralOpsMode ? 'switchboard' : 'stencil'}
+            onPrimaryModeChange={handleDemoPrimaryModeChange}
+            stencilSection={demoStencilSection}
+            onStencilSectionChange={handleDemoStencilSectionChange}
+            switchboardSection={demoSwitchboardSection}
+            onSwitchboardSectionChange={handleDemoSwitchboardSectionChange}
+            integrationsConnected={integrationsConnected}
+            globalAlarmCount={neuralActive ? Math.max(liveDispatchOpenCount, globalAlarmCount) : globalAlarmCount}
+            halls={halls}
+            selectedHallId={selectedHallId}
+            onHallChange={setSelectedHallId}
+            selectedHall={selectedHall}
+            hallPduCount={hallPDUs.length}
+            livePduCount={livePduCount}
+            pdus={generatedPDUs}
+            pduFilter={pduFilter}
+            onPduFilterChange={setPduFilter}
+            selectedPduId={fleetSelectedPduId}
+            onSelectPdu={handleDemoSidebarPduSelect}
+            pduLiveStatus={pduLiveStatus}
+            pduAlarms={pduAlarms}
+            pduEnv={pduEnv}
+            hallLoading={hallLoading}
+            compact={showFleetSplit}
+            isDemoSession={isDemoMode}
+            onReplayLoaded={async (newHallId) => {
+              setDemoReplayActive(true);
+              const list = await fetchHalls();
+              setHalls(list);
+              if (newHallId) {
+                setSelectedHallId(newHallId);
+                await fetchHallState(newHallId);
+              }
+            }}
+            onReplayStopped={() => {
+              setDemoReplayActive(false);
+              if (selectedHallId) fetchHallState(selectedHallId, true);
+            }}
+          />
+        ) : (
+        <aside className="w-72 flex-shrink-0 border-r border-[#233544] bg-[#0B1120] min-h-0 h-full p-4 overflow-y-auto">
+          {/* Infrastructure navigation — card tiles (no left-accent bars) */}
           <div className="mb-6">
             <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest mb-3">
               Infrastructure
             </h3>
-            <button
-              onClick={() => { setActiveTab('datahall'); setExpandedPdu(null); }}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors text-left ${
-                activeTab === 'datahall' 
-                  ? 'bg-[#00E5FF]/10 text-[#00E5FF] border-l-2 border-[#00E5FF]' 
-                  : 'text-slate-400 hover:bg-[#161E2E] hover:text-[#00E5FF]'
-              }`}
-            >
-              <span className="material-icons-outlined text-lg">view_in_ar</span>
-              <span className="text-sm font-medium">Data Hall Designer</span>
-            </button>
-            <button
-              onClick={() => { setActiveTab('ledger'); setExpandedPdu(null); }}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors text-left mt-1 ${
-                activeTab === 'ledger'
-                  ? 'bg-[#00E5FF]/10 text-[#00E5FF] border-l-2 border-[#00E5FF]'
-                  : globalAlarmCount > 0
-                    ? 'bg-red-500/10 text-red-400 border-l-2 border-red-500 hover:bg-red-500/15'
-                    : 'text-slate-400 hover:bg-[#161E2E] hover:text-[#00E5FF]'
-              }`}
-            >
-              <span className={`material-icons-outlined text-lg ${globalAlarmCount > 0 && activeTab !== 'ledger' ? 'animate-pulse' : ''}`}>
-                {globalAlarmCount > 0 ? 'warning_amber' : 'history_edu'}
-              </span>
-              <span className="text-sm font-medium">Alarm Ledger</span>
-              {globalAlarmCount > 0 && (
-                <span className="ml-auto px-1.5 py-0.5 rounded bg-red-500 text-white text-[10px] font-mono font-bold">{globalAlarmCount}</span>
-              )}
-            </button>
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={() => { setActiveTab('datahall'); setExpandedPdu(null); }}
+                className={`group w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-all ${
+                  activeTab === 'datahall'
+                    ? 'bg-[#161E2E] border-[#00E5FF]/45 shadow-[inset_0_0_0_1px_rgba(0,229,255,0.12)]'
+                    : 'bg-[#161E2E]/40 border-[#233544] hover:border-[#00E5FF]/30 hover:bg-[#161E2E]'
+                }`}
+              >
+                <span className={`flex items-center justify-center w-9 h-9 rounded-lg flex-shrink-0 transition-colors ${
+                  activeTab === 'datahall'
+                    ? 'bg-[#00E5FF]/20 text-[#00E5FF]'
+                    : 'bg-[#233544]/80 text-slate-400 group-hover:text-[#00E5FF] group-hover:bg-[#00E5FF]/10'
+                }`}>
+                  <span className="material-icons-outlined text-lg">view_in_ar</span>
+                </span>
+                <div className="min-w-0 flex-1">
+                  <span className={`block text-sm font-medium truncate ${activeTab === 'datahall' ? 'text-[#00E5FF]' : 'text-slate-200'}`}>
+                    Data Hall Designer
+                  </span>
+                  <span className="block text-[10px] text-slate-500 truncate">3D layout &amp; racks</span>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => { setActiveTab('assign'); setExpandedPdu(null); }}
+                className={`group w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-all ${
+                  activeTab === 'assign'
+                    ? 'bg-[#161E2E] border-[#00E5FF]/45 shadow-[inset_0_0_0_1px_rgba(0,229,255,0.12)]'
+                    : 'bg-[#161E2E]/40 border-[#233544] hover:border-[#00E5FF]/30 hover:bg-[#161E2E]'
+                }`}
+              >
+                <span className={`flex items-center justify-center w-9 h-9 rounded-lg flex-shrink-0 transition-colors ${
+                  activeTab === 'assign'
+                    ? 'bg-[#00E5FF]/20 text-[#00E5FF]'
+                    : 'bg-[#233544]/80 text-slate-400 group-hover:text-[#00E5FF] group-hover:bg-[#00E5FF]/10'
+                }`}>
+                  <span className="material-icons-outlined text-lg">drag_indicator</span>
+                </span>
+                <div className="min-w-0 flex-1">
+                  <span className={`block text-sm font-medium truncate ${activeTab === 'assign' ? 'text-[#00E5FF]' : 'text-slate-200'}`}>
+                    Assign PDUs
+                  </span>
+                  <span className="block text-[10px] text-slate-500 truncate">Place PDUs into racks</span>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => { setActiveTab('ledger'); setExpandedPdu(null); }}
+                className={`group w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-all ${
+                  activeTab === 'ledger'
+                    ? 'bg-[#161E2E] border-[#00E5FF]/45 shadow-[inset_0_0_0_1px_rgba(0,229,255,0.12)]'
+                    : globalAlarmCount > 0
+                      ? 'bg-red-500/5 border-red-500/35 hover:border-red-500/50 hover:bg-red-500/10'
+                      : 'bg-[#161E2E]/40 border-[#233544] hover:border-[#00E5FF]/30 hover:bg-[#161E2E]'
+                }`}
+              >
+                <span className={`relative flex items-center justify-center w-9 h-9 rounded-lg flex-shrink-0 transition-colors ${
+                  activeTab === 'ledger'
+                    ? 'bg-[#00E5FF]/20 text-[#00E5FF]'
+                    : globalAlarmCount > 0
+                      ? 'bg-red-500/15 text-red-400'
+                      : 'bg-[#233544]/80 text-slate-400 group-hover:text-[#00E5FF] group-hover:bg-[#00E5FF]/10'
+                }`}>
+                  <span className={`material-icons-outlined text-lg ${globalAlarmCount > 0 && activeTab !== 'ledger' ? 'animate-pulse' : ''}`}>
+                    {globalAlarmCount > 0 ? 'warning_amber' : 'history_edu'}
+                  </span>
+                </span>
+                <div className="min-w-0 flex-1">
+                  <span className={`block text-sm font-medium truncate ${
+                    activeTab === 'ledger' ? 'text-[#00E5FF]' : globalAlarmCount > 0 ? 'text-red-300' : 'text-slate-200'
+                  }`}>
+                    Alarm Ledger
+                  </span>
+                  <span className="block text-[10px] text-slate-500 truncate">
+                    {globalAlarmCount > 0 ? `${globalAlarmCount} active alarm${globalAlarmCount > 1 ? 's' : ''}` : 'Fleet alarm history'}
+                  </span>
+                </div>
+                {globalAlarmCount > 0 && (
+                  <span className="flex-shrink-0 min-w-[1.25rem] h-5 px-1.5 rounded-md bg-red-500 text-white text-[10px] font-mono font-bold flex items-center justify-center">
+                    {globalAlarmCount}
+                  </span>
+                )}
+              </button>
+            </div>
           </div>
 
           {/* Hall Selector */}
@@ -718,6 +1196,14 @@ const Dashboard2 = () => {
                         {pduLiveStatus[pdu.ip] === 'online' ? 'LIVE' : 'OFF'}
                       </span>
                       <span className="text-[10px] text-slate-500 font-mono">{pdu.ip}</span>
+                      {isDemoMode && pduEnv[pdu.ip] && (
+                        <span className="text-[9px] font-mono text-slate-600 ml-auto truncate">
+                          {pduEnv[pdu.ip].temp}° · {pduEnv[pdu.ip].hum}%
+                          {pduEnv[pdu.ip].door !== 'Closed' && (
+                            <span className="text-red-400 ml-1">🚪{pduEnv[pdu.ip].door}</span>
+                          )}
+                        </span>
+                      )}
                     </div>
                   </button>
                   
@@ -734,7 +1220,7 @@ const Dashboard2 = () => {
                         { id: 'outlets', icon: 'power', label: 'Outlets' },
                         { id: 'specs', icon: 'info', label: 'Specs', inactive: true },
                         { id: 'insights', icon: 'psychology', label: 'AI Insights', inactive: true },
-                        ...(pdu.web_admin_port ? [{ id: 'pdu-settings', icon: 'settings', label: 'PDU Settings' }] : []),
+                        ...(pdu.dbId ? [{ id: 'pdu-settings', icon: 'settings', label: 'PDU Settings' }] : []),
                       ].map(item => (
                         <button
                           key={item.id}
@@ -829,13 +1315,13 @@ const Dashboard2 = () => {
               <span className="material-icons-outlined text-sm">add</span>
               Commission PDU
             </button>
-            {generatedPDUs.length > 0 && (
+            {hallPDUs.length > 0 && (
               <button
                 type="button"
                 onClick={() => setShowBulkReboot(true)}
-                className="w-full mt-2 py-2 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 font-medium text-xs uppercase tracking-wider rounded-lg flex items-center justify-center gap-2 transition-all"
+                className="w-full mt-2 py-2.5 bg-amber-500/20 hover:bg-amber-500/30 border-2 border-amber-500/50 text-amber-200 font-bold text-xs uppercase tracking-wider rounded-lg flex items-center justify-center gap-2 transition-all shadow-lg shadow-amber-500/10"
               >
-                <span className="material-icons-outlined text-sm">restart_alt</span>
+                <span className="material-icons-outlined text-base">restart_alt</span>
                 Reboot PDUs
               </button>
             )}
@@ -859,11 +1345,61 @@ const Dashboard2 = () => {
             </div>
           </div>
         </aside>
+        )
+        )}
 
         {/* Main Content */}
-        <main className="flex-1 p-8 overflow-y-auto">
+        <main className={`flex-1 flex flex-col min-h-0 ${
+          datahallCanvasLayout ? 'p-0 overflow-hidden'
+            : showFleetSplit ? 'p-0 overflow-hidden'
+            : (alarmsDispatchLayout || alarmsReportsLayout) ? 'p-8 overflow-hidden'
+            : neuralActive && (activeTab === 'commission' || activeTab === 'integrations' || activeTab === 'teams' || activeTab === 'assign') ? 'p-0 overflow-hidden'
+            : 'p-8 overflow-y-auto dashboard2-scroll'
+        }`}>
+          {activeTab === 'teams' && neuralActive && (
+            <DemoTeamsPanel apiPrefix={opsApiPrefix} />
+          )}
+
+          {activeTab === 'integrations' && neuralActive && (
+            <DemoIntegrationsPanel
+              embedded
+              apiPrefix={opsApiPrefix}
+              onConnectionChange={setIntegrationsConnected}
+            />
+          )}
+
+          {activeTab === 'commission' && neuralActive && selectedHallId && (
+            <div className="flex-1 min-h-0 overflow-hidden">
+              <CommissioningWizard
+                hallId={selectedHallId}
+                hallName={selectedHall?.name || 'Data Hall'}
+                onComplete={() => fetchHallState(selectedHallId)}
+                onClose={() => handleDemoStencilSectionChange('designer')}
+              />
+            </div>
+          )}
+
+          {showPduMonitoring && (
+          <div className="flex flex-1 min-h-0 min-w-0 flex-col">
+          <DemoPduDetailShell
+            showFleetSplit={showFleetSplit}
+            fleetProps={{
+              pdus: generatedPDUs,
+              pduFilter,
+              onPduFilterChange: setPduFilter,
+              selectedPduId: fleetSelectedPduId,
+              onSelectPdu: handleFleetSelectPdu,
+              pduLiveStatus,
+              pduAlarms,
+              pduEnv,
+              isDemoMode: neuralActive,
+              activeTab,
+              onTabChange: setActiveTab,
+            }}
+          >
+          <>
           {/* No PDU selected placeholder */}
-          {!activePdu && activeTab === 'telemetry' && (
+          {!showFleetSplit && !activePdu && activeTab === 'telemetry' && (
             <div className="flex items-center justify-center h-[60vh]">
               <div className="text-center">
                 <span className="material-icons-outlined text-5xl text-slate-700 mb-4 block">electrical_services</span>
@@ -876,7 +1412,7 @@ const Dashboard2 = () => {
           {activeTab === 'telemetry' && activePdu && (
             <>
               {/* Active PDU Info Bar */}
-              {activePduFull && (
+              {!showFleetSplit && activePduFull && (
                 <div className="mb-4 p-3 rounded-xl bg-[#161E2E] border border-[#233544] flex items-center gap-4 flex-wrap">
                   {/* Label — only show if it differs from the IP */}
                   {activePduFull.label && activePduFull.label !== activePduFull.ip && (
@@ -921,6 +1457,7 @@ const Dashboard2 = () => {
               )}
 
               {/* Page Header */}
+              {!showFleetSplit && (
               <div className="flex justify-between items-start mb-8">
                 <div>
                   <h1 className="text-2xl font-bold uppercase tracking-tight text-[#00E5FF]">
@@ -937,9 +1474,10 @@ const Dashboard2 = () => {
                   </span>
                 </div>
               </div>
+              )}
 
               {/* Metrics Row */}
-              <div className="grid grid-cols-5 gap-4 mb-6">
+              <div className={`grid gap-4 mb-6 ${showFleetSplit ? 'grid-cols-2 lg:grid-cols-3 xl:grid-cols-5' : 'grid-cols-5'}`}>
                 <div className="bg-[#161E2E] p-5 rounded-xl border border-[#233544]">
                   <p className="text-[10px] text-slate-500 uppercase font-bold mb-2">Voltage</p>
                   <div className="flex items-baseline gap-1">
@@ -1239,8 +1777,33 @@ const Dashboard2 = () => {
                   </div>
                 </div>
 
-                {/* Environmental — hidden until real sensor data is available from the PDU */}
-                {/* TODO: Show this section when the PDU reports actual temperature/humidity readings */}
+                {/* Environmental sensors — shown in Neural Ops (demo + production) */}
+                {neuralActive && (
+                <div className="bg-[#161E2E] rounded-xl border border-[#233544] p-6">
+                  <h3 className="font-bold text-[#00E5FF] flex items-center gap-2 uppercase text-sm mb-4">
+                    <span className="material-icons-outlined text-lg">thermostat</span>
+                    Environmental Sensors
+                  </h3>
+                  <div className="grid grid-cols-4 gap-4">
+                    {[
+                      { label: 'Inlet Temp 1', value: getValue('Temperature1'), unit: '°C', icon: 'thermostat', color: 'text-orange-400' },
+                      { label: 'Inlet Temp 2', value: getValue('Temperature2'), unit: '°C', icon: 'device_thermostat', color: 'text-orange-300' },
+                      { label: 'Humidity', value: getValue('Humidity1'), unit: '%', icon: 'water_drop', color: 'text-blue-400' },
+                      { label: 'Rack Door', value: getValue('DoorStatus') || 'Closed', unit: '', icon: (getValue('DoorStatus') || 'Closed') === 'Closed' ? 'lock' : 'door_front', color: (getValue('DoorStatus') || 'Closed') === 'Closed' ? 'text-emerald-400' : 'text-red-400' },
+                    ].map((item) => (
+                      <div key={item.label} className="bg-[#0B1120] rounded-lg p-4 border border-[#233544]">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className={`material-icons-outlined text-sm ${item.color}`}>{item.icon}</span>
+                          <p className="text-[10px] text-slate-500 uppercase font-bold">{item.label}</p>
+                        </div>
+                        <p className={`text-2xl font-mono font-bold ${item.color}`}>
+                          {item.value != null ? `${parseFloat(item.value) || item.value}${item.unit}` : '—'}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                )}
               </div>
 
               {/* Bottom Row */}
@@ -1282,6 +1845,7 @@ const Dashboard2 = () => {
           {/* Warnings View */}
           {activeTab === 'warnings' && (
             <>
+              {!showFleetSplit && (
               <div className="flex justify-between items-start mb-8">
                 <div>
                   <h2 className="text-2xl font-bold uppercase tracking-tight text-white">
@@ -1293,17 +1857,22 @@ const Dashboard2 = () => {
                   </p>
                 </div>
               </div>
+              )}
 
               {(() => {
                 const alarm = pduAlarms[activePdu?.ip];
                 const flags = alarm?.flags || [];
-                const alarmEntries = activePdu?.ip ? Object.entries(
+                const env = pduEnv[activePdu?.ip] || {};
+                const liveAlarmEntries = activePdu?.ip ? Object.entries(
                   Object.fromEntries(
                     (data?.results || [])
                       .filter(r => r.name.startsWith('alarm_') && !r.name.endsWith('_color') && r.name !== 'alarm_status' && r.name !== 'alarm_color')
                       .map(r => [r.name, r.value])
                   )
                 ) : [];
+                const fallbackEntries = (alarm?.entries || []).map(e => [e.key, e.value]);
+                const alarmEntries = liveAlarmEntries.length > 0 ? liveAlarmEntries : fallbackEntries;
+                const isOffline = pduLiveStatus[activePdu?.ip] !== 'online';
 
                 const PARAM_LABELS = {
                   alarm_l1_voltage: 'Phase L1 Voltage', alarm_l1_current: 'Phase L1 Current',
@@ -1317,9 +1886,56 @@ const Dashboard2 = () => {
                   alarm_sensor1: 'IO Sensor 1', alarm_sensor2: 'IO Sensor 2',
                   alarm_sensor3: 'IO Sensor 3', alarm_sensor4: 'IO Sensor 4',
                 };
+                const pduMeta = hallPDUs.find((p) => p.ip === activePdu?.ip);
+                const mount = pduMeta?.mount_position || 'A';
+                const outletLoadAlarms = [
+                  ...flags.filter((f) => /outlet\d+_load/.test(f.param || '')).map((f) => {
+                    const n = (f.param || '').match(/outlet(\d+)_load/)?.[1];
+                    const code = f.outlet_code || formatPduOutletId(mount, n);
+                    return { key: `alarm_outlet${n}_load`, label: `Outlet ${code} — Cable Disconnected`, value: f.detail || f.status || 'Load Lost' };
+                  }),
+                  ...alarmEntries
+                    .filter(([k]) => /^alarm_outlet\d+_load$/.test(k))
+                    .map(([k, v]) => {
+                      const n = parseOutletLoadAlarmKey(k);
+                      const code = formatPduOutletId(mount, n);
+                      return { key: k, label: `Outlet ${code} — Cable Disconnected`, value: v || 'Load Lost' };
+                    }),
+                ].filter((item, idx, arr) => arr.findIndex((x) => x.key === item.key) === idx);
 
                 return (
                   <div className="space-y-4">
+                    {/* Live environmental readings (demo + production when available) */}
+                    {(isDemoMode || env.temp) && (
+                      <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+                        <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
+                          <span className="material-icons-outlined text-orange-400 text-sm">thermostat</span>
+                          Environmental Sensors
+                          {isOffline && isDemoMode && (
+                            <span className="ml-auto text-[9px] font-mono text-slate-500 uppercase">Last known</span>
+                          )}
+                        </h3>
+                        <div className="grid grid-cols-4 gap-3">
+                          {[
+                            { label: 'Temp 1', value: env.temp || getValue('Temperature1'), unit: '°C', icon: 'thermostat', warn: parseFloat(env.temp || getValue('Temperature1') || 0) > 28 },
+                            { label: 'Temp 2', value: env.temp2 || getValue('Temperature2'), unit: '°C', icon: 'device_thermostat', warn: parseFloat(env.temp2 || getValue('Temperature2') || 0) > 28 },
+                            { label: 'Humidity', value: env.hum || getValue('Humidity1'), unit: '%', icon: 'water_drop', warn: parseFloat(env.hum || getValue('Humidity1') || 0) > 65 },
+                            { label: 'Door', value: env.door || getValue('DoorStatus') || 'Closed', unit: '', icon: (env.door || getValue('DoorStatus') || 'Closed') === 'Closed' ? 'lock' : 'door_front', warn: (env.door || getValue('DoorStatus') || 'Closed') !== 'Closed' },
+                          ].map((item) => (
+                            <div key={item.label} className={`rounded-lg p-3 border ${item.warn ? 'bg-red-500/10 border-red-500/30' : 'bg-[#161E2E] border-[#233544]'}`}>
+                              <div className="flex items-center gap-1 mb-1">
+                                <span className={`material-icons-outlined text-xs ${item.warn ? 'text-red-400' : 'text-slate-500'}`}>{item.icon}</span>
+                                <span className="text-[9px] text-slate-500 uppercase">{item.label}</span>
+                              </div>
+                              <p className={`text-lg font-mono font-bold ${item.warn ? 'text-red-300' : 'text-white'}`}>
+                                {item.value != null && item.value !== '' ? `${item.value}${item.unit}` : '—'}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Summary */}
                     <div className={`p-4 rounded-xl border ${flags.length > 0 ? 'bg-red-500/10 border-red-500/30' : 'bg-emerald-500/10 border-emerald-500/30'}`}>
                       <div className="flex items-center gap-3">
@@ -1389,6 +2005,24 @@ const Dashboard2 = () => {
                         })}
                       </div>
                     </div>
+
+                    {/* Outlet load-lost (cable unplugged while outlet energized) */}
+                    {outletLoadAlarms.length > 0 && (
+                      <div className="p-5 rounded-xl bg-[#0B1120] border border-amber-500/40">
+                        <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
+                          <span className="material-icons-outlined text-amber-400 text-sm">power_off</span>
+                          Outlet Load Warnings
+                        </h3>
+                        <div className="grid grid-cols-1 gap-2">
+                          {outletLoadAlarms.map((item) => (
+                            <div key={item.key} className="flex items-center justify-between px-3 py-2 rounded-lg border bg-amber-500/15 border-amber-500/40">
+                              <span className="text-xs text-slate-300">{item.label}</span>
+                              <span className="text-xs font-mono font-bold text-amber-300">{item.value}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })()}
@@ -1398,6 +2032,7 @@ const Dashboard2 = () => {
           {/* Outlets View */}
           {activeTab === 'outlets' && (
             <>
+              {!showFleetSplit ? (
               <div className="flex justify-between items-start mb-8">
                 <div>
                   <h1 className="text-2xl font-bold uppercase tracking-tight text-white">
@@ -1416,8 +2051,16 @@ const Dashboard2 = () => {
                   <button className="px-3 py-1.5 rounded bg-[#233544] text-slate-400 text-xs font-medium">Off ({24 - activeOutlets})</button>
                 </div>
               </div>
+              ) : (
+              <div className="flex flex-wrap gap-2 mb-4">
+                <button className="px-3 py-1.5 rounded bg-[#00E5FF] text-[#0B1120] text-xs font-bold">All</button>
+                <button className="px-3 py-1.5 rounded bg-[#233544] text-emerald-400 text-xs font-medium">Normal ({activeOutlets})</button>
+                {!isWebAdminPdu && <button className="px-3 py-1.5 rounded bg-[#233544] text-amber-400 text-xs font-medium">Idle ({idleOutlets})</button>}
+                <button className="px-3 py-1.5 rounded bg-[#233544] text-slate-400 text-xs font-medium">Off ({24 - activeOutlets})</button>
+              </div>
+              )}
               
-              <div className="grid grid-cols-6 gap-4">
+              <div className={`grid gap-3 ${showFleetSplit ? 'grid-cols-3 lg:grid-cols-4 xl:grid-cols-6' : 'grid-cols-6 gap-4'}`}>
                 {outlets.map(number => (
                   <OutletCard key={number} number={number} data={data} pduIp={activePdu?.ip} onToggleComplete={refreshData} isWebAdmin={isWebAdminPdu} />
                 ))}
@@ -1433,40 +2076,148 @@ const Dashboard2 = () => {
             </>
           )}
 
+          {activeTab === 'pdu-settings' && (
+            <PDUSettingsPanel
+              embedded={showFleetSplit}
+              pdu={(() => {
+              const p = hallPDUs.find((row) => {
+                if (showFleetSplit && fleetSelectedPduId) return row.id === fleetSelectedPduId;
+                return expandedPdu && (row.id === expandedPdu || row.dbId === expandedPdu);
+              });
+              return p ? { ip: p.ip, remote_host: p.remote_host, web_admin_port: p.web_admin_port, web_admin_https: p.web_admin_https, web_admin_user: p.web_admin_user, web_admin_pass: p.web_admin_pass } : null;
+            })()} />
+          )}
+          </>
+          </DemoPduDetailShell>
+          </div>
+          )}
+
           {/* Data Hall Designer View */}
           {activeTab === 'datahall' && (
-            <DataHallDesigner 
-              selectedHallId={selectedHallId}
-              alerts={rackAlerts}
-              onHallChange={(hallId) => setSelectedHallId(hallId)}
-              onConfigSaved={() => {
-                // Refresh PDU list silently (no loading indicator)
-                if (selectedHallId) {
-                  fetchHallState(selectedHallId, true);
-                }
-              }}
-              onNavigateToPdu={(pdu) => {
-                // Find matching PDU in sidebar by IP and expand it
-                const matchingPdu = generatedPDUs.find(p => p.ip === pdu.ip);
-                if (matchingPdu) {
-                  setExpandedPdu(matchingPdu.id);
-                  // Scroll to the PDU in the sidebar list
-                  setTimeout(() => {
-                    const pduElement = document.getElementById(`pdu-item-${matchingPdu.id}`);
-                    if (pduElement) {
-                      pduElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            <div className={datahallCanvasLayout ? 'relative flex flex-1 min-h-0 min-w-0 w-full overflow-hidden' : 'flex-1 min-h-0 flex flex-col overflow-hidden'}>
+              <div className="flex-1 min-w-0 min-h-0 h-full flex flex-col overflow-hidden">
+                <DataHallDesigner 
+                  selectedHallId={selectedHallId}
+                  hallRefreshTrigger={hallRefreshTrigger}
+                  alerts={rackAlerts}
+                  pduLiveStatus={pduLiveStatus}
+                  hallPDUs={hallPDUs}
+                  pduAlarms={pduAlarms}
+                  pduEnv={pduEnv}
+                  fleetPduResults={fleetPduResults}
+                  fullBleed={datahallCanvasLayout}
+                  neuralMode={neuralLayoutActive}
+                  showNeuralToggle={false}
+                  showIntegrationsGear={false}
+                  onOpenIntegrations={() => handleDemoStencilSectionChange('integrations')}
+                  neuralOpsEnabled={neuralOpsMode}
+                  onNeuralOpsChange={toggleNeuralOps}
+                  opsPanelOpen={!switchboardPanelCollapsed}
+                  onToggleOpsPanel={toggleSwitchboardPanel}
+                  onHallChange={(hallId) => setSelectedHallId(hallId)}
+                  onConfigSaved={() => {
+                    if (selectedHallId) {
+                      fetchHallState(selectedHallId, true);
                     }
-                  }, 100);
-                }
-                setActiveTab('telemetry');
-              }}
-            />
+                  }}
+                  onNavigateToPdu={(pdu) => {
+                    const matchingPdu = generatedPDUs.find(p => p.ip === pdu.ip);
+                    if (matchingPdu) {
+                      setExpandedPdu(matchingPdu.id);
+                      setTimeout(() => {
+                        const pduElement = document.getElementById(`pdu-item-${matchingPdu.id}`);
+                        if (pduElement) {
+                          pduElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        }
+                      }, 100);
+                    }
+                    if (neuralLayoutActive) {
+                      setSelectedPdu({ ip: pdu.ip, port: pdu.port || '161' });
+                      setActiveTab('warnings');
+                    } else {
+                      setActiveTab('telemetry');
+                    }
+                  }}
+                />
+              </div>
+              {neuralLayoutActive && (
+                <>
+                  <button
+                    type="button"
+                    onClick={toggleSwitchboardPanel}
+                    className="relative z-40 flex-shrink-0 w-9 self-stretch bg-[#0a1520] border-l-2 border-[#00E5FF]/35 hover:bg-[#161E2E] hover:border-[#00E5FF]/60 flex flex-col items-center justify-center gap-1 transition-colors shadow-[-4px_0_12px_rgba(0,0,0,0.4)]"
+                    title={switchboardPanelCollapsed ? 'Show alerts & Switchboard panel' : 'Hide Switchboard panel'}
+                  >
+                    <span className={`material-icons-outlined text-[#00E5FF] text-base transition-transform ${switchboardPanelCollapsed ? 'rotate-180' : ''}`}>
+                      chevron_left
+                    </span>
+                    <span
+                      className="text-[7px] font-bold uppercase tracking-widest text-slate-500"
+                      style={{ writingMode: 'vertical-rl', textOrientation: 'mixed' }}
+                    >
+                      Ops
+                    </span>
+                  </button>
+                  {!switchboardPanelCollapsed && (
+                    <NeuralOpsPanel
+                      hallPDUs={hallPDUs}
+                      pduAlarms={pduAlarms}
+                      pduLiveStatus={pduLiveStatus}
+                      pduEnv={pduEnv}
+                      rackAlerts={rackAlerts}
+                      onSelectAlert={handleNeuralSelectAlert}
+                      onSelectPdu={handleNeuralSelectPdu}
+                    />
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Assign PDUs View — 2D drag-and-drop placement into racks */}
+          {activeTab === 'assign' && (
+            <div className={`relative overflow-hidden ${neuralActive ? 'flex-1 min-h-0' : 'h-[calc(100vh-8rem)] rounded-xl border border-[#233544]'}`}>
+              <AssignPdusPanel
+                selectedHallId={selectedHallId}
+                pduLiveStatus={pduLiveStatus}
+                refreshKey={hallRefreshTrigger}
+                onAssigned={() => {
+                  if (selectedHallId) fetchHallState(selectedHallId, true);
+                  setHallRefreshTrigger((t) => t + 1);
+                }}
+              />
+            </div>
           )}
 
           {/* Global Alarm Ledger View */}
           {activeTab === 'ledger' && (
-            <>
-              {(() => {
+            <div className={`flex flex-col min-h-0 ${alarmsDispatchLayout || alarmsReportsLayout ? 'flex-1 overflow-hidden' : ''}`}>
+              {neuralActive && (
+                <>
+                  <DemoAlarmsSubNav
+                    section={demoAlarmsSection}
+                    onChange={handleDemoAlarmsSectionChange}
+                    openCount={Math.max(liveDispatchOpenCount, globalAlarmCount)}
+                    sticky={alarmsDispatchLayout || alarmsReportsLayout}
+                  />
+                  <DemoLiveDispatchPanel
+                    visible={demoAlarmsSection === 'dispatch'}
+                    fillHeight={alarmsDispatchLayout}
+                    pollActive={false}
+                    liveData={liveDispatch.data}
+                    liveLoading={liveDispatch.loading}
+                    liveError={liveDispatch.error}
+                    liveLastFetch={liveDispatch.lastFetch}
+                    onRefresh={liveDispatch.refresh}
+                    onOpenCountChange={setLiveDispatchOpenCount}
+                  />
+                  {demoAlarmsSection === 'reports' && (
+                    <DemoStoneReportPanel apiPrefix={opsApiPrefix} fillHeight={alarmsReportsLayout} />
+                  )}
+                  {demoAlarmsSection === 'analytics' && <DemoIncidentAnalytics apiPrefix={opsApiPrefix} />}
+                </>
+              )}
+              {!neuralActive && (() => {
                 const PARAM_LABELS = {
                   alarm_l1_voltage: 'Phase L1 Voltage', alarm_l1_current: 'Phase L1 Current',
                   alarm_l2_voltage: 'Phase L2 Voltage', alarm_l2_current: 'Phase L2 Current',
@@ -1734,7 +2485,7 @@ const Dashboard2 = () => {
                   </>
                 );
               })()}
-            </>
+            </div>
           )}
 
           {/* Specs View */}
@@ -1807,21 +2558,28 @@ const Dashboard2 = () => {
                     <div className="grid grid-cols-2 gap-8">
                       <div>
                         <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Temperature 1</p>
-                        <p className="text-2xl font-mono font-semibold">24.2°C</p>
+                        <p className="text-2xl font-mono font-semibold">{getValue('Temperature1') || '—'}{getValue('Temperature1') ? '°C' : ''}</p>
                       </div>
                       <div>
                         <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Temperature 2</p>
-                        <p className="text-2xl font-mono font-semibold">26.1°C</p>
+                        <p className="text-2xl font-mono font-semibold">{getValue('Temperature2') || '—'}{getValue('Temperature2') ? '°C' : ''}</p>
                       </div>
                       <div>
                         <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Humidity</p>
-                        <p className="text-2xl font-mono font-semibold">42.5%</p>
+                        <p className="text-2xl font-mono font-semibold">{getValue('Humidity1') || '—'}{getValue('Humidity1') ? '%' : ''}</p>
                       </div>
                       <div>
                         <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Rack Door</p>
-                        <p className="text-lg font-mono font-semibold text-emerald-400 flex items-center gap-1">
-                          <span className="material-icons-outlined text-sm">lock</span> CLOSED
-                        </p>
+                        {(() => {
+                          const door = getValue('DoorStatus') || 'Closed';
+                          const isClosed = door === 'Closed';
+                          return (
+                            <p className={`text-lg font-mono font-semibold flex items-center gap-1 ${isClosed ? 'text-emerald-400' : 'text-red-400'}`}>
+                              <span className="material-icons-outlined text-sm">{isClosed ? 'lock' : 'door_front'}</span>
+                              {door.toUpperCase()}
+                            </p>
+                          );
+                        })()}
                       </div>
                     </div>
                   </div>
@@ -1875,17 +2633,11 @@ const Dashboard2 = () => {
             </>
           )}
 
-          {activeTab === 'pdu-settings' && (
-            <PDUSettingsPanel pdu={(() => {
-              const p = hallPDUs.find(p => expandedPdu && (p.id === expandedPdu || p.dbId === expandedPdu));
-              return p ? { ip: p.ip, remote_host: p.remote_host, web_admin_port: p.web_admin_port, web_admin_https: p.web_admin_https, web_admin_user: p.web_admin_user, web_admin_pass: p.web_admin_pass } : null;
-            })()} />
-          )}
         </main>
       </div>
 
-      {/* Commissioning Wizard Modal */}
-      {showWizard && selectedHallId && (
+      {/* Commissioning Wizard Modal (non-demo) */}
+      {showWizard && !isDemoMode && selectedHallId && (
         <CommissioningWizard
           hallId={selectedHallId}
           hallName={selectedHall?.name || 'Data Hall'}
@@ -1903,6 +2655,15 @@ const Dashboard2 = () => {
           pdus={hallPDUs}
           onClose={() => setShowBulkReboot(false)}
           onComplete={() => fetchHallState(selectedHallId, true)}
+        />
+      )}
+
+      {neuralActive && showIntegrations && (
+        <DemoIntegrationsPanel
+          open={showIntegrations}
+          onClose={() => setShowIntegrations(false)}
+          apiPrefix={opsApiPrefix}
+          onConnectionChange={setIntegrationsConnected}
         />
       )}
     </div>

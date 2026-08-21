@@ -273,31 +273,56 @@ class RackRepo:
                 existing = cur.fetchone()
                 
                 if existing:
-                    # Update
-                    conn.execute(
-                        """UPDATE racks SET 
-                           row_index = ?, position_index = ?,
-                           x_m = ?, y_m = ?, z_m = ?,
-                           rotation_deg = ?, width_mm = ?, depth_mm = ?, height_u = ?,
-                           model = ?, label = ?, metadata_json = ?, updated_at = ?
-                           WHERE id = ?""",
-                        (
-                            data.get("row_index", 0),
-                            data.get("position_index", 0),
-                            data.get("x_m", 0),
-                            data.get("y_m", 0),
-                            data.get("z_m", 0),
-                            data.get("rotation_deg", 0),
-                            data.get("width_mm", 600),
-                            data.get("depth_mm", 1000),
-                            data.get("height_u", 42),
-                            data.get("model"),
-                            data.get("label"),
-                            json.dumps(data.get("metadata")) if data.get("metadata") else None,
-                            _utc_now(),
-                            existing["id"]
+                    # Update — only touch label when caller explicitly sends it
+                    if "label" in data:
+                        conn.execute(
+                            """UPDATE racks SET 
+                               row_index = ?, position_index = ?,
+                               x_m = ?, y_m = ?, z_m = ?,
+                               rotation_deg = ?, width_mm = ?, depth_mm = ?, height_u = ?,
+                               model = ?, label = ?, metadata_json = ?, updated_at = ?
+                               WHERE id = ?""",
+                            (
+                                data.get("row_index", 0),
+                                data.get("position_index", 0),
+                                data.get("x_m", 0),
+                                data.get("y_m", 0),
+                                data.get("z_m", 0),
+                                data.get("rotation_deg", 0),
+                                data.get("width_mm", 600),
+                                data.get("depth_mm", 1000),
+                                data.get("height_u", 42),
+                                data.get("model"),
+                                data.get("label"),
+                                json.dumps(data.get("metadata")) if data.get("metadata") else None,
+                                _utc_now(),
+                                existing["id"]
+                            )
                         )
-                    )
+                    else:
+                        conn.execute(
+                            """UPDATE racks SET 
+                               row_index = ?, position_index = ?,
+                               x_m = ?, y_m = ?, z_m = ?,
+                               rotation_deg = ?, width_mm = ?, depth_mm = ?, height_u = ?,
+                               model = ?, metadata_json = ?, updated_at = ?
+                               WHERE id = ?""",
+                            (
+                                data.get("row_index", 0),
+                                data.get("position_index", 0),
+                                data.get("x_m", 0),
+                                data.get("y_m", 0),
+                                data.get("z_m", 0),
+                                data.get("rotation_deg", 0),
+                                data.get("width_mm", 600),
+                                data.get("depth_mm", 1000),
+                                data.get("height_u", 42),
+                                data.get("model"),
+                                json.dumps(data.get("metadata")) if data.get("metadata") else None,
+                                _utc_now(),
+                                existing["id"]
+                            )
+                        )
                     conn.commit()
                     return existing["id"]
                 else:
@@ -354,6 +379,21 @@ class RackRepo:
                 cur = conn.execute("SELECT * FROM racks WHERE id = ?", (rack_id,))
                 row = cur.fetchone()
                 return dict(row) if row else None
+            finally:
+                conn.close()
+
+    @staticmethod
+    def update_label(rack_id: int, label: Optional[str]) -> bool:
+        """Set or clear the human-readable rack label."""
+        with _db_lock:
+            conn = _connect()
+            try:
+                cur = conn.execute(
+                    "UPDATE racks SET label = ?, updated_at = ? WHERE id = ?",
+                    (label, _utc_now(), rack_id),
+                )
+                conn.commit()
+                return cur.rowcount > 0
             finally:
                 conn.close()
     
