@@ -1,11 +1,14 @@
 import React, { useState, useMemo, useCallback, Suspense, useEffect, useLayoutEffect, useRef } from 'react';
 import { Canvas, useLoader, useThree, useFrame } from '@react-three/fiber';
-import { OrbitControls, Grid, Text, Environment, useGLTF, TransformControls } from '@react-three/drei';
+import { OrbitControls, Grid, Html, Environment, useGLTF, TransformControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
 import { defaultDataHallConfig, generateDataHallLayout, validateConfig } from './dataHallConfig';
 import { modelCache, cloneShared, disposeObject3D } from '../../3d';
+import { RackFleet, RackFeedback, PduFleet, InspectionCamera, ViewportMetrics, StudioEnvironment, IndustrialFloorMaterial } from './IndustrialViewport';
 import CageMetricsOverlay from './CageMetricsOverlay';
+import { RackStatusPlaques, RackStatusLegend, RackStatusDetails } from './RackStatusVisuals';
+import { aggregateRackStatus, matchesRackFilter } from '../../utils/rackStatus';
 import HudSparkChart from './HudSparkChart';
 import {
   cableUnplugAlertKey,
@@ -63,19 +66,19 @@ const FloorGrid = ({ hall, tileSize }) => {
       <Grid
         args={[hall.length, hall.width]}
         cellSize={tileSize}
-        cellThickness={0.5}
-        cellColor="#1a3a4a"
+        cellThickness={0.35}
+        cellColor="#30363e"
         sectionSize={tileSize * 5}
-        sectionThickness={1}
-        sectionColor="#00E5FF"
-        fadeDistance={50}
-        fadeStrength={1}
+        sectionThickness={0.5}
+        sectionColor="#424b54"
+        fadeDistance={Math.max(hall.length, hall.width) * 1.2}
+        fadeStrength={2.5}
         followCamera={false}
       />
       {/* Floor plane */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]}>
+      <mesh receiveShadow rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]}>
         <planeGeometry args={[hall.length, hall.width]} />
-        <meshStandardMaterial color="#0a1520" />
+        <IndustrialFloorMaterial length={hall.length} width={hall.width} tileSize={tileSize} />
       </mesh>
     </group>
   );
@@ -160,9 +163,7 @@ const CageEntrance = ({ selected }) => {
         </mesh>
       </group>
       {/* Signage above the doorway */}
-      <Text position={[0, height + 0.22, 0.06]} fontSize={0.16} color={selected ? '#00E5FF' : '#cbd5e1'} anchorX="center" anchorY="bottom">
-        ENTRANCE
-      </Text>
+      <Html position={[0, height + .22, .06]} center style={{pointerEvents:'none'}}><span style={{color: selected ? '#65d9e5' : '#cbd5e1', fontSize:12}}>ENTRANCE</span></Html>
     </group>
   );
 };
@@ -269,7 +270,7 @@ const FitCanvas = ({ wrapRef, layoutEpoch = 0 }) => {
       if (w === lastW && h === lastH) return;
       lastW = w;
       lastH = h;
-      setDpr(Math.min(window.devicePixelRatio || 1, 2));
+      setDpr(Math.min(window.devicePixelRatio || 1, 1.5));
       setSize(w, h);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
@@ -314,7 +315,7 @@ const FitCanvas = ({ wrapRef, layoutEpoch = 0 }) => {
  * - Clones use cloneShared() to share underlying GPU resources
  * - Proper cleanup on unmount via disposeObject3D()
  */
-const CustomRackModel = ({ url, dimensions, colors, onClick, onPointerOver, onPointerOut, assets, onLoadSuccess, onLoadError }) => {
+const CustomRackModel = ({ url, dimensions, colors, onClick, onPointerOver, onPointerOut, assets, onLoadSuccess, onLoadError, dimmed=false }) => {
   const groupRef = useRef();
   const [model, setModel] = useState(null);
   const [loadError, setLoadError] = useState(false);
@@ -399,6 +400,7 @@ const CustomRackModel = ({ url, dimensions, colors, onClick, onPointerOver, onPo
         loadedModel.traverse((child) => {
           if (child.isMesh && child.material) {
             child.material = child.material.clone();
+            child.material.userData.statusBaseColor = child.material.color?.clone();
             child.material.emissive = new THREE.Color(colors.emissive);
             child.material.emissiveIntensity = colors.intensity;
           }
@@ -435,11 +437,12 @@ const CustomRackModel = ({ url, dimensions, colors, onClick, onPointerOver, onPo
       model.traverse((child) => {
         if (child.isMesh && child.material) {
           child.material.emissive = new THREE.Color(colors.emissive);
-          child.material.emissiveIntensity = colors.intensity;
+          child.material.emissiveIntensity = dimmed ? 0 : colors.intensity;
+          if(child.material.userData.statusBaseColor) child.material.color.copy(child.material.userData.statusBaseColor).multiplyScalar(dimmed ? .24 : 1);
         }
       });
     }
-  }, [model, colors.emissive, colors.intensity]);
+  }, [model, colors.emissive, colors.intensity, dimmed]);
   
   // Return null if no model loaded or if there was an error (parent will fall back to default box)
   if (!model || loadError) return null;
@@ -456,221 +459,8 @@ const CustomRackModel = ({ url, dimensions, colors, onClick, onPointerOver, onPo
   );
 };
 
-// Rack 3D Component
-const Rack3D = ({ rack, isSelected, isHovered, alertLevel, alertInfo, showLabel, onSelect, onHover, customModelUrl, customModelAssets, hasPdus, pduCount, heatmapLevel, commissioned = false, live = false }) => {
-  const { position, dimensions } = rack;
-
-  // Rack status dot semantics:
-  //   red    = critical alarm (solid)
-  //   amber  = soft/warning alarm (blinking)
-  //   green  = commissioned + at least one live PDU, no active alarm
-  //   white  = uncommissioned, or commissioned but offline (no live PDU)
-  const statusColor =
-    alertLevel === 'critical' ? '#ff2d2d'
-    : alertLevel === 'warning' ? '#ffae00'
-    : (commissioned && live) ? '#19ff5a'
-    : '#ffffff';
-  const statusBlinks = alertLevel === 'warning';
-
-  // Refs for the blinking warning state (pulse emissiveIntensity over time).
-  const ledRef = useRef();
-  const beaconRef = useRef();
-  useFrame(({ clock }) => {
-    if (!statusBlinks) return;
-    // ~1.5 Hz pulse between dim and bright amber.
-    const pulse = 0.6 + 0.9 * (0.5 + 0.5 * Math.sin(clock.elapsedTime * 9));
-    if (ledRef.current) ledRef.current.emissiveIntensity = pulse;
-    if (beaconRef.current) beaconRef.current.emissiveIntensity = pulse * 1.6;
-  });
-  
-  // Determine colors based on alert level or load heatmap
-  const getColors = () => {
-    if (isSelected) {
-      return { color: '#00E5FF', emissive: '#00E5FF', intensity: 0.3, outline: '#00E5FF' };
-    }
-    if (isHovered) {
-      return { color: '#00E5FF', emissive: '#00E5FF', intensity: 0.15, outline: '#00E5FF' };
-    }
-    if (alertLevel === 'critical') {
-      return { color: '#7F1D1D', emissive: '#EF4444', intensity: 0.4, outline: '#EF4444' };
-    }
-    if (alertLevel === 'warning') {
-      return { color: '#78350F', emissive: '#F59E0B', intensity: 0.3, outline: '#F59E0B' };
-    }
-    if (heatmapLevel != null) {
-      if (heatmapLevel === 0) {
-        return { color: '#1e293b', emissive: '#334155', intensity: 0.05, outline: '#475569' };
-      }
-      if (heatmapLevel >= 90) {
-        return { color: '#7F1D1D', emissive: '#EF4444', intensity: 0.35, outline: '#EF4444' };
-      }
-      if (heatmapLevel >= 70) {
-        return { color: '#9a3412', emissive: '#F97316', intensity: 0.28, outline: '#F97316' };
-      }
-      if (heatmapLevel >= 40) {
-        return { color: '#78350F', emissive: '#F59E0B', intensity: 0.22, outline: '#F59E0B' };
-      }
-      return { color: '#14532d', emissive: '#22C55E', intensity: 0.18, outline: '#22C55E' };
-    }
-    return { color: '#2D4A5E', emissive: '#000000', intensity: 0, outline: '#3D6A7E' };
-  };
-  
-  const colors = getColors();
-  const labelColor = alertLevel === 'critical' ? '#EF4444' : alertLevel === 'warning' ? '#F59E0B' : '#00E5FF';
-  
-  // Track if custom model loaded successfully
-  const [customModelLoaded, setCustomModelLoaded] = useState(false);
-  
-  // Reset customModelLoaded when URL changes
-  useEffect(() => {
-    setCustomModelLoaded(false);
-  }, [customModelUrl]);
-  
-  return (
-    <group position={[position.x, position.y + dimensions.height / 2, position.z]}>
-      {/* Always render default box as base - hidden if custom model loads */}
-      {!customModelLoaded && (
-        <group
-          onClick={(e) => { e.stopPropagation(); onSelect(rack); }}
-          onPointerOver={(e) => { e.stopPropagation(); onHover(rack); }}
-          onPointerOut={(e) => { e.stopPropagation(); onHover(null); }}
-        >
-          {/* Main rack body */}
-          <mesh>
-            <boxGeometry args={[dimensions.width, dimensions.height, dimensions.depth]} />
-            <meshStandardMaterial 
-              color="#1a1a2e"
-              emissive={colors.emissive}
-              emissiveIntensity={colors.intensity}
-              metalness={0.7}
-              roughness={0.3}
-              transparent
-              opacity={0.9}
-            />
-          </mesh>
-          
-          {/* Front panel face */}
-          <mesh position={[0, 0, -dimensions.depth / 2 + 0.01]}>
-            <boxGeometry args={[dimensions.width * 0.95, dimensions.height * 0.95, 0.02]} />
-            <meshStandardMaterial 
-              color="#0f172a"
-              emissive={colors.emissive}
-              emissiveIntensity={colors.intensity * 0.3}
-              metalness={0.6}
-              roughness={0.4}
-            />
-          </mesh>
-          
-          {/* Status LED indicator — toneMapped:false keeps the color a pure,
-              saturated LED instead of a washed-out halo. */}
-          <mesh position={[dimensions.width * 0.35, dimensions.height * 0.4, -dimensions.depth / 2 + 0.02]}>
-            <sphereGeometry args={[0.035, 12, 12]} />
-            <meshStandardMaterial
-              ref={ledRef}
-              color={statusColor}
-              emissive={statusColor}
-              emissiveIntensity={2}
-              toneMapped={false}
-            />
-          </mesh>
-        </group>
-      )}
-      
-      {/* Overlay custom model if URL provided */}
-      {customModelUrl && (
-        <CustomRackModel
-          url={customModelUrl}
-          dimensions={dimensions}
-          colors={colors}
-          assets={customModelAssets}
-          onClick={(e) => { e.stopPropagation(); onSelect(rack); }}
-          onPointerOver={(e) => { e.stopPropagation(); onHover(rack); }}
-          onPointerOut={(e) => { e.stopPropagation(); onHover(null); }}
-          onLoadSuccess={() => setCustomModelLoaded(true)}
-          onLoadError={() => setCustomModelLoaded(false)}
-        />
-      )}
-      
-      {/* Rack outline glow for selection/hover */}
-      {(isSelected || isHovered) && (
-        <lineSegments>
-          <edgesGeometry args={[new THREE.BoxGeometry(dimensions.width, dimensions.height, dimensions.depth)]} />
-          <lineBasicMaterial color={colors.outline} linewidth={2} />
-        </lineSegments>
-      )}
-      
-      {/* Rack label — real asset ID (RDC1-PDU-RACK-CN10) when PDUs are assigned */}
-      {(showLabel || isHovered) && !alertLevel && (
-        <Text
-          position={[0, dimensions.height / 2 + 0.15, 0]}
-          fontSize={0.08}
-          color={labelColor}
-          anchorX="center"
-          anchorY="bottom"
-          maxWidth={1.8}
-        >
-          {getRackAssetId(rack) || getRackDisplayName(rack)}
-        </Text>
-      )}
-
-      {/* PDU indicator — glowing beacon on racks with commissioned PDUs.
-          Color follows live status: green (live), amber blink (warning),
-          red (critical), white (commissioned but offline). */}
-      {hasPdus && (
-        <group position={[0, dimensions.height / 2 + 0.08, -dimensions.depth / 2 + 0.05]}>
-          {/* Solid LED core — toneMapped:false = pure saturated colour (real LED),
-              not the ACES-washed pale halo. */}
-          <mesh>
-            <sphereGeometry args={[0.055, 16, 16]} />
-            <meshStandardMaterial
-              ref={beaconRef}
-              color={statusColor}
-              emissive={statusColor}
-              emissiveIntensity={3}
-              toneMapped={false}
-            />
-          </mesh>
-          {/* Soft surrounding glow */}
-          <mesh>
-            <sphereGeometry args={[0.085, 16, 16]} />
-            <meshBasicMaterial color={statusColor} transparent opacity={0.22} toneMapped={false} />
-          </mesh>
-          <mesh>
-            <ringGeometry args={[0.1, 0.14, 24]} />
-            <meshBasicMaterial color={statusColor} transparent opacity={0.35} side={THREE.DoubleSide} toneMapped={false} />
-          </mesh>
-          {pduCount > 1 && (
-            <Text
-              position={[0.12, 0, 0]}
-              fontSize={0.07}
-              color={statusColor}
-              anchorX="left"
-              anchorY="middle"
-            >
-              {`×${pduCount}`}
-            </Text>
-          )}
-        </group>
-      )}
-    </group>
-  );
-};
-
 // Row Label Component
-const RowLabel = ({ row, hallLength }) => {
-  return (
-    <Text
-      position={[-0.5, 0.1, row.position.z]}
-      fontSize={0.2}
-      color="#00E5FF"
-      anchorX="right"
-      anchorY="middle"
-      rotation={[0, 0, 0]}
-    >
-      {row.id}
-    </Text>
-  );
-};
+const RowLabel = ({ row }) => <Html position={[row.position.x, .12, row.position.z]} center style={{pointerEvents:'none'}}><span style={{color:'#929fa9', fontSize:10}}>{row.id}</span></Html>;
 
 // Walls Component
 const Walls = ({ hall }) => {
@@ -704,127 +494,75 @@ const Walls = ({ hall }) => {
   );
 };
 
-// Orbit controls with optional view-pan mode (left-drag pans, right-drag rotates)
-const SceneOrbitControls = ({ hall, viewOffset = { x: 0, z: 0 }, viewPanMode = false }) => {
-  const controlsRef = useRef();
-  const targetX = hall.length / 2 + viewOffset.x;
-  const targetZ = hall.width / 2 + viewOffset.z;
-
-  useEffect(() => {
-    const ctrl = controlsRef.current;
-    if (!ctrl) return;
-    ctrl.target.set(targetX, 0, targetZ);
-    ctrl.update();
-  }, [targetX, targetZ]);
-
-  return (
-    <OrbitControls
-      ref={controlsRef}
-      makeDefault
-      minPolarAngle={0.1}
-      maxPolarAngle={Math.PI / 2.1}
-      minDistance={5}
-      maxDistance={50}
-      target={[targetX, 0, targetZ]}
-      mouseButtons={{
-        LEFT: viewPanMode ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE,
-        MIDDLE: THREE.MOUSE.DOLLY,
-        RIGHT: viewPanMode ? THREE.MOUSE.ROTATE : THREE.MOUSE.PAN,
-      }}
-    />
-  );
-};
-
 // Main 3D Scene
-const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showLabels, onSelectRack, onHoverRack, customRackModelUrl, customRackModelAssets, lighting, heatmapByRack, pduLiveStatus = {}, sceneObjects = [], selectedObjectId = null, onSelectObject, onCommitObject, transformMode = 'translate', objectsEditable = false, cameraApiRef, viewOffset = { x: 0, z: 0 }, viewPanMode = false }) => {
-  // Debug: Log when customRackModelUrl changes
-  useEffect(() => {
-    console.log('[DataHallScene] customRackModelUrl:', customRackModelUrl);
-  }, [customRackModelUrl]);
+export const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showLabels, onSelectRack, onHoverRack, customRackModelUrl, customRackModelAssets, lighting, heatmapByRack, pduLiveStatus = {}, sceneObjects = [], selectedObjectId = null, onSelectObject, onCommitObject, transformMode = 'translate', objectsEditable = false, cameraApiRef, viewOffset = { x: 0, z: 0 }, viewPanMode = false, cameraPreset, hideDoors, openDoors, onPduClick, showPerformance, outletInventory, rackStatuses = {}, statusFilter = 'all' }) => {
+  const [customReady, setCustomReady] = useState(false);
+  useEffect(() => { setCustomReady(false); }, [customRackModelUrl]);
   
   if (!layout) return null;
   
   const { hall, floor, racks, rows } = layout;
   const { ambient, main, fill, top, mainPos, fillPos, topPos } = lighting || {
     ambient: 0.8, main: 1.0, fill: 0.6, top: 0.4,
-    mainPos: { x: 10, y: 20, z: 10 },
-    fillPos: { x: -10, y: 20, z: -10 },
+    mainPos: { x: -6, y: 10, z: -8 },
+    fillPos: { x: 8, y: 6, z: 4 },
     topPos: { x: 0, y: 30, z: 0 }
   };
   
   // Get alert info for a rack based on its PDUs
   const getRackAlertInfo = (rack) => {
-    for (const pdu of rack.pdus) {
-      const alert = alerts.find(a =>
-        a.pduIp === pdu.ip ||
-        a.pduId === pdu.id ||
-        a.pduId === pdu.dbId ||
-        a.rackId === rack.id ||
-        a.rackId === rack.rackCode
-      );
-      if (alert) {
-        return {
-          level: alert.severity,
-          title: alert.title,
-          message: alert.message,
-          pduPosition: pdu.position,
-          ip: pdu.ip,
-          category: alert.category,
-        };
-      }
-    }
-    return null;
+    const relevant = alerts.filter(a => a.rackId === rack.id || a.rackId === rack.rackCode || rack.pdus.some(p => a.pduIp === p.ip || a.pduId === p.id || a.pduId === p.dbId));
+    const alert = relevant.find(a => a.severity === 'critical') || relevant.find(a => a.severity === 'warning');
+    return alert ? { ...alert, level: alert.severity } : null;
   };
-  
+  const statuses = Object.fromEntries(racks.map(r => [r.id, rackStatuses[r.id] || aggregateRackStatus(r)]));
+  const dimmedIds = new Set(racks.filter(r=>!matchesRackFilter(statuses[r.id],statusFilter)).map(r=>r.id));
+  const inspection = selectedRack && cameraPreset.mode !== 'overview';
+  const visibleRacks = inspection ? racks.filter(r => r.id === selectedRack.id) : racks;
+  const shadowSpan = Math.max(hall.length, hall.width);
+  const lightTarget = new THREE.Object3D();
+  lightTarget.position.set(hall.length / 2, 0, hall.width / 2);
   return (
     <>
-      {/* Lighting - controlled via props */}
+      <StudioEnvironment />
+      <color attach="background" args={['#13191f']} />
+      <hemisphereLight args={['#dde5ef', '#44413c', .65]} />
       <ambientLight intensity={ambient} />
-      <directionalLight position={[mainPos.x, mainPos.y, mainPos.z]} intensity={main} castShadow />
-      <directionalLight position={[fillPos.x, fillPos.y, fillPos.z]} intensity={fill} />
-      <directionalLight position={[topPos.x, topPos.y, topPos.z]} intensity={top} />
-      
+      <primitive object={lightTarget} />
+      <directionalLight target={lightTarget} position={[hall.length / 2 + mainPos.x, mainPos.y, hall.width / 2 + mainPos.z]} intensity={main} castShadow
+        shadow-mapSize={[2048,2048]} shadow-bias={-.00015} shadow-normalBias={.025} shadow-radius={3}
+        shadow-camera-left={-shadowSpan} shadow-camera-right={shadowSpan} shadow-camera-top={shadowSpan} shadow-camera-bottom={-shadowSpan} shadow-camera-far={150} />
+      <directionalLight position={[hall.length / 2 + fillPos.x, fillPos.y, hall.width / 2 + fillPos.z]} intensity={fill} />
+      <directionalLight position={[hall.length / 2 + topPos.x, topPos.y, hall.width / 2 + topPos.z]} intensity={top} />
       {/* Floor */}
       <FloorGrid hall={hall} tileSize={floor.tileSize} />
       
       {/* Walls */}
-      <Walls hall={hall} />
+      {/* Open studio boundary avoids translucent walls obscuring inspection. */}
       
       {/* Row Labels */}
-      {rows.map(row => (
+      {showLabels && rows.map(row => (
         <RowLabel key={row.id} row={row} hallLength={hall.length} />
       ))}
       
-      {/* Racks */}
-      {racks.map(rack => {
+      {(!customRackModelUrl || !customReady) && <RackFleet racks={visibleRacks} selectedRack={selectedRack} hideDoors={hideDoors} openDoors={openDoors} serviceSide={cameraPreset.mode} onSelect={onSelectRack} onHover={onHoverRack} dimmedIds={dimmedIds} />}
+      {visibleRacks.map(rack => {
         const alertInfo = getRackAlertInfo(rack);
-        const hasPdus = rack.pdus && rack.pdus.length > 0;
-        // A rack is "live" when at least one of its commissioned PDUs is online.
-        const live = hasPdus && rack.pdus.some(
-          (p) => pduLiveStatus[p.ip] === 'online'
-        );
-        return (
-          <Rack3D
-            key={rack.id}
-            rack={rack}
-            isSelected={selectedRack?.id === rack.id}
-            isHovered={hoveredRack?.id === rack.id}
-            alertLevel={alertInfo?.level}
-            alertInfo={alertInfo}
-            showLabel={showLabels}
-            onSelect={onSelectRack}
-            onHover={onHoverRack}
-            customModelUrl={customRackModelUrl}
-            customModelAssets={customRackModelAssets}
-            hasPdus={hasPdus}
-            pduCount={rack.pdus ? rack.pdus.length : 0}
-            heatmapLevel={heatmapByRack?.[rack.id] ?? null}
-            commissioned={hasPdus}
-            live={live}
-          />
-        );
+        return <React.Fragment key={rack.id}>
+          {customRackModelUrl && <group position={[rack.position.x, rack.position.y + rack.dimensions.height / 2, rack.position.z]}>
+            <CustomRackModel dimmed={dimmedIds.has(rack.id)} url={customRackModelUrl} dimensions={rack.dimensions} assets={customRackModelAssets}
+              colors={{ emissive: '#000000', intensity: 0 }} onLoadSuccess={() => setCustomReady(true)} onLoadError={() => setCustomReady(false)}
+              onClick={e => { e.stopPropagation(); onSelectRack(rack); }}
+              onPointerOver={e => { e.stopPropagation(); onHoverRack(rack); }} onPointerOut={() => onHoverRack(null)} />
+          </group>}
+          <RackFeedback rack={rack} selected={selectedRack?.id === rack.id} hovered={hoveredRack?.id === rack.id}
+            showLabel={showLabels} live={rack.pdus.some(p => pduLiveStatus[p.ip] === 'online')}
+            alertLevel={alertInfo?.level} hideDoors={hideDoors || openDoors} heatmapLevel={heatmapByRack?.[rack.id] ?? null} />
+        </React.Fragment>;
       })}
-      
+      <RackStatusPlaques serviceSide={cameraPreset.mode} openDoors={openDoors} racks={visibleRacks} statuses={statuses} dimmedIds={dimmedIds} selectedRack={selectedRack} hoveredRack={hoveredRack} onSelectRack={onSelectRack} onHoverRack={onHoverRack}/>
+      <PduFleet dimmedIds={dimmedIds} racks={visibleRacks} selectedRack={selectedRack} onSelectRack={onSelectRack} onPduClick={onPduClick} showPduLabels={hideDoors || openDoors || cameraPreset.mode === 'rear'} outletInventory={outletInventory} />
+      {showPerformance && <ViewportMetrics racks={visibleRacks} />}
       {/* Free-placed scene props (cage entrances, etc.) */}
       {sceneObjects.map(obj => (
         <SceneProp
@@ -841,7 +579,7 @@ const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showLabels, 
       {/* Bridge to expose camera for drag-drop placement */}
       {cameraApiRef && <CameraBridge apiRef={cameraApiRef} />}
 
-      <SceneOrbitControls hall={hall} viewOffset={viewOffset} viewPanMode={viewPanMode} />
+      <InspectionCamera racks={racks} hall={hall} selectedRack={selectedRack} preset={cameraPreset} viewOffset={viewOffset} viewPanMode={viewPanMode} openDoors={openDoors} />
     </>
   );
 };
@@ -934,7 +672,7 @@ const ParamSelect = ({ label, value, onChange, options }) => (
 );
 
 // Rack Details Panel
-const RackDetailsPanel = ({ rack, alerts = [], onClose, onPduClick, onSaveLabel, readOnly = false }) => {
+const RackDetailsPanel = ({ rack, status, alerts = [], onClose, onPduClick, onSaveLabel, readOnly = false }) => {
   const [labelDraft, setLabelDraft] = useState('');
   const [savingLabel, setSavingLabel] = useState(false);
 
@@ -950,8 +688,8 @@ const RackDetailsPanel = ({ rack, alerts = [], onClose, onPduClick, onSaveLabel,
 
   // Get alerts for this rack
   const rackAlerts = alerts.filter(a => a.rackId === rack.id || a.rackId === rack.rackCode);
-  const hasAlerts = rackAlerts.length > 0;
-  const hasCritical = rackAlerts.some(a => a.severity === 'critical');
+  const hasAlerts = status ? status.activeAlarms.length > 0 : rackAlerts.length > 0;
+  const hasCritical = status ? status.state === 'critical' : rackAlerts.some(a => a.severity === 'critical');
 
   const handleSaveLabel = async () => {
     if (!onSaveLabel || readOnly) return;
@@ -964,13 +702,13 @@ const RackDetailsPanel = ({ rack, alerts = [], onClose, onPduClick, onSaveLabel,
   };
 
   return (
-    <div className={`absolute bottom-4 right-4 w-72 max-w-[calc(100%-2rem)] max-h-[calc(100vh-8rem)] flex flex-col overflow-hidden bg-[#161E2E] border ${hasCritical ? 'border-red-500' : hasAlerts ? 'border-amber-500' : 'border-[#233544]'} rounded-xl p-4 shadow-2xl z-10`}>
+    <div className={`absolute bottom-4 right-4 w-72 max-w-[calc(45%-2rem)] max-h-[calc(100vh-8rem)] flex flex-col overflow-hidden bg-[#161E2E] border ${hasCritical ? 'border-red-500' : hasAlerts ? 'border-amber-500' : 'border-[#233544]'} rounded-xl p-4 shadow-2xl z-30`}>
       <div className="flex items-center justify-between mb-3 flex-shrink-0">
         <div className="flex items-center gap-2 min-w-0">
           {hasCritical && <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse flex-shrink-0"></span>}
           {!hasCritical && hasAlerts && <span className="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0"></span>}
           <div className="min-w-0">
-            <h3 className={`text-sm font-bold truncate ${hasCritical ? 'text-red-400' : hasAlerts ? 'text-amber-400' : 'text-[#00E5FF]'}`}>
+            <h3 className={`text-sm font-bold truncate ${hasCritical ? 'text-red-400' : hasAlerts ? 'text-amber-400' : 'text-slate-200'}`}>
               {displayName}
             </h3>
             {hasCustomLabel && (
@@ -1010,8 +748,9 @@ const RackDetailsPanel = ({ rack, alerts = [], onClose, onPduClick, onSaveLabel,
 
       {/* Scrollable body so the panel never overflows the screen */}
       <div className="overflow-y-auto flex-1 min-h-0 -mr-2 pr-2">
+      <div className="mb-4 rounded-lg bg-[#0b1120] p-3"><RackStatusDetails rack={rack} status={status}/></div>
       {/* Alerts Section */}
-      {hasAlerts && (
+      {hasAlerts && !status && (
         <div className="mb-4 space-y-2">
           {rackAlerts.map(alert => (
             <div 
@@ -1060,7 +799,8 @@ const RackDetailsPanel = ({ rack, alerts = [], onClose, onPduClick, onSaveLabel,
           <p className="text-slate-500 text-[10px] mb-2">PDUs ({rack.pdus.length})</p>
           <div className="space-y-1">
             {rack.pdus.map(pdu => {
-              const pduAlert = alerts.find(a => a.pduId === pdu.id);
+              const deviceStatus = status?.devices.find(d => d.ip === pdu.ip);
+              const pduAlert = status ? deviceStatus?.alarms.filter(a=>a.active).sort((a,b)=>(a.severity==='critical'?-1:1))[0] : alerts.find(a => a.pduId === pdu.id);
               const isCommissioned = !!pdu.dbId;
               return (
                 <button
@@ -1073,13 +813,13 @@ const RackDetailsPanel = ({ rack, alerts = [], onClose, onPduClick, onSaveLabel,
                       {pduAlert ? (
                         <span className={`w-1.5 h-1.5 rounded-full inline-block ${pduAlert.severity === 'critical' ? 'bg-red-500' : 'bg-amber-500'}`}></span>
                       ) : isCommissioned ? (
-                        <span className="w-1.5 h-1.5 rounded-full inline-block bg-emerald-500"></span>
+                        <span className="w-1.5 h-1.5 rounded-full inline-block bg-slate-500"></span>
                       ) : (
                         <span className="w-1.5 h-1.5 rounded-full inline-block bg-slate-600 border border-dashed border-slate-500"></span>
                       )}
                     </span>
                     <div className="min-w-0 ml-1">
-                      <span className="text-[#00E5FF] text-[10px] font-mono truncate block" title={pduDisplayId(pdu)}>
+                      <span className="text-slate-300 text-[10px] font-mono truncate block" title={pduDisplayId(pdu)}>
                         {pduDisplayId(pdu) || `PDU ${pdu.position}`}
                       </span>
                       <span className="text-slate-500 text-[8px]">{pdu.position}{pdu.ip ? ` · ${pdu.ip}` : ''}</span>
@@ -1087,7 +827,7 @@ const RackDetailsPanel = ({ rack, alerts = [], onClose, onPduClick, onSaveLabel,
                   </div>
                   <div className="flex items-center gap-2">
                     {isCommissioned ? (
-                      <span className="text-emerald-400 font-mono text-xs">{pdu.ip}</span>
+                      <span className="text-slate-300 font-mono text-xs">{pdu.ip}</span>
                     ) : (
                       <span className="text-slate-600 font-mono text-xs italic">{pdu.ip || 'planned'}</span>
                     )}
@@ -1218,7 +958,7 @@ const RackTelemetryTooltip = ({ rack, onClose }) => {
             <div key={pdu.id} className={`${HUD_CARD} px-3 py-2.5`}>
               <div className="flex items-center justify-between mb-2 gap-2">
                 <div className="flex items-center gap-2 min-w-0">
-                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${data.online ? 'bg-emerald-500/90' : 'bg-red-500/80'}`} />
+                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${data.online ? 'bg-emerald-500/90' : 'bg-slate-500/80'}`} />
                   <div className="min-w-0">
                     <span className="text-[9px] font-semibold text-white tracking-wide block truncate" title={pduDisplayId(pdu)}>
                       {pduDisplayId(pdu) || `PDU ${pdu.position}`}
@@ -1432,6 +1172,7 @@ const DataHallDesigner = ({
   opsPanelOpen = true,
   onToggleOpsPanel,
   hallRefreshTrigger = 0,
+  pduStatusEvidence = {},
   pduLiveStatus = {},
   hallPDUs = [],
   pduAlarms = {},
@@ -1452,6 +1193,26 @@ const DataHallDesigner = ({
   const cageShiftApplied = useRef(false);
   const [config, setConfig] = useState(defaultDataHallConfig);
   const [selectedRack, setSelectedRack] = useState(null);
+  const [cameraPreset, setCameraPreset] = useState({ mode: 'overview', seq: 0 });
+  const [doorMode, setDoorMode] = useState('closed');
+  const hideDoors = doorMode === 'hidden', openDoors = doorMode === 'open';
+  const [showPerformance, setShowPerformance] = useState(false);
+  const [statusFilter,setStatusFilter] = useState('all');
+  const [statusNow,setStatusNow] = useState(Date.now());
+  useEffect(()=>{ const timer=setInterval(()=>setStatusNow(Date.now()),5000);return ()=>clearInterval(timer); },[]);
+  const selectRackForInspection = useCallback(rack => {
+    setSelectedRack(rack);
+    setCameraPreset(prev => ({ mode: prev.mode === 'overview' ? 'selected' : prev.mode, seq: prev.seq + 1 }));
+  }, []);
+  const outletInventory = useMemo(() => Object.fromEntries(Object.entries(fleetPduResults).map(([ip, value]) => {
+    const raw = value?.results || value || [];
+    const names = Array.isArray(raw) ? raw.filter(r => !r.error && (Number.isFinite(parseFloat(String(r.value).replace(/"/g, ''))) || /^(on|off|normal|enabled|disabled)$/i.test(String(r.value).replace(/"/g, '').trim()))).map(r => r.name) : Object.keys(raw);
+    const keys = names.map(k => /^(?:Outlet|Output)(?:Current|Power|Status)(\d+)$/i.exec(k)).filter(Boolean);
+    const observed = new Set(keys.map(m => Number(m[1])));
+    const highest = observed.size ? Math.max(...observed) : 0;
+    const count = highest > 0 && observed.size === highest ? highest : null;
+    return [ip, count];
+  })), [fleetPduResults]);
   const [hoveredRack, setHoveredRack] = useState(null);
   const prevCableWarningIdsRef = useRef(new Set());
   const openedCableWarningIdsRef = useRef(new Set());
@@ -1462,13 +1223,13 @@ const DataHallDesigner = ({
   // Lighting controls state
   const [showLightingPanel, setShowLightingPanel] = useState(false);
   const [lighting, setLighting] = useState({
-    ambient: 1.5,
-    main: 2.0,
-    fill: 1.2,
+    ambient: 0.45,
+    main: 2.4,
+    fill: 1.0,
     top: 0.8,
     // Light positions (x, y, z)
-    mainPos: { x: 10, y: 20, z: 10 },
-    fillPos: { x: -10, y: 20, z: -10 },
+    mainPos: { x: -6, y: 10, z: -8 },
+    fillPos: { x: 8, y: 6, z: 4 },
     topPos: { x: 0, y: 30, z: 0 }
   });
   
@@ -1476,6 +1237,11 @@ const DataHallDesigner = ({
   const [halls, setHalls] = useState([]);
   const [currentHall, setCurrentHall] = useState(null);
   const [hallId, setHallId] = useState(null);
+  useEffect(() => {
+    setSelectedRack(null);
+    setDoorMode('closed');
+    setCameraPreset(p => ({ mode: 'overview', seq: p.seq + 1 }));
+  }, [hallId]);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [lastSaved, setLastSaved] = useState(null);
@@ -1934,21 +1700,7 @@ const DataHallDesigner = ({
       };
     });
 
-    // Spread any unassigned PDUs onto empty racks (demo recovery)
-    const assignedIps = new Set();
-    mergedRacks.forEach((r) => r.pdus.forEach((p) => assignedIps.add(p.ip)));
-    const unassigned = storedPdus.filter((p) => p.ip_address && !assignedIps.has(p.ip_address));
-    if (unassigned.length > 0) {
-      let ui = 0;
-      for (const rack of mergedRacks) {
-        if (ui >= unassigned.length) break;
-        if (rack.pdus.length === 0) {
-          const pdu = unassigned[ui++];
-          rack.pdus.push(makePduEntry(pdu, rack.rackCode));
-        }
-      }
-    }
-    
+    // Render only saved assignments. Unassigned PDUs stay in the commissioning inventory.
     return {
       ...layoutResult,
       layout: {
@@ -1976,6 +1728,11 @@ const DataHallDesigner = ({
   }, []);
   
   const layout = mergedLayoutResult.success ? mergedLayoutResult.layout : null;
+  useEffect(() => {
+    setSelectedRack(prev => prev ? layout?.racks.find(r => r.id === prev.id) || null : null);
+  }, [layout]);
+  const assignedDeviceIds = new Set((layout?.racks || []).flatMap(r => r.pdus.map(p => p.dbId)));
+  const unassignedDeviceCount = storedPdus.filter(p => !assignedDeviceIds.has(p.id)).length;
 
   // Rack floor positions + labels for Cage Pulse cable-unplugged coordinates
   const rackMetaByCode = useMemo(() => {
@@ -2098,6 +1855,7 @@ const DataHallDesigner = ({
     for (const key of pendingKeys) openedCableWarningIdsRef.current.add(key);
   }, [layout, alerts, effectiveHallPDUs, pduAlarms, rackMetaByCode, findRackForCableEvent, storedPdus]);
 
+  const rackStatuses = useMemo(()=>Object.fromEntries((layout?.racks || []).map(rack=>[rack.id,aggregateRackStatus(rack,pduStatusEvidence,statusNow)])),[layout,pduStatusEvidence,statusNow]);
   const showCageMetrics = cagePulseOn && effectiveHallPDUs.length > 0;
 
   const toggleCagePulse = useCallback(() => {
@@ -2122,15 +1880,9 @@ const DataHallDesigner = ({
     cageShiftApplied.current = false;
   }, []);
 
-  useEffect(() => {
-    if (showCageMetrics && !cageShiftApplied.current) {
-      setViewOffset({ x: -5, z: 0 });
-      cageShiftApplied.current = true;
-    }
-    if (!showCageMetrics) {
-      cageShiftApplied.current = false;
-    }
-  }, [showCageMetrics]);
+  // Reserve real screen space for overlays; never shift the target in world metres.
+  const metricsInset = showCageMetrics ? (neuralMode ? 'min(280px, 24vw)' : 'min(360px, 30vw)') : '0px';
+  const canvasRightInset = selectedRack ? `max(min(320px, 45%), ${metricsInset})` : metricsInset;
 
   // Show the "select a data hall" landing on first load (before any hall is
   // loaded) and whenever the 3D scene has nothing to render (no layout / zero
@@ -2530,7 +2282,7 @@ const DataHallDesigner = ({
                 <p className="text-xl font-bold text-[#00E5FF]">{layout.stats.totalRacks}</p>
               </div>
               <div>
-                <p className="text-slate-500">Total PDUs</p>
+                <p className="text-slate-500">Planned PDU slots</p>
                 <p className="text-xl font-bold text-[#00E5FF]">{layout.stats.totalPDUs}</p>
               </div>
               <div>
@@ -2699,26 +2451,32 @@ const DataHallDesigner = ({
       <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden" style={{ isolation: 'isolate' }}>
         <div className="relative flex-1 min-h-0 min-w-0 w-full">
         <div
-          ref={canvasWrapRef}
+          data-testid="viewport-shell"
           className="absolute inset-0 overflow-hidden"
           onDragOver={(e) => { if (objectsEditable) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } }}
           onDrop={handleCanvasDrop}
         >
+        <div ref={canvasWrapRef} data-testid="viewport-canvas" className="absolute inset-0 overflow-hidden" style={{ right: canvasRightInset }}>
         <Canvas
           // Stable key — never remount on mode/full-bleed change. Remounting
           // tears down & recreates the WebGL context ("Context Lost" → blue
           // canvas). FitCanvas resizes the GL buffer in place when the layout
           // (neural / full-bleed / ops panel) flips.
           key={`dh-canvas-${glEpoch}`}
-          camera={{ position: [15, 12, 15], fov: 50 }}
+          shadows="soft"
+          dpr={[1, 1.5]}
+          camera={{ position: [15, 6, -8], fov: 45, near: 0.05, far: 200 }}
           // 'default' (not 'high-performance') avoids the discrete-GPU switch on
           // dual-GPU MacBooks, which is a common trigger of spurious context loss.
           gl={{ antialias: true, powerPreference: 'default', preserveDrawingBuffer: false }}
           resize={{ scroll: false, debounce: 0, offsetSize: true }}
-          style={{ background: '#0a1520', display: 'block', width: '100%', height: '100%' }}
+          style={{ background: '#13191f', display: 'block', width: '100%', height: '100%' }}
           className="!block !h-full !w-full"
           onPointerMissed={() => { setHoveredRack(null); setSelectedObjectId(null); }}
           onCreated={({ gl, invalidate, setSize }) => {
+            gl.outputColorSpace = THREE.SRGBColorSpace;
+            gl.toneMapping = THREE.ACESFilmicToneMapping;
+            gl.toneMappingExposure = 1.05;
             const canvasEl = gl.domElement;
             const wrap = canvasWrapRef.current;
             if (wrap && wrap.clientWidth > 8 && wrap.clientHeight > 8) {
@@ -2761,7 +2519,15 @@ const DataHallDesigner = ({
               hoveredRack={hoveredRack}
               alerts={alerts}
               showLabels={showLabels}
-              onSelectRack={setSelectedRack}
+              onSelectRack={selectRackForInspection}
+              cameraPreset={cameraPreset}
+              hideDoors={hideDoors}
+              openDoors={openDoors}
+              onPduClick={onNavigateToPdu}
+              showPerformance={showPerformance}
+              outletInventory={outletInventory}
+              rackStatuses={rackStatuses}
+              statusFilter={statusFilter}
               onHoverRack={setHoveredRack}
               customRackModelUrl={config.rackModel?.url}
               customRackModelAssets={config.rackModel?.assets}
@@ -2781,6 +2547,14 @@ const DataHallDesigner = ({
           </Suspense>
         </Canvas>
 
+        {!showLanding && <div className="absolute z-30 bottom-4 left-1/2 -translate-x-1/2 w-max max-w-[95%] flex flex-wrap justify-center gap-1 rounded-lg border border-white/10 bg-[#161c23]/95 p-1.5 shadow-lg" role="toolbar" aria-label="3D inspection">
+          {[['overview','Overview'], ['front','Front'], ['rear','Rear / service'], ['selected','Selected rack']].map(([mode,label]) => <button key={mode} type="button" disabled={mode === 'selected' && !selectedRack}
+            onClick={() => setCameraPreset(p => ({ mode, seq: p.seq + 1 }))}
+            aria-pressed={cameraPreset.mode === mode} className={`px-2.5 py-1.5 rounded text-[10px] whitespace-nowrap disabled:opacity-30 ${cameraPreset.mode === mode ? 'text-cyan-200 bg-white/10' : 'text-slate-300 hover:bg-white/5'}`}>{label}</button>)}
+          <button type="button" disabled={!selectedRack || !!config.rackModel?.url} onClick={() => setDoorMode(v => v === 'closed' ? 'open' : v === 'open' ? 'hidden' : 'closed')} aria-pressed={doorMode !== 'closed'} className="px-2.5 py-1.5 text-[10px] text-slate-300 disabled:opacity-30">{`Doors: ${doorMode}`}</button>
+          <button type="button" onClick={() => setShowPerformance(v => !v)} aria-pressed={showPerformance} className="px-2 py-1.5 text-[10px] text-slate-400">Performance</button>
+        </div>}
+        </div>
         {/* Empty-state landing — Hyperspace-style portal + data hall picker */}
         {showLanding && (
           <div
@@ -2907,7 +2681,8 @@ const DataHallDesigner = ({
 
         {/* Rack Details Panel */}
         <RackDetailsPanel 
-          rack={selectedRack} 
+          rack={selectedRack}
+          status={selectedRack ? rackStatuses[selectedRack.id] : null}
           alerts={alerts} 
           onClose={handleCloseRackPanel}
           onPduClick={(pdu) => onNavigateToPdu && onNavigateToPdu(pdu)}
@@ -2915,41 +2690,9 @@ const DataHallDesigner = ({
           readOnly={readOnly}
         />
         
-        {/* Alert / Heatmap Legend */}
-        <div className="absolute z-20 top-4 left-4 bg-[#161E2E]/90 border border-[#233544] rounded-lg px-4 py-3">
-          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">
-            {readOnly ? 'Load Heatmap' : 'Status Legend'}
-          </p>
-          <div className="flex flex-col gap-2 text-[10px] font-mono">
-            {readOnly ? (
-              <>
-                <div className="flex items-center gap-2"><span className="w-3 h-3 rounded bg-[#22C55E]"></span><span className="text-emerald-400">Low load</span></div>
-                <div className="flex items-center gap-2"><span className="w-3 h-3 rounded bg-[#F59E0B]"></span><span className="text-amber-400">Medium</span></div>
-                <div className="flex items-center gap-2"><span className="w-3 h-3 rounded bg-[#F97316]"></span><span className="text-orange-400">High</span></div>
-                <div className="flex items-center gap-2"><span className="w-3 h-3 rounded bg-[#EF4444]"></span><span className="text-red-400">Critical / Alarm</span></div>
-                <div className="flex items-center gap-2"><span className="w-3 h-3 rounded bg-[#475569]"></span><span className="text-slate-500">Offline</span></div>
-              </>
-            ) : (
-              <>
-                <div className="flex items-center gap-2">
-                  <span className="w-3 h-3 rounded bg-[#2D4A5E]"></span>
-                  <span className="text-slate-400">Normal</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="w-3 h-3 rounded bg-[#F59E0B]"></span>
-                  <span className="text-amber-400">Warning</span>
-                  <span className="text-slate-500">({alerts.filter(a => a.severity === 'warning').length})</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="w-3 h-3 rounded bg-[#EF4444]"></span>
-                  <span className="text-red-400">Critical</span>
-                  <span className="text-slate-500">({alerts.filter(a => a.severity === 'critical').length})</span>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-        
+        <RackStatusLegend statuses={rackStatuses} filter={statusFilter} onFilter={setStatusFilter}/>
+        <div className="absolute z-10 top-4 right-4 max-w-[50%] text-right text-[9px] text-slate-400 bg-[#161c23]/90 rounded px-2 py-1 pointer-events-none">{selectedRack && cameraPreset.mode !== 'overview' ? 'Isolated inspection · Overview restores hall. ' : ''}PDU geometry schematic · A/B mounting slots · feeds unverified</div>
+        {unassignedDeviceCount > 0 && !showLanding && <div className="absolute top-12 right-4 z-10 text-[10px] bg-[#161c23]/95 border border-slate-600 rounded px-3 py-2 text-slate-300">{unassignedDeviceCount} PDUs awaiting rack assignment · use Assign</div>}
         {/* Save status — only while loading/saving (avoids Cage Pulse overlap) */}
         {!readOnly && (isLoading || isSaving) && (
           <div className="absolute bottom-12 left-4 z-20 bg-[#0c1018]/90 border border-white/[0.08] rounded-lg px-3 py-2 text-[10px] font-mono">
@@ -3001,7 +2744,7 @@ const DataHallDesigner = ({
         )}
 
         {/* Enhanced Rack Telemetry Tooltip */}
-        {hoveredRack && !selectedRack && (
+        {false && hoveredRack && !selectedRack && (
           <RackTelemetryTooltip rack={hoveredRack} />
         )}
 

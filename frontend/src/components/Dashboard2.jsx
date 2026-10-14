@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import api from '../api';
+import { mergeCommunicationEvidence } from '../utils/rackStatus';
 import DataHallDesigner from './DataHallDesigner/DataHallDesigner';
 import AssignPdusPanel from './AssignPdusPanel';
 import CommissioningWizard from './CommissioningWizard';
@@ -230,6 +231,7 @@ const Dashboard2 = () => {
     }
   });
   const [pduEnv, setPduEnv] = useState({}); // { ip: { temp, hum, door } }
+  const [pduStatusEvidence, setPduStatusEvidence] = useState({});
   const [fleetPduResults, setFleetPduResults] = useState({}); // { ip: results[] } live telemetry per PDU
   const [demoReplayActive, setDemoReplayActive] = useState(false);
   const [neuralSidebarCollapsed, setNeuralSidebarCollapsed] = useState(true);
@@ -462,7 +464,8 @@ const Dashboard2 = () => {
             if (first) {
               setSelectedPdu({ ip: first.ip, port: first.port || '161', remote_host: first.remote_host });
               setExpandedPdu(first.id);
-              setActiveTab('telemetry');
+              // Loading a hall must not navigate away from Designer/Assign/Commission.
+              // Explicit PDU clicks choose the telemetry route.
             }
           }
         } else {
@@ -566,6 +569,10 @@ const Dashboard2 = () => {
         if (p.env) envMap[p.ip] = p.env;
         if (p.results?.length) resultsMap[p.ip] = p.results;
       }
+      setPduStatusEvidence(Object.fromEntries((fleet.pdus || []).map(p => [p.ip, {
+        telemetry: p, alarms: alarmMap[p.ip], demo: true,
+        communication: { state: p.online ? 'online' : 'offline', receivedAt: Date.now(), timestamp: p.communication_updated_at },
+      }])));
       setPduLiveStatus(statusMap);
       setPduAlarms(alarmMap);
       setPduEnv(envMap);
@@ -589,6 +596,14 @@ const Dashboard2 = () => {
       }));
 
     const applyLivePollResults = (liveResults) => {
+      setPduStatusEvidence(previous => {
+        const next = { ...previous };
+        for (const row of liveResults) {
+          if (!row) continue;
+          next[row.ip] = { ...previous[row.ip], ...(row.telemetry ? { telemetry: row.telemetry, alarms: row.alarm } : {}), telemetryUnavailable: !!row.failed };
+        }
+        return next;
+      });
       const alarmMap = {};
       const envMap = {};
       const resultsMap = {};
@@ -609,7 +624,7 @@ const Dashboard2 = () => {
         targets.map(async ({ ip, rh }) => {
           try {
             const liveRes = await fetch(`${API_BASE}/api/pdus/by-ip/${ip}/live${rh}`);
-            if (!liveRes.ok) return null;
+            if (!liveRes.ok) return { ip, failed: true };
             const liveData = await liveRes.json();
             const flagsEntry = liveData.results?.find(r => r.name === '_alarm_flags');
             const countEntry = liveData.results?.find(r => r.name === '_alarm_count');
@@ -618,15 +633,16 @@ const Dashboard2 = () => {
             try { flags = JSON.parse(flagsEntry?.value || '[]'); } catch {}
             const alarmEntries = (liveData.results || [])
               .filter(r => r.name.startsWith('alarm_') && !r.name.endsWith('_color') && r.name !== 'alarm_status' && r.name !== 'alarm_color')
-              .map(r => ({ key: r.name, value: r.value?.replace?.(/"/g, '').trim() || r.value }));
+              .map(r => ({ ...r, key: r.name, value: r.value?.replace?.(/"/g, '').trim() || r.value }));
             return {
               ip,
               results: liveData.results,
+              telemetry: liveData,
               alarm: { count, flags, entries: alarmEntries, ts: new Date().toISOString() },
               env: extractEnvFromLiveResults(liveData.results),
             };
           } catch {
-            return null;
+            return { ip, failed: true };
           }
         })
       );
@@ -646,13 +662,18 @@ const Dashboard2 = () => {
             const response = await fetch(`${API_BASE}/api/polling/device/${ip}${rh}`);
             if (response.ok) {
               const data = await response.json();
-              return { ip, rh, online: !!data.state?.includes('online') };
+              return { ip, rh, online: !!data.state?.includes('online'), communication: { state: data.state === 'alarm' || data.state?.includes('online') ? 'online' : data.state === 'offline' ? 'offline' : 'unknown', receivedAt: Date.now(), timestamp: data.last_seen_at || data.last_ok_at || data.timestamp } };
             }
           } catch { /* treat as offline */ }
           return { ip, rh, online: false };
         })
       );
 
+      setPduStatusEvidence(previous => {
+        const next = { ...previous };
+        for (const row of statusResults) next[row.ip] = { ...previous[row.ip], communication: mergeCommunicationEvidence(previous[row.ip]?.communication, row.communication) };
+        return next;
+      });
       const statusMap = {};
       for (const r of statusResults) statusMap[r.ip] = r.online ? 'online' : 'offline';
       setPduLiveStatus(statusMap); // dots/sidebar update immediately
@@ -2105,6 +2126,7 @@ const Dashboard2 = () => {
                   pduAlarms={pduAlarms}
                   pduEnv={pduEnv}
                   fleetPduResults={fleetPduResults}
+                  pduStatusEvidence={pduStatusEvidence}
                   fullBleed={datahallCanvasLayout}
                   neuralMode={neuralLayoutActive}
                   showNeuralToggle={false}
@@ -2122,6 +2144,11 @@ const Dashboard2 = () => {
                   }}
                   onNavigateToPdu={(pdu) => {
                     const matchingPdu = generatedPDUs.find(p => p.ip === pdu.ip);
+                    // Use the existing Fleet route in the Stencil/Switchboard shell.
+                    if (neuralActive && matchingPdu) {
+                      handleDemoSidebarPduSelect(matchingPdu);
+                      return;
+                    }
                     if (matchingPdu) {
                       setExpandedPdu(matchingPdu.id);
                       setTimeout(() => {

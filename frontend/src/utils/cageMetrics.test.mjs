@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import {aggregateCageMetrics as calc,pickNum} from './cageMetrics.js';
+const pdus=[{ip:'test-a',label:'A'},{ip:'test-b',label:'B'}];
+const rows=(power,current)=>[{name:'MasterPowerP1',value:power},{name:'MasterCurrentP1',value:current}];
+let m=calc(pdus,{}, {}, {}, {});
+assert.equal(m.totalLoadKw,null);assert.equal(m.totalCurrentA,null);assert.equal(m.avgFrequency,null);assert.equal(m.topPdus.length,0);assert.equal(m.headroomPct,null);
+m=calc(pdus,{'test-a':'online','test-b':'online'},{},{},{'test-a':rows(0,0),'test-b':rows(0,0)});
+assert.equal(m.totalLoadKw,0);assert.equal(m.totalCurrentA,0);assert.equal(m.hasData,true);assert.equal(m.topPdus.length,2);
+m=calc(pdus,{'test-a':'online'},{},{},{'test-a':rows(500,2),'test-b':rows(900,4)});
+assert.equal(m.totalLoadKw,null);assert.equal(m.allPdus.find(p=>p.ip==='test-b').current,null);assert.equal(m.telemetryCoverage.power,1);
+assert.equal(pickNum([{name:'bad',value:'..'}],'bad'),null);
+console.log('PASS: missing, offline, partial and measured-zero telemetry; ratings remain unknown.');

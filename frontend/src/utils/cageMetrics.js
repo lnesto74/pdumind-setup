@@ -4,7 +4,7 @@ export function pickNum(results, ...names) {
     const it = results.find((r) => r.name === n);
     if (it?.value != null) {
       const m = String(it.value).replace(/"/g, '').trim().match(/^-?[\d.]+/);
-      if (m) return parseFloat(m[0]);
+      if (m && Number.isFinite(parseFloat(m[0]))) return parseFloat(m[0]);
     }
   }
   return null;
@@ -28,6 +28,7 @@ export function pduIsElectricallyLive(current, voltage) {
 
 export function aggregateCageMetrics(hallPDUs, pduLiveStatus, pduAlarms, pduEnv, fleetPduResults) {
   const online = hallPDUs.filter((p) => pduLiveStatus[p.ip] === 'online');
+  let powerN = 0, currentN = 0, energyN = 0, frequencyN = 0, frequencySum = 0;
   let totalPowerW = 0;
   let totalCurrentA = 0;
   let voltageSum = 0;
@@ -69,17 +70,19 @@ export function aggregateCageMetrics(hallPDUs, pduLiveStatus, pduAlarms, pduEnv,
   for (const pdu of hallPDUs) {
     const isOnline = pduLiveStatus[pdu.ip] === 'online';
     const results = isOnline ? fleetPduResults[pdu.ip] : null;
-    const power = pickNum(results, 'MasterPowerP1', 'total_active_power', 'l1_active_power') ?? 0;
-    const current = pickNum(results, 'MasterCurrentP1', 'l1_current', 'total_current') ?? 0;
+    const power = pickNum(results, 'MasterPowerP1', 'total_active_power', 'l1_active_power');
+    const current = pickNum(results, 'MasterCurrentP1', 'l1_current', 'total_current');
     const voltage = pickNum(results, 'MasterVoltageP1', 'l1_voltage');
     const pf = pickNum(results, 'MasterPFP1', 'total_pf', 'l1_pf');
-    const energy = pickNum(results, 'MasterEnergyP1', 'total_active_energy') ?? 0;
+    const energy = pickNum(results, 'MasterEnergyP1', 'total_active_energy');
     const live = pduIsElectricallyLive(current, voltage);
 
     if (isOnline) {
-      totalPowerW += power;
-      totalCurrentA += current;
-      totalEnergy += energy;
+      if (power != null) { totalPowerW += power; powerN++; }
+      if (current != null) { totalCurrentA += current; currentN++; }
+      if (energy != null) { totalEnergy += energy; energyN++; }
+      const frequency = pickNum(results, 'MasterFrequencyP1', 'MasterFreqP1', 'frequency', 'l1_frequency');
+      if (frequency != null) { frequencySum += frequency; frequencyN++; }
       if (voltage != null) { voltageSum += voltage; voltageN += 1; }
       if (pf != null && pf > 0) { pfSum += pf; pfN += 1; }
 
@@ -97,7 +100,7 @@ export function aggregateCageMetrics(hallPDUs, pduLiveStatus, pduAlarms, pduEnv,
       position: pdu.mount_position || '',
       ip: pdu.ip,
       current,
-      power: power / 1000,
+      power: power == null ? null : power / 1000,
       voltage,
       pf,
       energy,
@@ -109,21 +112,21 @@ export function aggregateCageMetrics(hallPDUs, pduLiveStatus, pduAlarms, pduEnv,
     });
   }
 
-  const totalLoadKw = totalPowerW / 1000;
+  // A partial sample is not a verified hall total. Preserve genuine measured zeros.
+  const complete = n => hallPDUs.length > 0 && n === hallPDUs.length;
+  const totalLoadKw = complete(powerN) ? totalPowerW / 1000 : null;
+  totalCurrentA = complete(currentN) ? totalCurrentA : null;
+  totalEnergy = complete(energyN) ? totalEnergy : null;
   const avgVoltage = voltageN ? voltageSum / voltageN : null;
   const avgPf = pfN ? pfSum / pfN : null;
-  const apparentKva = avgPf && avgPf > 0 ? totalLoadKw / avgPf : totalLoadKw;
+  const apparentKva = totalLoadKw != null && avgPf > 0 ? totalLoadKw / avgPf : null;
   const avgTemp = tempN ? tempSum / tempN : null;
   const avgHum = humN ? humSum / humN : null;
 
-  const ratedAmpsPerPdu = 32;
-  const totalRatedA = hallPDUs.length * ratedAmpsPerPdu;
-  const utilizationPct = totalRatedA > 0 ? Math.min(100, (totalCurrentA / totalRatedA) * 100) : 0;
-  const ratedKw = (totalRatedA * (avgVoltage || 230)) / 1000;
-  const ratedKva = avgPf && avgPf > 0 ? ratedKw / avgPf : ratedKw * 1.05;
-  const headroomKw = Math.max(0, ratedKw - totalLoadKw);
-  const strandedKw = phaseImbalanceCount * (ratedKw / Math.max(1, hallPDUs.length)) * 0.15;
-  const headroomPct = ratedKw > 0 ? (headroomKw / ratedKw) * 100 : 0;
+  // Inventory has no verified electrical rating or feed topology. Do not fabricate
+  // a 32 A / 230 V rating, available headroom or stranded capacity.
+  const totalRatedA = null, utilizationPct = null, ratedKw = null, ratedKva = null;
+  const headroomKw = null, strandedKw = null, headroomPct = null;
 
   pduLoads.sort((a, b) => b.current - a.current);
 
@@ -139,22 +142,25 @@ export function aggregateCageMetrics(hallPDUs, pduLiveStatus, pduAlarms, pduEnv,
         live: 0,
         amps: 0,
         kw: 0,
+        measuredCurrent: 0, measuredPower: 0,
       });
     }
     const c = chainMap.get(key);
     c.units += 1;
     if (p.live) c.live += 1;
-    c.amps += p.current || 0;
-    c.kw += p.power || 0;
+    if (p.current != null) { c.amps += p.current; c.measuredCurrent++; }
+    if (p.power != null) { c.kw += p.power; c.measuredPower++; }
     if (/-1$/.test(p.hostname || p.label || '') || !c.master) c.master = p.ip;
   }
-  const chains = [...chainMap.values()].sort((a, b) => String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));
+  const chains = [...chainMap.values()].map(c => ({...c, amps: c.measuredCurrent === c.units ? c.amps : null, kw: c.measuredPower === c.units ? c.kw : null})).sort((a, b) => String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));
 
   const liveCount = pduLoads.filter((p) => p.live).length;
   const availabilityPct = hallPDUs.length ? (liveCount / hallPDUs.length) * 100 : 0;
 
   return {
-    hasData: online.length > 0 && totalCurrentA > 0,
+    hasData: powerN > 0 || currentN > 0 || voltageN > 0,
+    avgFrequency: frequencyN ? frequencySum / frequencyN : null,
+    telemetryCoverage: { power: powerN, current: currentN, total: hallPDUs.length },
     onlineCount: online.length,
     liveCount,
     totalCount: hallPDUs.length,
@@ -176,9 +182,9 @@ export function aggregateCageMetrics(hallPDUs, pduLiveStatus, pduAlarms, pduEnv,
     headroomKw,
     headroomPct,
     strandedKw,
-    deployableKw: headroomKw * 0.85,
+    deployableKw: null,
     phaseImbalanceCount,
-    topPdus: pduLoads.slice(0, 4),
+    topPdus: pduLoads.filter(p => p.current != null).slice(0, 4),
     allPdus: pduLoads,
     chains,
     pfLeading: avgPf != null && avgPf >= 0.98,

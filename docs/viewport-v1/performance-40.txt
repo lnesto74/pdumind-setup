@@ -1,0 +1,1 @@
+40 racks · 80 PDUs · 60 fps · p95 17.4 ms · 68 draws · 631,684 triangles

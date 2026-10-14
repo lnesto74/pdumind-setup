@@ -69,7 +69,7 @@ function DonutGauge({ pct, size = 52 }) {
         fontWeight="600"
         fontFamily="system-ui, sans-serif"
       >
-        {Math.round(pct)}%
+        {pct == null ? '—' : `${Math.round(pct)}%`}
       </text>
     </svg>
   );
@@ -81,7 +81,7 @@ function CapacityRow({ label, value, unit = 'kW' }) {
       <span className="text-[#6b7280] uppercase tracking-wider w-[72px] flex-shrink-0">{label}</span>
       <div className="flex-1 h-px bg-gradient-to-r from-white/25 via-white/10 to-transparent" />
       <span className="text-white font-medium tabular-nums w-12 text-right">
-        {typeof value === 'number' ? `${value.toFixed(0)} ${unit}` : value}
+        {typeof value === 'number' ? `${value.toFixed(0)} ${unit}` : (value ?? '—')}
       </span>
     </div>
   );
@@ -98,7 +98,7 @@ function useMetricHistory(snapshot) {
     if (!snapshot?.hasData) return;
     const h = ref.current;
     const push = (key, val) => {
-      h[key] = [...h[key], val ?? 0].slice(-HISTORY_LEN);
+      if (val != null) h[key] = [...h[key], val].slice(-HISTORY_LEN);
     };
     push('load', snapshot.totalLoadKw);
     push('current', snapshot.totalCurrentA);
@@ -279,7 +279,7 @@ export default function CageMetricsOverlay({
           <MetricWidget
             icon={<span className="material-icons-outlined text-[11px]">graphic_eq</span>}
             title="Frequency"
-            value="50.01"
+            value={fmt(metrics.avgFrequency, 2)}
             unit="Hz"
             history={history.voltage}
             sparkId="cp-freq"
@@ -383,11 +383,11 @@ export default function CageMetricsOverlay({
 
           {/* Capacity summary */}
           <div className={`${CARD} px-3 py-2.5 col-span-2`}>
-            <HudHeader icon={<span className="material-icons-outlined text-[11px]">inventory_2</span>} title="Capacity Summary" />
+            <HudHeader icon={<span className="material-icons-outlined text-[11px]">inventory_2</span>} title="Capacity · rating unavailable" />
             <CapacityRow label="Total Capacity" value={metrics.ratedKw} />
             <CapacityRow label="Deployable" value={metrics.deployableKw} />
             <CapacityRow label="Stranded" value={metrics.strandedKw} />
-            <CapacityRow label="Headroom" value={`${metrics.headroomPct.toFixed(0)}%`} unit="" />
+            <CapacityRow label="Headroom" value={metrics.headroomPct == null ? '—' : `${metrics.headroomPct.toFixed(0)}%`} unit="" />
           </div>
 
           {/* Top loaded PDUs */}
@@ -399,7 +399,7 @@ export default function CageMetricsOverlay({
               ) : (
                 metrics.topPdus.map((p, idx) => {
                   const short = p.label.split('-').slice(-2).join('-') || p.ip;
-                  const spark = history.current.slice(-8).map((v) => v * (0.85 + idx * 0.04 + Math.sin(idx) * 0.05));
+                  const spark = []; // Per-device history is unavailable; never synthesize a trend.
                   return (
                     <div key={p.ip} className="flex items-center gap-2">
                       <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${p.alarmCount > 0 ? 'bg-white/40' : 'bg-emerald-500/80'}`} />

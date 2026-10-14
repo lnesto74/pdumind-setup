@@ -1,0 +1,19 @@
+{
+  "previous_image": "sha256:2fc6ff7996f672cad5d6da7468511187619d74264d51b3dd19aec1cb8ec5559c",
+  "rollback_tag": "pdumind-frontend:before-viewport-v1",
+  "files": {
+    "DataHallDesigner.jsx": "frontend/src/components/DataHallDesigner/DataHallDesigner.jsx",
+    "IndustrialViewport.jsx": "frontend/src/components/DataHallDesigner/IndustrialViewport.jsx",
+    "CageMetricsOverlay.jsx": "frontend/src/components/DataHallDesigner/CageMetricsOverlay.jsx",
+    "cageMetrics.js": "frontend/src/utils/cageMetrics.js",
+    "Dashboard2.jsx": "frontend/src/components/Dashboard2.jsx",
+    "RackStatusVisuals.jsx": "frontend/src/components/DataHallDesigner/RackStatusVisuals.jsx",
+    "rackStatus.js": "frontend/src/utils/rackStatus.js",
+    "inspectionFraming.js": "frontend/src/utils/inspectionFraming.js",
+    "statusTooltipLayout.js": "frontend/src/utils/statusTooltipLayout.js"
+  },
+  "created_utc": "2026-10-14T00:10:23.757972+00:00",
+  "deployed_image": "sha256:1ce17b9c01b58e0a783520bf0bfbe1e92d063e4f2978db1d837c211774127ca0",
+  "deployed_container": "dad8596ab3eab7c4bfbd2f53395eedeaef56e4ca5692b6bf945e036556bba95e",
+  "deployed_started_at": "2026-10-14T01:34:32.095651506Z"
+}

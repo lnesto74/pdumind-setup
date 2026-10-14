@@ -1,0 +1,57 @@
+{
+  "units": "metres",
+  "gltf_up": "+Y",
+  "rack_front": "-Z",
+  "rack_dimensions_m": [
+    0.6,
+    1.8669000000000002,
+    1.0
+  ],
+  "rack_u": 42,
+  "pdu_dimensions_m": [
+    0.055,
+    1.62,
+    0.06
+  ],
+  "assumptions": [
+    "Rack height follows existing app: U * 44.45mm including enclosure.",
+    "PDU chassis, socket types and mounting hardware are schematic, not a vendor CAD model.",
+    "No installed servers, blanking panels, feeds or outlet counts are inferred."
+  ],
+  "assets": {
+    "rack.glb": {
+      "bytes": 391804
+    },
+    "pdu.glb": {
+      "bytes": 36620
+    },
+    "outlet.glb": {
+      "bytes": 8240
+    },
+    "blank-1u.glb": {
+      "bytes": 4304
+    }
+  },
+  "objects": [
+    "Blank_1U",
+    "BlankingPanelTemplate",
+    "CabinetFrame",
+    "Frame_and_feet",
+    "Front_door_hardware",
+    "Front_perforated_screen",
+    "FrontDoor",
+    "MountingRails",
+    "Outlet_C13_schematic",
+    "OutletTemplate",
+    "Panels_roof_plinth",
+    "PDU_chassis_display_brackets",
+    "PDUChassisTemplate",
+    "PDUHousing",
+    "RackTemplate",
+    "Rails_U_ticks",
+    "Rear_door_hardware",
+    "Rear_perforated_screen",
+    "RearDoor",
+    "SidePanels"
+  ]
+}

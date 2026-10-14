@@ -1,0 +1,50 @@
+{
+  "rack.glb": {
+    "bytes": 391804,
+    "triangles": 9492,
+    "nodes": [
+      "Frame_and_feet",
+      "CabinetFrame",
+      "Front_door_hardware",
+      "Front_perforated_screen",
+      "FrontDoor",
+      "Rails_U_ticks",
+      "MountingRails",
+      "Rear_door_hardware",
+      "Rear_perforated_screen",
+      "RearDoor",
+      "Panels_roof_plinth",
+      "SidePanels",
+      "RackTemplate"
+    ],
+    "sha256": "28a978a42776332a2dd98b0a4b79cb283898bf57ee7ff6bc55755b1b20951b80"
+  },
+  "pdu.glb": {
+    "bytes": 36620,
+    "triangles": 1116,
+    "nodes": [
+      "PDU_chassis_display_brackets",
+      "PDUHousing",
+      "PDUChassisTemplate"
+    ],
+    "sha256": "ba70cffd0539b4d7791abbbc227dc815973a6dd2d17b513a3c65700929be1623"
+  },
+  "blank-1u.glb": {
+    "bytes": 4304,
+    "triangles": 108,
+    "nodes": [
+      "Blank_1U",
+      "BlankingPanelTemplate"
+    ],
+    "sha256": "4b102dd5b52efe52efc0a87db928ba44011fd95a4cf4627b1ff94f956648f3f3"
+  },
+  "outlet.glb": {
+    "bytes": 8240,
+    "triangles": 84,
+    "nodes": [
+      "Outlet_C13_schematic",
+      "OutletTemplate"
+    ],
+    "sha256": "43711e91ae78ccdd463072e9164440d5c97986b3e9619e246733f4b5814947ab"
+  }
+}
