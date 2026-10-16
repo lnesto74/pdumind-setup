@@ -32,12 +32,39 @@ const SnmpDoctorPanel = ({ hallId, hallName, targets = [], https = false, consol
     return [...new Set(ips.filter(Boolean).map(subnetOf))].sort();
   }, [targets, job]);
 
+  const [learned, setLearned] = useState({});
+
+  const loadLearned = async () => {
+    if (!hallId) return;
+    try {
+      const r = await fetch(`${API_BASE}/api/commission/snmp-doctor/gateways?hall_id=${hallId}`);
+      const d = await r.json();
+      if (!r.ok) return;
+      const lg = d.gateways || {};
+      setLearned(lg);
+      setGateways(g => {
+        const next = { ...g };
+        for (const [sn, info] of Object.entries(lg)) {
+          if (!next[sn] || !next[sn].startsWith(`${sn}.`)) next[sn] = info.gateway;
+        }
+        return next;
+      });
+    } catch {}
+  };
+
+  useEffect(() => { loadLearned(); }, [hallId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (job?.status === 'done') loadLearned(); }, [job?.status]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => clearInterval(pollRef.current), []);
 
   const running = job && job.status !== 'done';
+  const badGateway = subnets.find(sn => gateways[sn] && !gateways[sn].startsWith(`${sn}.`));
 
   const start = async (onlyIp = null) => {
     setError(null);
+    if (badGateway) {
+      setError(`Gateway ${gateways[badGateway]} is not on ${badGateway}.x — fix it before running.`);
+      return;
+    }
     try { localStorage.setItem(gwKey, JSON.stringify(gateways)); } catch {}
     try {
       const res = await fetch(`${API_BASE}/api/commission/snmp-doctor`, {
@@ -112,17 +139,26 @@ const SnmpDoctorPanel = ({ hallId, hallName, targets = [], https = false, consol
       </div>
 
       <div className="flex flex-wrap items-end gap-3">
-        {subnets.map(sn => (
-          <div key={sn}>
-            <label className="text-[10px] text-slate-500 uppercase">Gateway {sn}.x</label>
-            <input
-              value={gateways[sn] || ''}
-              placeholder="ask the customer"
-              onChange={e => setGateways(g => ({ ...g, [sn]: e.target.value.trim() }))}
-              className="block w-36 bg-app-bg border border-px-stroke rounded px-2 py-1.5 text-white font-mono text-xs"
-            />
-          </div>
-        ))}
+        {subnets.map(sn => {
+          const val = gateways[sn] || '';
+          const wrong = val && !val.startsWith(`${sn}.`);
+          const info = learned[sn];
+          return (
+            <div key={sn}>
+              <label className="text-[10px] text-slate-500 uppercase">Gateway {sn}.x</label>
+              <input
+                value={val}
+                placeholder={info ? info.gateway : 'learned from a working PDU'}
+                onChange={e => setGateways(g => ({ ...g, [sn]: e.target.value.trim() }))}
+                className={`block w-36 bg-app-bg border rounded px-2 py-1.5 text-white font-mono text-xs ${wrong ? 'border-red-500' : 'border-px-stroke'}`}
+              />
+              <p className={`text-[10px] mt-0.5 max-w-[9rem] truncate ${wrong ? 'text-red-400' : 'text-slate-500'}`}
+                title={info ? `Learned from ${info.from.join(', ')}` : ''}>
+                {wrong ? `not on ${sn}.x` : info && val === info.gateway ? `from ${info.from[0]}` : info ? `learned: ${info.gateway}` : 'not learned yet'}
+              </p>
+            </div>
+          );
+        })}
         <label className="flex items-center gap-2 text-[11px] text-amber-200 pb-1.5">
           <input type="checkbox" checked={allowReboot} onChange={e => setAllowReboot(e.target.checked)} />
           Reboot the PDU controller if still failing

@@ -5377,22 +5377,32 @@ def _doctor_expected(hall_id: int, targets: List[Dict[str, Any]]) -> List[Dict[s
     return sorted(items.values(), key=lambda i: (i["hostname"] or "", i["ip"]))
 
 
-def _doctor_learned_gateway(hall_id: Any, prefix: str) -> str:
-    """Gateway read from a PDU on the same /24 that passed SNMPv3 from the customer side or here."""
+def _doctor_learned_gateways(hall_id: Any) -> Dict[str, Dict[str, Any]]:
+    """Per /24: gateway read from PDUs that passed SNMPv3, with the PDUs it came from."""
     if not hall_id:
-        return ""
-    from collections import Counter
-    seen = Counter()
+        return {}
+    from collections import Counter, defaultdict
+    seen: Dict[str, Counter] = defaultdict(Counter)
+    sources: Dict[Tuple[str, str], List[str]] = defaultdict(list)
     for row in PDURepo.get_by_hall(int(hall_id)):
-        if not (row.get("ip_address") or "").startswith(prefix + "."):
-            continue
+        ip = row.get("ip_address") or ""
+        prefix = ".".join(ip.split(".")[:3])
         try:
             gw = (json.loads(row.get("metadata_json") or "{}").get("gateway_seen") or "").strip()
         except (TypeError, json.JSONDecodeError):
             gw = ""
-        if gw.startswith(prefix + "."):
-            seen[gw] += 1
-    return seen.most_common(1)[0][0] if seen else ""
+        if prefix and gw.startswith(prefix + "."):
+            seen[prefix][gw] += 1
+            sources[(prefix, gw)].append(row.get("hostname") or ip)
+    out = {}
+    for prefix, counts in seen.items():
+        gw = counts.most_common(1)[0][0]
+        out[prefix] = {"gateway": gw, "from": sorted(sources[(prefix, gw)])}
+    return out
+
+
+def _doctor_learned_gateway(hall_id: Any, prefix: str) -> str:
+    return (_doctor_learned_gateways(hall_id).get(prefix) or {}).get("gateway", "")
 
 
 def _doctor_public(it: Dict[str, Any]) -> Dict[str, Any]:
@@ -5512,8 +5522,9 @@ def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> No
         mask = net.get("current_mask") or "255.255.255.0"
         gw = (net.get("current_gateway") or "").strip()
         prefix = ".".join(ip.split(".")[:3])
-        expected_gw = ((opts.get("gateways") or {}).get(prefix) or it.get("gateway")
-                       or _doctor_learned_gateway(opts.get("hall_id"), prefix) or "").strip()
+        candidates = ((opts.get("gateways") or {}).get(prefix), it.get("gateway"),
+                      _doctor_learned_gateway(opts.get("hall_id"), prefix))
+        expected_gw = next((g.strip() for g in candidates if g and g.strip().startswith(prefix + ".")), "")
         try:
             subnet = _ipaddress.ip_network(f"{ip}/{mask}", strict=False)
             gw_ok = bool(gw) and _ipaddress.ip_address(gw) in subnet and gw != ip
@@ -5820,12 +5831,16 @@ def commission_snmp_doctor_start():
     gateways = {}
     for k, v in (data.get("gateways") or {}).items():
         v = (v or "").strip()
+        prefix = ".".join(str(k).split(".")[:3])
+        if not v:
+            continue
         try:
-            if v:
-                _ipaddress.ip_address(v)
-                gateways[".".join(str(k).split(".")[:3])] = v
+            _ipaddress.ip_address(v)
         except ValueError:
             return jsonify({"error": f"Gateway {v!r} is not an IP address"}), 400
+        if not v.startswith(prefix + "."):
+            return jsonify({"error": f"Gateway {v} is not on {prefix}.x — a PDU on {prefix}.x cannot use it"}), 400
+        gateways[prefix] = v
     job_id = str(uuid.uuid4())[:8]
     job = {
         "id": job_id, "status": "running", "phase": "starting",
@@ -5845,6 +5860,14 @@ def commission_snmp_doctor_start():
             "only_ip": (data.get("only_ip") or "").strip() or None}
     Thread(target=_run_snmp_doctor, args=(job_id, opts), daemon=True).start()
     return jsonify({"success": True, "job_id": job_id, "total": len(items)})
+
+
+@app.route("/api/commission/snmp-doctor/gateways", methods=["GET"])
+def commission_snmp_doctor_gateways():
+    hall_id = request.args.get("hall_id", type=int)
+    if not hall_id:
+        return jsonify({"error": "hall_id required"}), 400
+    return jsonify({"hall_id": hall_id, "gateways": _doctor_learned_gateways(hall_id)})
 
 
 @app.route("/api/commission/snmp-doctor/<job_id>", methods=["GET"])
