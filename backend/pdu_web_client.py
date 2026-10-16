@@ -202,8 +202,18 @@ class PDUWebClient:
             return False
 
     def logout(self) -> None:
-        """Close the HTTP session to free the PDU's single-session slot."""
+        """Close the HTTP session and the PDU's single web-login slot."""
         with self._lock:
+            try:
+                if self._logged_in:
+                    self._session.get(
+                        f"{self.base_url}/log_off.cgi",
+                        timeout=self.timeout,
+                        verify=self._ssl_verify(),
+                        allow_redirects=False,
+                    )
+            except Exception:
+                pass
             try:
                 self._session.close()
             except Exception:
@@ -468,13 +478,22 @@ class PDUWebClient:
             )
             if v3_active:
                 post_data["SNMPStatu_User_Name"] = _field(snmpv3_username, cur["snmpv3_username"])
-                post_data["SNMPStatu_VerifyProtocol"] = _field(verify_protocol, cur["verify_protocol"])
-                post_data["SNMPStatu_EncrypyProtocol"] = _field(encrypt_protocol, cur["encrypt_protocol"])
+                verify_code = self.normalize_verify_protocol(
+                    _field(verify_protocol, cur["verify_protocol"])
+                )
+                encrypt_code = self.normalize_encrypt_protocol(
+                    _field(encrypt_protocol, cur["encrypt_protocol"])
+                )
+                if verify_code is not None:
+                    post_data["SNMPStatu_VerifyProtocol"] = verify_code
+                if encrypt_code is not None:
+                    post_data["SNMPStatu_EncrypyProtocol"] = encrypt_code
                 auth_val = auth_key if auth_key is not None else cur["auth_key"]
                 priv_val = priv_key if priv_key is not None else cur["priv_key"]
-                if auth_val:
+                # Onceload masks keys as asterisks. Posting those would replace the real key.
+                if auth_val and set(str(auth_val)) - {"*"}:
                     post_data["SNMPStatu_AUTH_KEY"] = auth_val
-                if priv_val:
+                if priv_val and set(str(priv_val)) - {"*"}:
                     post_data["SNMPStatu_PRIV_KEY"] = priv_val
 
             resp = self._post_cgi("snmp_set.cgi", post_data)
@@ -507,6 +526,22 @@ class PDUWebClient:
                 )
                 if expected != actual:
                     mismatches.append(f"SNMP versions {actual} != {expected}")
+            if snmpv3_username is not None and after.get("snmpv3_username") != snmpv3_username:
+                mismatches.append(
+                    f"v3 user {after.get('snmpv3_username')!r} != {snmpv3_username!r}"
+                )
+            if verify_protocol is not None:
+                want = self.normalize_verify_protocol(verify_protocol)
+                if after.get("verify_protocol") != want:
+                    mismatches.append(
+                        f"auth protocol {after.get('verify_protocol')!r} != {want!r}"
+                    )
+            if encrypt_protocol is not None:
+                want = self.normalize_encrypt_protocol(encrypt_protocol)
+                if after.get("encrypt_protocol") != want:
+                    mismatches.append(
+                        f"priv protocol {after.get('encrypt_protocol')!r} != {want!r}"
+                    )
             if mismatches:
                 print(f"[set_snmp] verify failed on {self.host}: {'; '.join(mismatches)}")
                 return False
@@ -567,6 +602,26 @@ class PDUWebClient:
         return s
 
     @staticmethod
+    def normalize_verify_protocol(value: Any) -> str | None:
+        """sys_snmp.html SNMPStatu_VerifyProtocol: 0 NONE, 1 MD5, 2 SHA."""
+        if value is None:
+            return None
+        key = str(value).strip().lower()
+        if not key:
+            return None
+        return {"0": "0", "none": "0", "1": "1", "md5": "1", "2": "2", "sha": "2"}.get(key, str(value).strip())
+
+    @staticmethod
+    def normalize_encrypt_protocol(value: Any) -> str | None:
+        """sys_snmp.html SNMPStatu_EncrypyProtocol: 0 NONE, 1 DES, 2 AES."""
+        if value is None:
+            return None
+        key = str(value).strip().lower()
+        if not key:
+            return None
+        return {"0": "0", "none": "0", "1": "1", "des": "1", "2": "2", "aes": "2"}.get(key, str(value).strip())
+
+    @staticmethod
     def prepare_snmp_kwargs(snmp: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize batch/UI SNMP dict into explicit set_snmp() kwargs."""
         if not snmp:
@@ -578,9 +633,9 @@ class PDUWebClient:
             "snmpv2": bool(snmp.get("snmpv2", snmp.get("snmpv2_enabled", True))),
             "snmpv3": bool(snmp.get("snmpv3", snmp.get("snmpv3_enabled", False))),
             "snmpv3_username": snmp.get("snmpv3_username"),
-            "verify_protocol": snmp.get("verify_protocol"),
+            "verify_protocol": PDUWebClient.normalize_verify_protocol(snmp.get("verify_protocol")),
             "auth_key": PDUWebClient._optional_secret(snmp.get("auth_key")),
-            "encrypt_protocol": snmp.get("encrypt_protocol"),
+            "encrypt_protocol": PDUWebClient.normalize_encrypt_protocol(snmp.get("encrypt_protocol")),
             "priv_key": PDUWebClient._optional_secret(snmp.get("priv_key")),
             "trap_ip": snmp.get("trap_ip", ""),
         }
@@ -598,8 +653,10 @@ class PDUWebClient:
         if not ntp:
             return {}
         payload = dict(ntp)
-        primary = (payload.pop("sntp_server", None) or "").strip()
+        # sys_time.html has one box: SNTPStatu_Server. NTP2 has no field on this firmware.
+        primary = (payload.pop("sntp_server", None) or payload.pop("ntp1", None) or "").strip()
         payload.pop("sntp_server2", None)
+        payload.pop("ntp2", None)
         payload.pop("sntp_server_raw", None)
         for extra in (
             "web_port", "web_admin_port", "username", "password",
@@ -610,7 +667,9 @@ class PDUWebClient:
             payload["sntp_server"] = primary
         enabled = payload.get("sntp_enabled")
         if isinstance(enabled, bool):
-            payload["sntp_enabled"] = "true" if enabled else ""
+            payload["sntp_enabled"] = "on" if enabled else ""
+        elif isinstance(enabled, str) and enabled.strip().lower() in ("true", "1", "yes", "on"):
+            payload["sntp_enabled"] = "on"
         tz = payload.get("timezone")
         if tz is not None:
             payload["timezone"] = PDUWebClient.normalize_timezone_index(str(tz))
@@ -654,7 +713,21 @@ class PDUWebClient:
                     "SNTP_Correction": correction or cur["correction"],
                 },
             )
-            return "404" not in resp
+            if "404" in resp:
+                return False
+            if sntp_server is None and sntp_enabled is None:
+                return True
+            after = self.get_time_config()
+            if sntp_server is not None and (after.get("sntp_server") or "").strip() != sntp_server.strip():
+                print(
+                    f"[set_time] {self.host} server "
+                    f"{after.get('sntp_server')!r} != {sntp_server!r}"
+                )
+                return False
+            if sntp_enabled in ("on", "true", "1") and not self._cgi_bool(after.get("sntp_enabled")):
+                print(f"[set_time] {self.host} SNTP still disabled after write")
+                return False
+            return True
 
     # ------------------------------------------------------------------
     # Live telemetry
@@ -1185,12 +1258,21 @@ class PDUWebClient:
             except Exception as e:
                 report["users"] = {"success": False, "error": str(e)}
 
-        # 5. NTP / Time — primary SNTP server only (PDU has one field).
+        # 5. NTP / Time — sys_time.html has one SNTP Server field.
         ntp = template.get("ntp", {})
         if ntp:
             try:
+                secondary = (ntp.get("sntp_server2") or ntp.get("ntp2") or "").strip()
+                primary = (ntp.get("sntp_server") or ntp.get("ntp1") or "").strip()
                 ok = self.set_time(**self.prepare_time_kwargs(ntp))
-                report["ntp"] = {"success": ok}
+                detail: Dict[str, Any] = {"success": ok, "sntp_server": primary or secondary}
+                if not ok:
+                    detail["error"] = "SNTP server was not confirmed on the PDU after write"
+                if secondary and primary:
+                    detail["sntp_server2"] = secondary
+                    detail["sntp_server2_written"] = False
+                    detail["note"] = "Time page has one SNTP Server field; NTP2 was not written"
+                report["ntp"] = detail
             except Exception as e:
                 report["ntp"] = {"success": False, "error": str(e)}
 

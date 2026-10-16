@@ -1,3 +1,4 @@
+import Icon from '../presentation/Icon';
 import React, { useMemo, useEffect, useRef, useState } from 'react';
 import HudSparkChart from './HudSparkChart';
 import { collectOutletCableWarnings } from '../../utils/neuralOpsAlerts';
@@ -6,8 +7,8 @@ import { downloadHallCustomerReport } from '../../utils/hallCustomerReport';
 
 const HISTORY_LEN = 24;
 const CARD =
-  'rounded-[10px] border border-white/[0.08] bg-[#0c1018]/90 backdrop-blur-sm';
-const LABEL = 'text-[8px] font-semibold text-[#8A929B] uppercase tracking-[0.12em]';
+  'px-hud-card';
+const LABEL = 'text-[11px] font-normal text-[#9aa3ae]' ;
 const MONO = '#FFFFFF';
 
 function HudIcon({ children }) {
@@ -172,6 +173,7 @@ export default function CageMetricsOverlay({
   rackMetaByCode = {},
   hallName = '',
   compact = false,
+  hidden = false,
 }) {
   const metrics = useMemo(
     () => aggregateCageMetrics(hallPDUs, pduLiveStatus, pduAlarms, pduEnv, fleetPduResults),
@@ -210,7 +212,8 @@ export default function CageMetricsOverlay({
 
   return (
     <aside
-      className={`absolute top-0 bottom-0 z-[18] pointer-events-auto flex flex-col border-l border-white/[0.06] bg-[#070a10]/92 backdrop-blur-md ${
+      style={hidden ? {display: 'none'} : undefined}
+      className={`px-cage-metrics absolute top-0 bottom-0 z-[18] pointer-events-auto flex flex-col border-l border-white/[0.06] bg-[#070a10]/92 backdrop-blur-md ${
         compact ? 'right-0 w-[min(280px,24vw)]' : 'right-0 w-[min(360px,30vw)]'
       }`}
       aria-label="Cage metrics"
@@ -224,7 +227,7 @@ export default function CageMetricsOverlay({
             className={`${CARD} col-span-2 px-3 py-2 flex items-center justify-center gap-1.5 text-white hover:bg-white/[0.04] transition-colors disabled:opacity-50`}
             title="Download customer hall report (HTML + open for Save as PDF)"
           >
-            <span className="material-icons-outlined text-[14px] text-[#8A929B]">download</span>
+            <Icon className="material-icons-outlined text-[14px] text-[#8A929B]">download</Icon>
             <span className="text-[9px] font-semibold uppercase tracking-[0.14em]">
               {reportBusy ? 'Preparing…' : (compact ? 'Download report' : 'Download customer report')}
             </span>
@@ -232,7 +235,7 @@ export default function CageMetricsOverlay({
           <CableUnpluggedBanner warnings={cableWarnings} compact={compact} />
 
           <MetricWidget
-            icon={<span className="material-icons-outlined text-[11px]">bolt</span>}
+            icon={<Icon className="material-icons-outlined text-[11px]">bolt</Icon>}
             title="Total Load"
             value={fmt(metrics.totalLoadKw, 1)}
             unit="kW"
@@ -250,7 +253,7 @@ export default function CageMetricsOverlay({
             sparkId="cp-current"
           />
           <MetricWidget
-            icon={<span className="material-icons-outlined text-[11px]">speed</span>}
+            icon={<Icon className="material-icons-outlined text-[11px]">speed</Icon>}
             title="Apparent Power"
             value={fmt(metrics.apparentKva, 1)}
             unit="kVA"
@@ -268,7 +271,7 @@ export default function CageMetricsOverlay({
             sparkId="cp-voltage"
           />
           <MetricWidget
-            icon={<span className="material-icons-outlined text-[11px]">ssid_chart</span>}
+            icon={<Icon className="material-icons-outlined text-[11px]">ssid_chart</Icon>}
             title="Power Factor"
             value={fmt(metrics.avgPf, 2)}
             unit=""
@@ -277,7 +280,7 @@ export default function CageMetricsOverlay({
             sparkId="cp-pf"
           />
           <MetricWidget
-            icon={<span className="material-icons-outlined text-[11px]">graphic_eq</span>}
+            icon={<Icon className="material-icons-outlined text-[11px]">graphic_eq</Icon>}
             title="Frequency"
             value={fmt(metrics.avgFrequency, 2)}
             unit="Hz"
@@ -287,7 +290,7 @@ export default function CageMetricsOverlay({
 
           {/* Energy — full width */}
           <div className={`${CARD} px-3 py-2.5 col-span-2`}>
-            <HudHeader icon={<span className="material-icons-outlined text-[11px]">battery_charging_full</span>} title="Energy (Today)" />
+            <HudHeader icon={<Icon className="material-icons-outlined text-[11px]">battery_charging_full</Icon>} title="Energy (Today)" />
             <div className="text-[17px] font-semibold text-white mb-2">{fmt(metrics.totalEnergyKwh, 0)} kWh</div>
             <div className="h-10 flex items-end gap-[3px]">
               {(history.energy.length ? history.energy : [0]).slice(-16).map((v, i, arr) => {
@@ -306,7 +309,7 @@ export default function CageMetricsOverlay({
 
           {/* Alarm status */}
           <div className={`${CARD} px-3 py-2.5 col-span-2`}>
-            <HudHeader icon={<span className="material-icons-outlined text-[11px]">notifications</span>} title="Alarm Status" />
+            <HudHeader icon={<Icon className="material-icons-outlined text-[11px]">notifications</Icon>} title="Alarm Status" />
             <div className="flex justify-around mb-2">
               {[
                 { n: metrics.criticalCount, label: 'Critical' },
@@ -324,7 +327,7 @@ export default function CageMetricsOverlay({
 
           {/* Environment */}
           <div className={`${CARD} px-3 py-2.5 col-span-2`}>
-            <HudHeader icon={<span className="material-icons-outlined text-[11px]">device_thermostat</span>} title="Environment (Avg)" />
+            <HudHeader icon={<Icon className="material-icons-outlined text-[11px]">device_thermostat</Icon>} title="Environment (Avg)" />
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <div className="flex items-baseline gap-1">
@@ -347,7 +350,7 @@ export default function CageMetricsOverlay({
 
           {/* Online + Circuit utilization side by side */}
           <div className={`${CARD} px-3 py-2.5`}>
-            <HudHeader icon={<span className="material-icons-outlined text-[11px]">hub</span>} title="Online Devices" />
+            <HudHeader icon={<Icon className="material-icons-outlined text-[11px]">hub</Icon>} title="Online Devices" />
             <div className="text-sm font-semibold text-white mb-2">
               {metrics.onlineCount}
               <span className="text-[#6b7280] text-[10px] font-normal"> / {metrics.totalCount} online</span>
@@ -371,7 +374,7 @@ export default function CageMetricsOverlay({
           <div className={`${CARD} px-3 py-2.5 flex gap-2 items-center`}>
             <DonutGauge pct={metrics.utilizationPct} />
             <div className="flex-1 min-w-0">
-              <HudHeader icon={<span className="material-icons-outlined text-[11px]">donut_large</span>} title="Circuit Utilization" />
+              <HudHeader icon={<Icon className="material-icons-outlined text-[11px]">donut_large</Icon>} title="Circuit Utilization" />
               <HudSparkChart data={history.util} id="cp-util" h={20} className="h-5" />
               <div className="flex gap-1 mt-1">
                 {Array.from({ length: 12 }).map((_, i) => (
@@ -383,7 +386,7 @@ export default function CageMetricsOverlay({
 
           {/* Capacity summary */}
           <div className={`${CARD} px-3 py-2.5 col-span-2`}>
-            <HudHeader icon={<span className="material-icons-outlined text-[11px]">inventory_2</span>} title="Capacity · rating unavailable" />
+            <HudHeader icon={<Icon className="material-icons-outlined text-[11px]">inventory_2</Icon>} title="Capacity · rating unavailable" />
             <CapacityRow label="Total Capacity" value={metrics.ratedKw} />
             <CapacityRow label="Deployable" value={metrics.deployableKw} />
             <CapacityRow label="Stranded" value={metrics.strandedKw} />
@@ -392,7 +395,7 @@ export default function CageMetricsOverlay({
 
           {/* Top loaded PDUs */}
           <div className={`${CARD} px-3 py-2.5 col-span-2`}>
-            <HudHeader icon={<span className="material-icons-outlined text-[11px]">leaderboard</span>} title="Top Loaded PDUs" />
+            <HudHeader icon={<Icon className="material-icons-outlined text-[11px]">leaderboard</Icon>} title="Top Loaded PDUs" />
             <div className="space-y-2">
               {metrics.topPdus.length === 0 ? (
                 <div className="text-[9px] text-[#4a5568]">Waiting for telemetry…</div>
@@ -427,7 +430,7 @@ export default function CageMetricsOverlay({
           disabled={reportBusy}
           className="text-[7px] text-[#8A929B] uppercase tracking-[0.14em] hover:text-white transition-colors flex items-center gap-0.5 flex-shrink-0 disabled:opacity-50"
         >
-          <span className="material-icons-outlined text-[11px]">ios_share</span>
+          <Icon className="material-icons-outlined text-[11px]">ios_share</Icon>
           PDF
         </button>
       </div>

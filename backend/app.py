@@ -1,11 +1,12 @@
 import os
+import pdu_via_host  # noqa: F401  — patches PDU sockets before any client connects
 from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 import json
 import time
 import requests as _requests_lib
 from typing import List, Tuple, Dict, Any, Optional
-from threading import Thread, Lock
+from threading import Thread, Lock, RLock
 # Parallelization helpers
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -40,6 +41,10 @@ OUTPUT_PREFIXES: dict[str, str] = {
 }
 
 from database import init_db, store_poll_results
+from telemetry_freshness import (
+    annotate_power_units, commit_poll, live_payload, note_sample,
+    sample_clock, stamp_entries,
+)
 
 # Try to import PM agent, but don't fail if OpenAI has issues
 try:
@@ -134,7 +139,7 @@ CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 DEFAULT_COMMUNITY = os.getenv("SNMP_COMMUNITY", "private")
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*", "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]}})
+CORS(app, resources={r"/*": {"origins": "*", "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]}})
 
 
 def load_config() -> Dict[str, Any]:
@@ -411,6 +416,11 @@ POLL_STOP: bool = False
 
 init_db()
 init_persistence_db()  # Initialize new persistence layer
+try:
+    from db.seed_halls import apply_shipped_halls
+    apply_shipped_halls()
+except Exception as _seed_err:
+    print(f"[seed] shipped halls not applied: {_seed_err}")
 register_auth_routes(app)
 ensure_default_admin()
 
@@ -619,12 +629,53 @@ def poller():
 
 
 # ------------------------------ Multi-PDU Poller ------------------------------ #
-# Global storage for multi-PDU results keyed by IP address
+# Global storage for multi-PDU results keyed by IP address.
+# SAMPLE keeps the collection time separate from reachability and from outlet patches.
 MULTI_PDU_RESULTS: Dict[str, Dict[str, Any]] = {}
 MULTI_PDU_ERRORS: Dict[str, Dict[str, Any]] = {}
-MULTI_PDU_LOCK = Lock()
+MULTI_PDU_SAMPLE: Dict[str, Dict[str, Any]] = {}
+MULTI_PDU_LOCK = RLock()
 MULTI_PDU_THREAD: Thread | None = None
 MULTI_PDU_STOP = False
+
+
+def _sample(ip: str, **fields):
+    with MULTI_PDU_LOCK:
+        return note_sample(MULTI_PDU_SAMPLE, ip, **fields)
+
+
+def _commit_poll_cache(ip: str, results: Dict[str, Any], errors: Dict[str, Any]):
+    """Keep the last real sample when this cycle was skipped, cached, or failed."""
+    with MULTI_PDU_LOCK:
+        sample = MULTI_PDU_SAMPLE.get(ip) or {}
+        kept, errs, snapshot = commit_poll(
+            MULTI_PDU_RESULTS.get(ip) or {},
+            MULTI_PDU_ERRORS.get(ip) or {},
+            sample,
+            results or {},
+            errors or {},
+        )
+        if sample.get("kind") != "skipped":
+            MULTI_PDU_RESULTS[ip] = kept
+            MULTI_PDU_ERRORS[ip] = errs
+        return sample.get("kind"), snapshot, kept
+
+
+def _finish_poll_schedule(ip: str, kind: str | None, snapshot: bool, results: Dict[str, Any]) -> None:
+    if kind == "skipped":
+        return
+    now = time.time()
+    _remote_pdu_last_poll[ip] = now
+    if kind == "full" and snapshot:
+        _remote_pdu_last_error.pop(ip, None)
+        _pdu_consecutive_failures[ip] = 0
+        try:
+            store_poll_snapshot(ip, results)
+        except Exception as exc:
+            print(f"[multi_pdu_poller] Error storing snapshot for {ip}: {exc}")
+        return
+    _remote_pdu_last_error[ip] = now
+    _pdu_consecutive_failures[ip] = _pdu_consecutive_failures.get(ip, 0) + 1
 
 # --------------------------- NPDU daisy-chain topology --------------------------- #
 # Slaves are not network-reachable on their own IP; their telemetry/outlets are
@@ -778,9 +829,17 @@ def _poll_chain_slaves(master_ip: str, client) -> None:
             sresults: Dict[str, Any] = {}
             _merge_npdu_tele_into(tele, sresults)
             _apply_outlet_load_alarms(slave_ip, sresults)
+            measured = sample_clock()
+            stamp_entries(sresults, measured)
+            annotate_power_units(sresults, default_unit="W")
             with MULTI_PDU_LOCK:
                 MULTI_PDU_RESULTS[slave_ip] = sresults
                 MULTI_PDU_ERRORS[slave_ip] = {}
+                note_sample(
+                    MULTI_PDU_SAMPLE, slave_ip, kind="full", measured_at=measured,
+                    last_attempt_at=measured, last_success_at=measured,
+                    authentication="ok", reachability="online", stale=False, error=None,
+                )
             _remote_pdu_last_poll[slave_ip] = time.time()
             _pdu_consecutive_failures[slave_ip] = 0
             _remote_pdu_last_error.pop(slave_ip, None)
@@ -790,6 +849,7 @@ def _poll_chain_slaves(master_ip: str, client) -> None:
                 pass
             print(f"[poll_remote] {master_ip} chain -> a{slave_index} {slave_ip}: {len(sresults)} keys")
         except Exception as e:
+            _sample(slave_ip, kind="error", last_attempt_at=sample_clock(), stale=True, error=str(e))
             print(f"[poll_remote] {master_ip} slave a{slave_index} {slave_ip} read failed: {e}")
 
 
@@ -805,18 +865,21 @@ def _poll_remote_pdu(
 
     if _is_pdu_session_held(host):
         print(f"[poll_remote] {ip} skipped — PDU Settings session active")
+        _sample(ip, kind="skipped")
         with MULTI_PDU_LOCK:
             cached = MULTI_PDU_RESULTS.get(ip, {})
         return ip, cached, {}
 
     if _is_batch_commission_active(ip):
         print(f"[poll_remote] {ip} skipped — batch commissioning active")
+        _sample(ip, kind="skipped")
         with MULTI_PDU_LOCK:
             cached = MULTI_PDU_RESULTS.get(ip, {})
         return ip, cached, {}
 
     results = {}
     errors = {}
+    cached_fallback: Dict[str, Any] = {}
 
     # Fast TCP reachability pre-check. Unreachable IPs otherwise burn ~100s each
     # (443 connect-timeout + 5 login retries, then 80) and starve the worker pool
@@ -854,6 +917,7 @@ def _poll_remote_pdu(
 
     if not poll_plans:
         msg = f"unreachable — no open web port ({host}:{web_port}/80/443)"
+        _sample(ip, kind="unreachable", last_attempt_at=sample_clock(), reachability="offline", stale=True, error=msg)
         return ip, {}, {"_unreachable": {"name": "_unreachable", "oid": "web:probe", "value": msg}}
 
     last_err: Exception | None = None
@@ -877,6 +941,7 @@ def _poll_remote_pdu(
 
             if not client._lock.acquire(blocking=False):
                 print(f"[poll_remote] {ip} skipped — client busy (settings/admin)")
+                _sample(ip, kind="skipped")
                 with MULTI_PDU_LOCK:
                     cached = MULTI_PDU_RESULTS.get(ip, {})
                 return ip, cached, {}
@@ -904,7 +969,8 @@ def _poll_remote_pdu(
                 last_err = e
                 errors["_remote"] = {"name": "_remote", "error": str(e)}
                 with MULTI_PDU_LOCK:
-                    results = MULTI_PDU_RESULTS.get(ip, {})
+                    cached_fallback = MULTI_PDU_RESULTS.get(ip) or {}
+                results = {}
                 print(
                     f"[poll_remote] {ip} error on {'HTTPS' if poll_https else 'HTTP'} "
                     f"({cred_src} creds): {e}"
@@ -939,11 +1005,28 @@ def _poll_remote_pdu(
             fresh = PDURepo.get_by_ip(ip)
             if fresh:
                 return _poll_remote_pdu(fresh, _allow_repair=False)
+
+    if last_err is not None:
+        # Cached values stay, but this attempt did not collect them.
+        _sample(
+            ip, kind="auth_failed", last_attempt_at=sample_clock(),
+            authentication="failed", reachability="online", stale=True, error=str(last_err),
+        )
+        return ip, cached_fallback, errors
+
+    if not results:
+        _sample(ip, kind="skipped")
         return ip, results, errors
 
-    if results:
-        _apply_outlet_load_alarms(ip, results)
-
+    _apply_outlet_load_alarms(ip, results)
+    measured = sample_clock()
+    stamp_entries(results, measured)
+    annotate_power_units(results, default_unit="W" if isinstance(client, NPDUWebClient) else None)
+    _sample(
+        ip, kind="full", measured_at=measured, last_attempt_at=measured,
+        last_success_at=measured, authentication="ok", reachability="online",
+        stale=False, error=None,
+    )
     return ip, results, errors
 
 
@@ -1319,6 +1402,18 @@ def poll_single_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str,
     _build_snmp_alarm_flags(results, mib)
     _apply_outlet_load_alarms(ip, results)
 
+    if results:
+        measured = sample_clock()
+        stamp_entries(results, measured)
+        annotate_power_units(results, default_unit="W")
+        _sample(
+            ip, kind="full", measured_at=measured, last_attempt_at=measured,
+            last_success_at=measured, authentication="ok", reachability="online",
+            stale=False, error=None,
+        )
+    else:
+        _sample(ip, kind="unreachable", last_attempt_at=sample_clock(), reachability="offline", stale=True)
+
     return ip, results, errors
 
 
@@ -1408,32 +1503,11 @@ def multi_pdu_poller():
                     ip = pdu_obj.get("ip_address", "")
                     try:
                         ip, results, errors = future.result(timeout=60)
-                        with MULTI_PDU_LOCK:
-                            if results:
-                                MULTI_PDU_RESULTS[ip] = results
-                                MULTI_PDU_ERRORS[ip] = errors
-                            else:
-                                MULTI_PDU_ERRORS[ip] = errors
-                                if ip not in MULTI_PDU_RESULTS:
-                                    MULTI_PDU_RESULTS[ip] = {}
-                        
-                        _remote_pdu_last_poll[ip] = time.time()
-                        if errors and not results:
-                            _remote_pdu_last_error[ip] = time.time()
-                            _pdu_consecutive_failures[ip] = _pdu_consecutive_failures.get(ip, 0) + 1
-                        else:
-                            if ip in _remote_pdu_last_error:
-                                del _remote_pdu_last_error[ip]
-                            _pdu_consecutive_failures[ip] = 0
-
-                        if results:
-                            try:
-                                store_poll_snapshot(ip, results)
-                            except Exception as e:
-                                print(f"[multi_pdu_poller] Error storing snapshot for {ip}: {e}")
-                                
+                        kind, snapshot, kept = _commit_poll_cache(ip, results, errors)
+                        _finish_poll_schedule(ip, kind, snapshot, kept)
                     except Exception as e:
                         print(f"[multi_pdu_poller] Error polling {ip}: {e}")
+                        _sample(ip, kind="error", last_attempt_at=sample_clock(), stale=True, error=str(e))
                         _remote_pdu_last_poll[ip] = time.time()
                         _remote_pdu_last_error[ip] = time.time()
                         _pdu_consecutive_failures[ip] = _pdu_consecutive_failures.get(ip, 0) + 1
@@ -1472,14 +1546,9 @@ def force_remote_pdu_refresh(ip: str) -> bool:
         return False
     try:
         _ip, results, errors = poll_single_pdu(pdu)
-        with MULTI_PDU_LOCK:
-            if results:
-                MULTI_PDU_RESULTS[ip] = results
-                MULTI_PDU_ERRORS[ip] = errors
-            else:
-                MULTI_PDU_ERRORS[ip] = errors
-        _remote_pdu_last_poll[ip] = time.time()
-        return bool(results)
+        kind, snapshot, kept = _commit_poll_cache(ip, results, errors)
+        _finish_poll_schedule(ip, kind, snapshot, kept)
+        return kind == "full"
     except Exception as e:
         print(f"[force_refresh] {ip} failed: {e}")
         return False
@@ -1522,18 +1591,21 @@ def patch_outlet_cache(ip: str) -> bool:
         if results is None:
             results = {}
             MULTI_PDU_RESULTS[ip] = results
+        before = set(results)
+        written = []
         for o in outlets:
             n = o["index"]
-            results[f"Output{n}Status"] = {
-                "name": f"Output{n}Status", "oid": f"web:outlet_{n}",
-                "value": "on" if o["state"] == "on" else "off"}
-            results[f"Output{n}Current"] = {
-                "name": f"Output{n}Current", "oid": f"web:outlet_{n}_cur",
-                "value": str(o.get("current", "0"))}
-            results[f"Output{n}Energy"] = {
-                "name": f"Output{n}Energy", "oid": f"web:outlet_{n}_energy",
-                "value": str(o.get("energy", "0"))}
+            for key, value, oid in (
+                (f"Output{n}Status", "on" if o["state"] == "on" else "off", f"web:outlet_{n}"),
+                (f"Output{n}Current", str(o.get("current", "0")), f"web:outlet_{n}_cur"),
+                (f"Output{n}Energy", str(o.get("energy", "0")), f"web:outlet_{n}_energy"),
+            ):
+                results[key] = {"name": key, "oid": oid, "value": value}
+                written.append(key)
         _apply_outlet_load_alarms(ip, results)
+        patched_at = sample_clock()
+        stamp_entries(results, patched_at, only=set(written) | {key for key in results if key not in before})
+        note_sample(MULTI_PDU_SAMPLE, ip, outlet_patched_at=patched_at)
     return True
 
 
@@ -1591,11 +1663,15 @@ def patch_snmp_outlet_cache(ip: str, outlet_nums: Optional[List[int]] = None) ->
 
     with MULTI_PDU_LOCK:
         results = MULTI_PDU_RESULTS.setdefault(ip, {})
+        before = set(results)
         results.update(patch)
         if errors:
             err_bucket = MULTI_PDU_ERRORS.setdefault(ip, {})
             err_bucket.update(errors)
         _apply_outlet_load_alarms(ip, results)
+        patched_at = sample_clock()
+        stamp_entries(results, patched_at, only=set(patch) | {key for key in results if key not in before})
+        note_sample(MULTI_PDU_SAMPLE, ip, outlet_patched_at=patched_at)
     return True
 
 
@@ -2143,20 +2219,20 @@ def get_pdu_live_data_by_ip(ip_address: str):
             with MULTI_PDU_LOCK:
                 results = MULTI_PDU_RESULTS.get(ip_address, {})
                 errors = MULTI_PDU_ERRORS.get(ip_address, {})
+                sample = dict(MULTI_PDU_SAMPLE.get(ip_address) or {})
             if not results and not errors:
                 return jsonify({
                     "ip": ip_address, "results": [], "errors": [],
                     "status": "pending",
                     "message": "Waiting for first remote poll cycle (~30s)",
                     "source": "web_admin",
+                    "measured_at": None,
+                    "stale": False,
+                    "authentication": sample.get("authentication") or "unknown",
+                    "reachability": sample.get("reachability") or "unknown",
+                    "cached": True,
                 })
-            return jsonify({
-                "ip": ip_address,
-                "results": list(results.values()),
-                "errors": list(errors.values()),
-                "status": "partial" if errors else "success",
-                "source": "web_admin",
-            })
+            return jsonify(live_payload(ip_address, results, errors, sample, source="web_admin"))
 
         # --- Local PDU: use multi_pdu_poller (same scaling as remote) ---
         ensure_multi_pdu_poller()
@@ -2164,6 +2240,7 @@ def get_pdu_live_data_by_ip(ip_address: str):
         with MULTI_PDU_LOCK:
             results = MULTI_PDU_RESULTS.get(ip_address, {})
             errors = MULTI_PDU_ERRORS.get(ip_address, {})
+            sample = dict(MULTI_PDU_SAMPLE.get(ip_address) or {})
         
         if not results and not errors:
             if not pdu:
@@ -2173,15 +2250,14 @@ def get_pdu_live_data_by_ip(ip_address: str):
                 "results": [],
                 "errors": [],
                 "status": "pending",
-                "message": "Waiting for first poll cycle"
+                "message": "Waiting for first poll cycle",
+                "measured_at": None,
+                "stale": False,
+                "authentication": "unknown",
+                "reachability": "unknown",
             })
         
-        return jsonify({
-            "ip": ip_address,
-            "results": list(results.values()),
-            "errors": list(errors.values()),
-            "status": "partial" if errors else "success"
-        })
+        return jsonify(live_payload(ip_address, results, errors, sample))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -2708,6 +2784,8 @@ def get_polling_device_status(ip_address: str):
                 web_port = (master_pdu or pdu).get("web_admin_port") or 80
             else:
                 remote_host = request.args.get("remote_host") or pdu.get("remote_host") or ip_address
+                if remote_host != ip_address and remote_host in ("192.168.0.163", "192.168.1.163"):
+                    remote_host = ip_address
                 web_port = pdu["web_admin_port"]
 
             with _REACH_LOCK:
@@ -2715,8 +2793,24 @@ def get_polling_device_status(ip_address: str):
             fresh = bool(cached) and (time.time() - cached["ts"] < _REACH_TTL)
             if not fresh:
                 _reach_refresh_async(ip_address, remote_host, web_port)
-            state = cached["state"] if cached else "offline"
-            return jsonify({"state": state, "source": "web_admin", "chain_role": role, "cached": True})
+            with MULTI_PDU_LOCK:
+                sample = dict(MULTI_PDU_SAMPLE.get(ip_address) or {})
+            if cached:
+                state = cached["state"]
+                probed_at = sample_clock(cached["ts"])
+            else:
+                state = "unknown"
+                probed_at = None
+            return jsonify({
+                "state": state,
+                "source": "web_admin",
+                "chain_role": role,
+                "cached": bool(cached),
+                "probed_at": probed_at,
+                "reachability": state,
+                "authentication": sample.get("authentication") or "unknown",
+                "measured_at": sample.get("measured_at"),
+            })
 
         if USE_ADAPTIVE_POLLING:
             poller = _get_adaptive_poller()
@@ -2961,7 +3055,12 @@ def _parse_use_https(value: Any) -> bool:
 
 
 def _web_admin_creds_from_pdu(pdu: Dict[str, Any]) -> Tuple[str, int, str, str, bool]:
-    host = pdu.get("remote_host") or pdu["ip_address"]
+    ip = pdu.get("ip_address") or ""
+    host = (pdu.get("remote_host") or "").strip() or ip
+    # After factory-default commission the row can still carry 192.168.0.163
+    # while ip_address is the production address. Poll the live IP.
+    if host != ip and host in ("192.168.0.163", "192.168.1.163"):
+        host = ip
     use_https = _parse_use_https(pdu.get("web_admin_https") or 0)
     default_port = 443 if use_https else _DEFAULT_WEB_ADMIN_PORT
     port = int(pdu.get("web_admin_port") or default_port)
@@ -3196,6 +3295,7 @@ def _diagnose_pdu_login(
     *,
     verify_telemetry: bool = True,
     pdu: Dict[str, Any] | None = None,
+    keep_session: bool = False,
 ) -> Dict[str, Any]:
     """Try web-admin endpoints and return a per-attempt diagnostic report."""
     _evict_all_pdu_clients_for_host(host)
@@ -3248,10 +3348,14 @@ def _diagnose_pdu_login(
         except Exception as exc:
             err = _friendly_connect_error(str(exc))
         finally:
-            try:
-                client.logout()
-            except Exception:
-                pass
+            # The PDU allows one web session. Dropping it here and logging in
+            # again makes the second login fail. The caller that applies
+            # settings keeps this client.
+            if not (ok and keep_session):
+                try:
+                    client.logout()
+                except Exception:
+                    pass
 
         attempts.append({
             "url": url,
@@ -3262,7 +3366,7 @@ def _diagnose_pdu_login(
             "error": None if ok else (err or "Login failed"),
         })
         if ok:
-            return {
+            result = {
                 "success": True,
                 "host": host,
                 "username": user,
@@ -3271,6 +3375,9 @@ def _diagnose_pdu_login(
                 "url": url,
                 "attempts": attempts,
             }
+            if keep_session:
+                result["client"] = client
+            return result
 
     return {
         "success": False,
@@ -3817,6 +3924,17 @@ def _overlay_commissioning_display(host: str, settings: Dict[str, Any]) -> Dict[
             time_cfg["sntp_server2"] = sntp2
             settings["time"] = time_cfg
 
+    snmp_cfg = dict(settings.get("snmp") or {})
+    snmp_changed = False
+    for key in ("auth_key", "priv_key"):
+        stored = str(meta.get(key) or "").strip()
+        current = str(snmp_cfg.get(key) or "").strip()
+        if stored and (not current or set(current) <= {"*"}):
+            snmp_cfg[key] = stored
+            snmp_changed = True
+    if snmp_changed:
+        settings["snmp"] = snmp_cfg
+
     return settings
 
 
@@ -3973,10 +4091,23 @@ def pdu_admin_set_network(host: str):
         if not ok:
             return jsonify({"error": "Failed to apply network settings"}), 500
 
-        need_reboot = data.get("reboot", False)
+        ip_changed = True
+        try:
+            if isinstance(client, NPDUWebClient):
+                time.sleep(1.0)
+                ip_changed = True
+        except Exception:
+            pass
+
+        # Static IP only binds after /setsys restart. Skip reboot only when caller
+        # explicitly sets reboot=false AND the address did not change.
+        need_reboot = data.get("reboot")
+        if need_reboot is None:
+            need_reboot = ip_changed
         if need_reboot:
+            time.sleep(0.4)
             if not _trigger_pdu_reboot(client, host):
-                return jsonify({"error": "Settings saved but reboot failed"}), 500
+                return jsonify({"error": "Settings saved but reboot failed — LCD will keep the old IP"}), 500
             return jsonify({
                 "success": True,
                 "rebooting": True,
@@ -4027,28 +4158,58 @@ def pdu_admin_ping(host: str):
     Uses a lightweight TCP probe so we don't steal the PDU's single session."""
     try:
         port, _, _, use_https = _web_admin_creds_from_request()
+        connect_host, _, role, _ = _web_connect_target(host)
         import socket
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(5)
-        sock.connect((host, port))
+        sock.connect((connect_host or host, port))
         sock.close()
-        return jsonify({"online": True})
+        return jsonify({"online": True, "via": connect_host or host, "chain_role": role})
     except Exception:
         return jsonify({"online": False})
 
 
 @app.route("/api/pdu-admin/<host>/settings/snmp", methods=["POST"])
 def pdu_admin_set_snmp(host: str):
-    """Change SNMP settings on a PDU."""
+    """Change SNMP settings on a PDU, persist DB version, reboot NPDU (required)."""
     try:
         data = request.get_json(force=True)
         port, username, password, use_https = _web_admin_creds_from_json(data)
+        connect_host, _, role, master_hn = _web_connect_target(host)
         client = _get_pdu_client(host, port, username, password, use_https=use_https)
 
-        ok = client.set_snmp(**PDUWebClient.prepare_snmp_kwargs(data))
-        if ok:
-            return jsonify({"success": True, "message": "SNMP settings applied"})
-        return jsonify({"error": "Failed to apply SNMP settings — values on PDU did not match request"}), 500
+        preparer = getattr(type(client), "prepare_snmp_kwargs", PDUWebClient.prepare_snmp_kwargs)
+        ok = client.set_snmp(**preparer(data))
+        if not ok:
+            return jsonify({"error": "Failed to apply SNMP settings — values on PDU did not match request"}), 500
+
+        db_sync = _persist_applied_snmp(host, data)
+        rebooted = False
+        # NPDU firmware: snmp.html says "Completing setup, please restart!"
+        if isinstance(client, NPDUWebClient):
+            rebooted = _trigger_pdu_reboot(client, connect_host or host)
+            if not rebooted:
+                return jsonify({
+                    "success": False,
+                    "error": "SNMP written but reboot failed — restart the PDU from Settings → Network",
+                    "rebooted": False,
+                    **db_sync,
+                }), 500
+        via = connect_host or host
+        note = f" via chain master {via}" if role == "slave" else ""
+        return jsonify({
+            "success": True,
+            "rebooted": rebooted,
+            "applied_via": via,
+            "chain_role": role,
+            "master_hostname": master_hn,
+            "snmp_version": db_sync.get("version"),
+            "message": (
+                f"SNMP settings applied{note}. "
+                + ("PDU is rebooting (~60 s) so the new mode is live." if rebooted
+                   else "Settings are live.")
+            ),
+        })
     except Exception as e:
         import traceback; traceback.print_exc()
         return jsonify({"error": str(e)}), 500
@@ -4400,8 +4561,16 @@ def _parse_xlsx_grid(content: bytes) -> List[List[str]]:
     grid: List[List[str]] = []
     for row_xml in _re.findall(r"<row[^>]*>(.*?)</row>", sheet_xml, _re.S):
         cells: Dict[int, str] = {}
-        for cell in _re.findall(r"<c\b([^>]*)>(.*?)</c>", row_xml, _re.S):
-            attrs, body = cell
+        # Self-closing <c .../> must be consumed on its own. Otherwise the
+        # blank column between Agoda feed A and feed B swallows the next cell.
+        for cell in _re.finditer(
+            r"<c\b([^>]*?)/>|<c\b([^>]*)>(.*?)</c>",
+            row_xml,
+            _re.S,
+        ):
+            if cell.group(1) is not None:
+                continue
+            attrs, body = cell.group(2), cell.group(3)
             ref_m = _re.search(r'r="([A-Z]+\d+)"', attrs)
             col = _col_to_index(ref_m.group(1)) if ref_m else len(cells)
             t_m = _re.search(r't="([^"]+)"', attrs)
@@ -4429,13 +4598,41 @@ def _parse_xlsx_grid(content: bytes) -> List[List[str]]:
     return grid
 
 
+def _header_key(label: str) -> str:
+    import re as _re
+    return _re.sub(r"[^a-z0-9]", "", (label or "").lower())
+
+
+def _parse_snmp_v3_cell(text: str) -> Dict[str, Any]:
+    """Read an Agoda SNMPv3 note such as USER / pass(SHA) / privacy(AES)."""
+    import re as _re
+    raw = text or ""
+    user = _re.search(r"user\s*[:=]\s*(\S+)", raw, _re.I)
+    auth = _re.search(r"pass\s*\(\s*sha\s*\)\s*[:=]\s*(\S+)", raw, _re.I)
+    priv = _re.search(r"privacy\s*\(\s*aes\s*\)\s*[:=]\s*(\S+)", raw, _re.I)
+    if not (user or auth or priv):
+        return {}
+    return {
+        "snmpv3": True,
+        "snmpv1": False,
+        "snmpv2": False,
+        "snmpv3_username": user.group(1) if user else "",
+        "auth_key": auth.group(1) if auth else "",
+        "priv_key": priv.group(1) if priv else "",
+        "verify_protocol": "SHA",
+        "encrypt_protocol": "AES",
+    }
+
+
 def _parse_pdu_inventory(content: bytes) -> List[Dict[str, Any]]:
     """Extract commissioning targets from an inventory spreadsheet.
 
-    Maps columns by header name so column order does not matter.
+    NTT sheets are one PDU per row (Hostname, MGMT IP, Gateway).
+    Agoda sheets are one rack per row with two PDUs: Assigned IP + Hostname
+    (feed A) and IP address + Hostname (feed B), plus shared SNMP, NTP,
+    syslog, and DNS columns. Column order does not matter.
     """
     grid = _parse_xlsx_grid(content)
-    # Find header row (first row that mentions an IP-address column)
     header_idx = -1
     for i, row in enumerate(grid[:10]):
         joined = " ".join(c.lower() for c in row)
@@ -4447,18 +4644,44 @@ def _parse_pdu_inventory(content: bytes) -> List[Dict[str, Any]]:
 
     headers = [h.lower() for h in grid[header_idx]]
 
-    def find_col(*needles: str) -> int:
+    def find_col(*needles: str, exclude: tuple = ()) -> int:
+        hits = _header_hits(headers, *needles, exclude=exclude)
+        return hits[0] if hits else -1
+
+    def find_exact(*keys: str) -> int:
+        wanted = set(keys)
         for ci, h in enumerate(headers):
-            if all(n in h for n in needles):
+            if _header_key(h) in wanted:
                 return ci
         return -1
 
-    c_host = find_col("host")
-    c_ip = find_col("ip")
+    # Customer inventory has both "OLD Hostname" and "Hostname".
+    # Assign/NMS must use Hostname (e.g. RDC2-PDU-F02-SRC-A-1), never OLD Hostname.
+    host_cols = _header_hits(headers, "hostname", exclude=("old",))
+    if not host_cols:
+        host_cols = _header_hits(headers, "host", exclude=("old",))
+    ip_cols = [
+        ci for ci, h in enumerate(headers)
+        if "ip" in h and "snmp" not in h
+    ]
+    if not ip_cols:
+        return []
+
+    # Two hostname columns and two IP columns = Agoda wide row (A and B).
+    wide = len(ip_cols) >= 2 and len(host_cols) >= 2
+    pairs = list(zip(ip_cols, host_cols)) if wide else [(ip_cols[0], host_cols[0] if host_cols else -1)]
+
     c_site = find_col("site")
     c_rack = find_col("rack")
     c_gw = find_col("gateway")
     c_sr = find_col("sr")
+    c_snmp = find_col("snmp")
+    c_ntp1 = find_exact("ntp1", "ntp")
+    c_ntp2 = find_exact("ntp2")
+    c_syslog1 = find_exact("syslog1", "syslog")
+    c_syslog2 = find_exact("syslog2")
+    c_dns1 = find_exact("dns1", "dns")
+    c_dns2 = find_exact("dns2")
 
     import re as _re
     targets: List[Dict[str, Any]] = []
@@ -4470,31 +4693,94 @@ def _parse_pdu_inventory(content: bytes) -> List[Dict[str, Any]]:
         def cell(ci: int) -> str:
             return row[ci].strip() if 0 <= ci < len(row) else ""
 
-        raw_ip = cell(c_ip)
-        m = _re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?:\s*/\s*(\d{1,2}))?", raw_ip)
-        if not m:
-            continue
-        ip = m.group(1)
-        if ip in seen_ips:
-            continue
-        seen_ips.add(ip)
-        cidr = int(m.group(2)) if m.group(2) else 24
-        mask = _cidr_to_mask(cidr)
-        gateway = cell(c_gw)
-        gw_m = _re.search(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", gateway)
-        gateway = gw_m.group(0) if gw_m else ".".join(ip.split(".")[:3] + ["1"])
-        targets.append({
-            "sr_no": cell(c_sr),
-            "hostname": cell(c_host),
-            "ip": ip,
-            "cidr": cidr,
-            "mask": mask,
-            "gateway": gateway,
+        snmp = _parse_snmp_v3_cell(cell(c_snmp))
+        shared = {
             "site": cell(c_site),
             "rack": cell(c_rack),
-            "status": "pending",
-        })
+            "dns1": cell(c_dns1),
+            "dns2": cell(c_dns2),
+            "ntp1": cell(c_ntp1),
+            "ntp2": cell(c_ntp2),
+            "syslog1": cell(c_syslog1),
+            "syslog2": cell(c_syslog2),
+        }
+        for pair_i, (c_ip, c_host) in enumerate(pairs):
+            raw_ip = cell(c_ip)
+            m = _re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?:\s*/\s*(\d{1,2}))?", raw_ip)
+            if not m:
+                continue
+            ip = m.group(1)
+            if ip in seen_ips:
+                continue
+            seen_ips.add(ip)
+            cidr = int(m.group(2)) if m.group(2) else 24
+            gateway = cell(c_gw)
+            gw_m = _re.search(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", gateway)
+            if gw_m:
+                gateway = gw_m.group(0)
+            elif c_gw >= 0:
+                gateway = ".".join(ip.split(".")[:3] + ["1"])
+            else:
+                gateway = ""
+            hostname = cell(c_host)
+            feed = ""
+            if wide:
+                tail = hostname.rsplit("-", 1)[-1].upper() if hostname else ""
+                feed = tail if tail in ("A", "B") else ("A" if pair_i == 0 else "B")
+            target = {
+                "sr_no": cell(c_sr),
+                "hostname": hostname,
+                "ip": ip,
+                "cidr": cidr,
+                "mask": _cidr_to_mask(cidr),
+                "gateway": gateway,
+                "site": shared["site"],
+                "rack": shared["rack"],
+                "status": "pending",
+                "layout": "agoda" if wide else "ntt",
+            }
+            if feed:
+                target["feed"] = feed
+            for key in ("dns1", "dns2", "ntp1", "ntp2", "syslog1", "syslog2"):
+                if shared[key]:
+                    target[key] = shared[key]
+            if snmp:
+                target["snmp"] = snmp
+            targets.append(target)
     return targets
+
+
+def _inventory_meta(target: Dict[str, Any], snmp: Any) -> Dict[str, Any]:
+    """Sheet fields to keep on the PDU row.
+
+    The PDU web page masks SNMPv3 keys as asterisks, so the password the
+    operator typed or imported is kept here and shown when they reveal it.
+    """
+    meta: Dict[str, Any] = {}
+    for key in ("layout", "feed", "rack", "site", "dns1", "dns2", "ntp1", "ntp2", "syslog1", "syslog2"):
+        val = (target.get(key) or "")
+        if isinstance(val, str):
+            val = val.strip()
+        if val:
+            meta[key] = val
+    if isinstance(snmp, dict):
+        if snmp.get("snmpv3_username"):
+            meta["snmpv3_username"] = snmp.get("snmpv3_username")
+        for key in ("auth_key", "priv_key"):
+            secret = str(snmp.get(key) or "").strip()
+            if secret and set(secret) - {"*"}:
+                meta[key] = secret
+    return meta
+
+
+def _header_hits(headers: List[str], *needles: str, exclude: tuple = ()) -> List[int]:
+    hits: List[int] = []
+    for ci, h in enumerate(headers):
+        if any(x in h for x in exclude):
+            continue
+        if all(n in h for n in needles):
+            hits.append(ci)
+    return hits
 
 
 @app.route("/api/commission/inventory/parse", methods=["POST"])
@@ -4513,7 +4799,7 @@ def commission_inventory_parse():
         if not targets:
             return jsonify({
                 "success": False,
-                "error": "No PDU rows found — expected columns like Hostname, MGMT IP address, Default Gateway",
+                "error": "No PDU rows found — expected Hostname and an IP column (NTT), or a rack row with two IP and Hostname columns (Agoda)",
             }), 422
         sites = sorted({t["site"] for t in targets if t["site"]})
         return jsonify({
@@ -4633,6 +4919,7 @@ def commission_guided_apply():
         hostname = (target.get("hostname") or "").strip()
         dns1 = (target.get("dns1") or "").strip()
         dns2 = (target.get("dns2") or "").strip()
+        snmp = data.get("snmp") or target.get("snmp") or None
 
         # Demo mode: simulate a successful commission so the flow is testable.
         try:
@@ -4664,8 +4951,16 @@ def commission_guided_apply():
         }
         if hostname:
             pdu_template["system"] = {"router_hostname": hostname, "device_name": hostname}
-        if data.get("snmp"):
-            pdu_template["snmp"] = data["snmp"]
+        if snmp:
+            pdu_template["snmp"] = snmp
+        ntp1 = (target.get("ntp1") or "").strip()
+        ntp2 = (target.get("ntp2") or "").strip()
+        if ntp1 or ntp2:
+            pdu_template["ntp"] = {
+                "sntp_enabled": True,
+                "sntp_server": ntp1 or ntp2,
+                "sntp_server2": ntp2 if ntp1 else "",
+            }
 
         _batch_hold_ip(factory_ip)
         _pause_pdu_poller()
@@ -4695,10 +4990,17 @@ def commission_guided_apply():
                 res = npdu_client.commission(
                     factory_ip, new_ip=new_ip, mask=mask, gateway=gateway,
                     dns=dns1, hostname=hostname, username=cur_user, password=cur_pass,
-                    port=80, do_reboot=True,
+                    port=80, do_reboot=True, snmp=snmp if isinstance(snmp, dict) else None,
                 )
                 if not res.get("success"):
                     return jsonify({"success": False, "firmware": "NPDU", **res}), 502
+                if not res.get("rebooted"):
+                    return jsonify({
+                        "success": False,
+                        "firmware": "NPDU",
+                        "error": res.get("error") or "Static IP written but PDU did not reboot — LCD will keep the factory address",
+                        **{k: v for k, v in res.items() if k != "success"},
+                    }), 502
 
                 if hall_id:
                     try:
@@ -4711,8 +5013,9 @@ def commission_guided_apply():
                             "web_admin_user": cur_user,
                             "web_admin_pass": cur_pass,
                             "snmp_port": 161,
-                            "snmp_version": "2c",
+                            "snmp_version": "3" if isinstance(snmp, dict) and snmp.get("snmpv3") else "2c",
                             "is_active": True,
+                            "metadata": _inventory_meta(target, snmp),
                         })
                     except Exception as db_e:
                         print(f"[guided][npdu] DB upsert warning for {new_ip}: {db_e}")
@@ -4728,14 +5031,19 @@ def commission_guided_apply():
                     "previous_ip": res.get("previous_ip"),
                     "rebooted": res.get("rebooted", True),
                     "message": (
-                        f"{hostname or new_ip} configured (MAC {res.get('mac') or '?'}) — "
-                        f"rebooting to {new_ip}. Move your laptop to the production subnet to verify."
+                        f"{hostname or new_ip} configured"
+                        + (f" (device name {res.get('device_name')})" if res.get("device_name") and res.get("device_name") != hostname else "")
+                        + (" · SNMPv3 written" if res.get("snmp_set") else "")
+                        + f" (MAC {res.get('mac') or '?'}) — rebooting to {new_ip}. "
+                        "Move your laptop to the production subnet to verify."
                     ),
                 })
 
             # Find the working web-admin endpoint first — probes 443/80/6662/8080
             # and reports per-port so a wrong port or real bad-credential is clear.
-            diag = _diagnose_pdu_login(factory_ip, cur_user, cur_pass, verify_telemetry=False)
+            diag = _diagnose_pdu_login(
+                factory_ip, cur_user, cur_pass, verify_telemetry=False, keep_session=True,
+            )
             if not diag.get("success"):
                 attempts = diag.get("attempts") or []
                 tried = ", ".join(
@@ -4751,7 +5059,9 @@ def commission_guided_apply():
             conn_port = int(diag.get("port") or 80)
             conn_https = bool(diag.get("use_https"))
             conn_user, conn_pass = cur_user, cur_pass
-            client = _probe_pdu_login(factory_ip, conn_port, conn_user, conn_pass, conn_https, retries=5)
+            client = diag.get("client")
+            if client is None:
+                client = _probe_pdu_login(factory_ip, conn_port, conn_user, conn_pass, conn_https, retries=5)
             if not client:
                 return jsonify({
                     "success": False,
@@ -4761,10 +5071,38 @@ def commission_guided_apply():
             report = client.apply_batch_template(pdu_template, reboot_after=False)
             net_ok = (report.get("network") or {}).get("success", False)
             if not net_ok:
+                try:
+                    client.logout()
+                except Exception:
+                    pass
                 return jsonify({
                     "success": False,
                     "error": (report.get("network") or {}).get("error")
                     or "PDU did not accept the new network settings",
+                    "sections": report,
+                }), 502
+
+            snmp_result = report.get("snmp") or {}
+            if pdu_template.get("snmp") and not snmp_result.get("success", True):
+                try:
+                    client.logout()
+                except Exception:
+                    pass
+                return jsonify({
+                    "success": False,
+                    "error": snmp_result.get("error") or "SNMP settings were not confirmed on the PDU",
+                    "sections": report,
+                }), 502
+
+            ntp_result = report.get("ntp") or {}
+            if pdu_template.get("ntp") and not ntp_result.get("success", True):
+                try:
+                    client.logout()
+                except Exception:
+                    pass
+                return jsonify({
+                    "success": False,
+                    "error": ntp_result.get("error") or "SNTP server was not confirmed on the PDU",
                     "sections": report,
                 }), 502
 
@@ -4781,9 +5119,10 @@ def commission_guided_apply():
                         "web_admin_user": conn_user,
                         "web_admin_pass": conn_pass,
                         "snmp_port": 161,
-                        "snmp_version": "2c",
+                        "snmp_version": "3" if isinstance(snmp, dict) and snmp.get("snmpv3") else "2c",
                         "is_active": True,
                     })
+                    _merge_pdu_metadata(new_ip, _inventory_meta(target, snmp if isinstance(snmp, dict) else {}))
                 except Exception as db_e:
                     print(f"[guided] DB upsert warning for {new_ip}: {db_e}")
 
@@ -4797,7 +5136,9 @@ def commission_guided_apply():
                 "sections": report,
                 "message": (
                     f"{hostname or new_ip} configured — rebooting to {new_ip}. "
-                    "Move your laptop to the production subnet to verify."
+                    + (f"SNTP {ntp1}. " if ntp1 else "")
+                    + ("NTP2 has no field on this Time page. " if ntp1 and ntp2 else "")
+                    + "Move your laptop to the production subnet to verify."
                 ),
             })
         finally:
@@ -4807,6 +5148,154 @@ def commission_guided_apply():
         return jsonify({"success": False, "error": str(ce)}), 502
     except Exception as e:
         import traceback; traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/commission/guided-web", methods=["POST"])
+def commission_guided_web():
+    """Add General User 1 and switch this PDU to HTTPS, then reboot.
+
+    Talks to the PDU's current address. Does not change the superuser,
+    the IP, SNMP, or NTP.
+    """
+    client = None
+    ip = ""
+    try:
+        data = request.get_json(force=True) if request.data else {}
+        ip = (data.get("ip") or "").strip()
+        if not ip:
+            return jsonify({"error": "IP required"}), 400
+        hall_id = data.get("hall_id")
+        creds = data.get("current_credentials") or {}
+        cur_user = (creds.get("username") or "admin").strip() or "admin"
+        cur_pass = creds.get("password")
+        cur_pass = cur_pass.strip() if isinstance(cur_pass, str) and cur_pass.strip() else "admin"
+        user1 = (data.get("user1_username") or "").strip()
+        user1_pass = data.get("user1_password")
+        user1_pass = user1_pass.strip() if isinstance(user1_pass, str) else ""
+        if not user1 or not user1_pass:
+            return jsonify({"error": "General user and password required"}), 400
+        enable_https = data.get("enable_https", True)
+        if isinstance(enable_https, str):
+            enable_https = enable_https.strip().lower() not in ("0", "false", "no", "")
+        else:
+            enable_https = bool(enable_https)
+
+        _batch_hold_ip(ip)
+        _pause_pdu_poller()
+        time.sleep(0.4)
+        try:
+            diag = _diagnose_pdu_login(
+                ip, cur_user, cur_pass, verify_telemetry=False, keep_session=True,
+            )
+            if not diag.get("success"):
+                attempts = diag.get("attempts") or []
+                tried = ", ".join(
+                    f"{a['url']} ({'reachable' if a.get('tcp_reachable') else 'no TCP'}: {a.get('error')})"
+                    for a in attempts
+                )
+                return jsonify({
+                    "success": False,
+                    "error": f"Login to {ip} as {cur_user!r} failed. Tried {tried}. Close any open PDU tab — one web session only.",
+                    "attempts": attempts,
+                }), 502
+            client = diag.get("client")
+            if client is None:
+                return jsonify({
+                    "success": False,
+                    "error": f"Login verified on {diag.get('url')} but the session could not be held",
+                }), 502
+
+            if not client.set_users(user1_username=user1, user1_password=user1_pass):
+                client.logout()
+                return jsonify({"success": False, "error": "General user was not written"}), 502
+            read_users = client.get_users()
+            admin_name = (read_users.get("admin_username") or "").strip()
+            got_user1 = (read_users.get("user1_username") or "").strip()
+            if got_user1 != user1:
+                client.logout()
+                return jsonify({
+                    "success": False,
+                    "error": f"General user read-back is {got_user1!r}, expected {user1!r}",
+                }), 502
+            if admin_name != cur_user:
+                client.logout()
+                return jsonify({
+                    "success": False,
+                    "error": f"Superuser is {admin_name!r} after the write — stopped before HTTPS",
+                }), 502
+
+            if enable_https:
+                if not client.set_web_access(https_http="1", http_port="80", https_port="443"):
+                    client.logout()
+                    return jsonify({"success": False, "error": "HTTPS setting was not accepted"}), 502
+                web = client.get_web_access_config()
+                if str(web.get("https_http")) != "1":
+                    client.logout()
+                    return jsonify({
+                        "success": False,
+                        "error": "HTTPS read-back is still HTTP. Superuser was not changed.",
+                    }), 502
+
+            if not enable_https:
+                client.logout()
+                return jsonify({
+                    "success": True,
+                    "ip": ip,
+                    "rebooted": False,
+                    "general_user": user1,
+                    "superuser_unchanged": True,
+                    "message": f"{ip}: console user {user1} set. Superuser left as {cur_user}. HTTPS was not changed.",
+                })
+
+            rebooted = _trigger_pdu_reboot(client, ip)
+            if not rebooted:
+                try:
+                    client.logout()
+                except Exception:
+                    pass
+                return jsonify({
+                    "success": False,
+                    "error": "HTTPS was saved but the reboot did not start. It will not be active until the PDU reboots.",
+                }), 502
+
+            if hall_id:
+                try:
+                    PDURepo.upsert(int(hall_id), ip, {
+                        "web_admin_port": 443,
+                        "web_admin_https": 1,
+                    })
+                except Exception as db_e:
+                    print(f"[guided-web] DB update warning for {ip}: {db_e}")
+
+            return jsonify({
+                "success": True,
+                "ip": ip,
+                "rebooted": True,
+                "general_user": user1,
+                "superuser_unchanged": True,
+                "message": (
+                    f"{ip}: general user {user1} set, superuser left as {cur_user}, "
+                    f"HTTPS saved. Rebooting — web moves to https://{ip} in about a minute."
+                ),
+            })
+        finally:
+            _batch_release_ip(ip)
+            _resume_pdu_poller()
+    except ConnectionError as ce:
+        if client is not None:
+            try:
+                client.logout()
+            except Exception:
+                pass
+        return jsonify({"success": False, "error": str(ce)}), 502
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        if client is not None:
+            try:
+                client.logout()
+            except Exception:
+                pass
         return jsonify({"error": str(e)}), 500
 
 
@@ -4955,7 +5444,11 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                 )
                 effective_user = (new_admin_user if user_wants_rename else admin_user)
                 effective_pass = new_admin_pass or admin_pass
-                needs_reboot = bool(pdu_template.get("network")) or web_access_enabled
+                needs_reboot = (
+                    bool(pdu_template.get("network"))
+                    or web_access_enabled
+                    or bool(pdu_template.get("snmp"))
+                )
 
                 if is_slave:
                     status["step"] = "configuring"
@@ -5010,8 +5503,8 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                             "slave_index": slave_index,
                         }
                         snmp_cfg = template.get("snmp") or {}
-                        community = snmp_cfg.get("read_community") or snmp_cfg.get("community_read") or "public"
-                        version = "3" if snmp_cfg.get("snmpv3") else (pdu_info.get("snmp_version") or "2c")
+                        version = _snmp_version_from_cfg(snmp_cfg) if snmp_cfg else (pdu_info.get("snmp_version") or "2c")
+                        community = _snmp_community_ref(snmp_cfg, version) or "public"
                         pdu_id = PDURepo.upsert(hall_id, new_ip, {
                             "label": slave_hostname,
                             "hostname": slave_hostname,
@@ -5032,10 +5525,27 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                             "slave_index": slave_index,
                             "snmp_via": master_ip,
                         })
+                        reboot_ok = False
+                        if via_template.get("snmp") and not cached.get("rebooted"):
+                            try:
+                                reboot_client = _get_pdu_client(
+                                    master_ip,
+                                    int(cached.get("port") or web_port or 80),
+                                    cached.get("user") or admin_user,
+                                    cached.get("pass") or admin_pass,
+                                    use_https=bool(cached.get("https")),
+                                )
+                                reboot_ok = _trigger_pdu_reboot(reboot_client, master_ip)
+                                cached["rebooted"] = reboot_ok
+                                master_apply_cache[master_ip] = cached
+                            except Exception as reb_e:
+                                print(f"[batch] slave SNMP reboot {master_ip}: {reb_e}")
+                        elif cached.get("rebooted"):
+                            reboot_ok = True
                         status["step"] = "done"
                         status["success"] = True
                         status["pdu_id"] = pdu_id
-                        status["rebooted"] = False
+                        status["rebooted"] = reboot_ok
                     finally:
                         _batch_release_pdu_sessions(master_ip, web_port)
                     with _batch_lock:
@@ -5255,11 +5765,16 @@ def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: 
                     or template.get("system", {}).get("device_name")
                     or f"PDU-{new_ip}"
                 )
+                applied_snmp = template.get("snmp") or {}
+                applied_version = (
+                    _snmp_version_from_cfg(applied_snmp)
+                    if applied_snmp else (pdu_info.get("snmp_version") or "2c")
+                )
                 pdu_data = {
                     "label": resolved_hn,
                     "snmp_port": 161,
-                    "snmp_community_ref": template.get("snmp", {}).get("read_community", "public"),
-                    "snmp_version": pdu_info.get("snmp_version", "2c"),
+                    "snmp_community_ref": _snmp_community_ref(applied_snmp, applied_version) or "public",
+                    "snmp_version": applied_version,
                     "is_active": True,
                     "mac_address": mac,
                     "hostname": resolved_hn,
@@ -5567,6 +6082,64 @@ def _expand_discovered_npdu_chains(
     return out or discovered
 
 
+def _snmp_version_from_cfg(snmp: Dict[str, Any] | None) -> str:
+    """Map exclusive NPDU mode / UI flags to the DB snmp_version column."""
+    snmp = snmp or {}
+    if snmp.get("snmpv3") or snmp.get("snmpv3_enabled"):
+        return "3"
+    v1 = bool(snmp.get("snmpv1", snmp.get("snmpv1_enabled", False)))
+    v2 = bool(snmp.get("snmpv2", snmp.get("snmpv2_enabled", False)))
+    if v1 and not v2:
+        return "1"
+    if v1 or v2:
+        return "2c"
+    return "2c"
+
+
+def _snmp_community_ref(snmp: Dict[str, Any] | None, version: str) -> str:
+    snmp = snmp or {}
+    if version == "3":
+        return (
+            snmp.get("snmpv3_username")
+            or snmp.get("community_read")
+            or snmp.get("read_community")
+            or ""
+        ).strip()
+    return (snmp.get("read_community") or snmp.get("community_read") or "").strip()
+
+
+def _persist_applied_snmp(host: str, snmp: Dict[str, Any] | None) -> Dict[str, Any]:
+    """Write the applied SNMP version to the master row and every daisy slave."""
+    snmp = snmp or {}
+    version = _snmp_version_from_cfg(snmp)
+    ref = _snmp_community_ref(snmp, version)
+    connect_host, _, role, _ = _web_connect_target(host)
+    master_ip = connect_host or host
+    row = PDURepo.get_by_ip(master_ip) or PDURepo.get_by_ip(host)
+    if not row:
+        return {"version": version, "master_ip": master_ip, "role": role, "updated": []}
+    hall_id = row.get("hall_id")
+    patch = {
+        "snmp_version": version,
+        "snmp_community_ref": ref or (row.get("snmp_community_ref") or ""),
+    }
+    updated = []
+    PDURepo.upsert(int(hall_id), master_ip, patch)
+    updated.append(master_ip)
+    if host != master_ip:
+        PDURepo.upsert(int(hall_id), host, patch)
+        updated.append(host)
+    _sync_chain_slave_snmp(
+        hall_id, master_ip, {**snmp, "snmpv3": version == "3", "snmpv3_enabled": version == "3"},
+        web_port=row.get("web_admin_port") or 80,
+        web_https=bool(row.get("web_admin_https")),
+        web_user=row.get("web_admin_user") or "admin",
+        web_pass=row.get("web_admin_pass") or "",
+    )
+    print(f"[snmp] DB sync host={host} via={master_ip} version={version} ref={ref!r} role={role}")
+    return {"version": version, "master_ip": master_ip, "role": role, "updated": updated}
+
+
 def _sync_chain_slave_snmp(hall_id: int, master_ip: str, snmp: Dict[str, Any],
                            *, web_port: int, web_https: bool, web_user: str, web_pass: str) -> None:
     """Copy SNMP + web-admin creds onto hall rows that are slaves of this master."""
@@ -5579,10 +6152,8 @@ def _sync_chain_slave_snmp(hall_id: int, master_ip: str, snmp: Dict[str, Any],
     by_hn = {(p.get("hostname") or p.get("label") or ""): p for p in pdus}
     master = next((p for p in pdus if p.get("ip_address") == master_ip), None)
     stem = npdu_chain.stem_from_name((master or {}).get("hostname") or (master or {}).get("label"))
-    community = snmp.get("read_community") or snmp.get("community_read") or "public"
-    version = "3" if snmp.get("snmpv3") or snmp.get("snmpv3_enabled") else (
-        "2c" if snmp.get("snmpv2", snmp.get("snmpv2_enabled", True)) else "1"
-    )
+    version = _snmp_version_from_cfg(snmp)
+    community = _snmp_community_ref(snmp, version) or "public"
     for p in pdus:
         hn = p.get("hostname") or p.get("label") or ""
         parsed = npdu_chain.parse_suffix(hn)
@@ -6249,12 +6820,15 @@ def add_pdu_to_hall(hall_id: int):
             "is_active": True,
             "mac_address": data.get("mac_address"),
             "hostname": data.get("hostname"),
-            "remote_host": data.get("remote_host"),
             "web_admin_port": data.get("web_admin_port"),
             "web_admin_https": 1 if _parse_use_https(data.get("web_admin_https", 0)) else 0,
             "web_admin_user": data.get("web_admin_user") or "admin",
             "web_admin_pass": data.get("web_admin_pass") or "admin",
         }
+        remote_host = (data.get("remote_host") or "").strip() or ip_address
+        if remote_host != ip_address and remote_host in ("192.168.0.163", "192.168.1.163"):
+            remote_host = ip_address
+        pdu_data["remote_host"] = remote_host
         pdu_id = PDURepo.upsert(hall_id, ip_address, pdu_data)
         
         # Add to adaptive poller

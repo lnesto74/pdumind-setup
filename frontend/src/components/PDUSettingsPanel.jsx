@@ -1,3 +1,4 @@
+import Icon from './presentation/Icon';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import PduNtpSettingsForm from './PduNtpSettingsForm';
 import { splitSntpServers, primarySntpServer } from '../constants/pduSettings';
@@ -16,13 +17,13 @@ const TABS = [
 
 const InputField = ({ label, value, onChange, disabled, mono = true }) => (
   <div>
-    <label className="text-[9px] text-slate-500 uppercase tracking-wider block mb-1">{label}</label>
+    <label className="text-[10px] text-slate-500 uppercase tracking-wider block mb-1">{label}</label>
     <input
       type="text"
       value={value || ''}
       onChange={e => onChange(e.target.value)}
       disabled={disabled}
-      className={`w-full bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-[#00E5FF] disabled:opacity-50 ${mono ? 'font-mono' : ''}`}
+      className={`w-full bg-app-bg border border-px-stroke rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-px-accent disabled:opacity-50 ${mono ? 'font-mono' : ''}`}
     />
   </div>
 );
@@ -30,11 +31,11 @@ const InputField = ({ label, value, onChange, disabled, mono = true }) => (
 const PasswordField = ({ label, value, onChange, disabled, placeholder, compact = false }) => {
   const [visible, setVisible] = useState(false);
   const boxClass = compact
-    ? 'w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF] placeholder:text-slate-600'
-    : 'w-full bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2 pr-10 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF] disabled:opacity-50 placeholder:text-slate-600';
+    ? 'w-full bg-px-panel border border-px-stroke rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-px-accent placeholder:text-slate-600'
+    : 'w-full bg-app-bg border border-px-stroke rounded-lg px-3 py-2 pr-10 text-sm text-white font-mono focus:outline-none focus:border-px-accent disabled:opacity-50 placeholder:text-slate-600';
   return (
     <div>
-      <label className="text-[9px] text-slate-500 uppercase tracking-wider block mb-1">{label}</label>
+      <label className="text-[10px] text-slate-500 uppercase tracking-wider block mb-1">{label}</label>
       <div className="relative">
         <input
           type={visible ? 'text' : 'password'}
@@ -47,10 +48,10 @@ const PasswordField = ({ label, value, onChange, disabled, placeholder, compact 
         <button
           type="button"
           onClick={() => setVisible(v => !v)}
-          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-[#00E5FF] transition-colors"
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-px-accent transition-colors"
           title={visible ? 'Hide password' : 'Show password'}
         >
-          <span className="material-icons-outlined text-sm">{visible ? 'visibility_off' : 'visibility'}</span>
+          <Icon className="material-icons-outlined text-sm">{visible ? 'visibility_off' : 'visibility'}</Icon>
         </button>
       </div>
     </div>
@@ -58,7 +59,7 @@ const PasswordField = ({ label, value, onChange, disabled, placeholder, compact 
 };
 
 const StatusBadge = ({ ok, label }) => (
-  <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono ${
+  <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono ${
     ok ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-slate-500/20 text-slate-400 border border-slate-500/30'
   }`}>
     <span className={`w-1.5 h-1.5 rounded-full ${ok ? 'bg-emerald-400' : 'bg-slate-500'}`} />
@@ -69,11 +70,14 @@ const StatusBadge = ({ ok, label }) => (
 const PDUSettingsPanel = ({ pdu, embedded = false }) => {
   const host = pdu?.remote_host || pdu?.ip;
   const credentialsMissing = !pdu?.web_admin_port || !pdu?.web_admin_pass || !pdu?.web_admin_user;
-  // When DB lost web-admin fields, prefer HTTPS:443 (common after batch commissioning).
-  const port = pdu?.web_admin_port || 443;
-  const useHttps = pdu?.web_admin_https != null ? !!pdu.web_admin_https : !pdu?.web_admin_port;
+  // NTT NPDU family serves HTTP/80 only. HTTPS:443 is closed — browsers that
+  // upgrade a bare IP to https:// cannot open the native web console.
+  const port = pdu?.web_admin_port || 80;
+  const useHttps = pdu?.web_admin_https != null ? !!pdu.web_admin_https : false;
   const username = pdu?.web_admin_user || '';
   const password = pdu?.web_admin_pass || '';
+  const consolePort = Number(port) || 80;
+  const consoleUrl = `${useHttps ? 'https' : 'http'}://${host}${(useHttps && consolePort === 443) || (!useHttps && consolePort === 80) ? '' : `:${consolePort}`}/`;
 
   const [tab, setTab] = useState('network');
   const [loading, setLoading] = useState(false);
@@ -312,8 +316,26 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
     }
   };
 
+  const waitForReboot = () => {
+    setRebootStatus('rebooting');
+    setSaving(false);
+    const deadline = Date.now() + 90_000;
+    const poll = async () => {
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 5000));
+        try {
+          const pr = await fetch(`${API_BASE}/api/pdu-admin/${host}/ping?${queryParams}`);
+          const pd = await pr.json();
+          if (pd.online) { setRebootStatus('online'); fetchSettings(); return; }
+        } catch { /* still offline */ }
+      }
+      setRebootStatus('failed');
+    };
+    poll();
+  };
+
   const saveSnmp = async () => {
-    setSaving(true); setError(null); setSuccess(null);
+    setSaving(true); setError(null); setSuccess(null); setRebootStatus(null);
     try {
       const res = await fetch(`${API_BASE}/api/pdu-admin/${host}/settings/snmp`, {
         method: 'POST',
@@ -325,19 +347,29 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
           snmpv2: snmp.snmpv2_enabled,
           snmpv3: snmp.snmpv3_enabled,
           trap_ip: snmp.trap_ip,
+          trap_ip2: snmp.trap_ip2,
+          log_mode: snmp.log_mode,
           snmpv3_username: snmp.snmpv3_username,
-          verify_protocol: snmp.verify_protocol,
           auth_key: snmp.auth_key,
-          encrypt_protocol: snmp.encrypt_protocol,
           priv_key: snmp.priv_key,
           ...credPayload,
         }),
       });
       const data = await res.json();
-      if (data.success) { setSuccess('SNMP settings applied'); setTimeout(() => setSuccess(null), 3000); }
-      else setError(data.error);
-    } catch (e) { setError(e.message); }
-    finally { setSaving(false); }
+      if (!data.success) {
+        setError(data.error);
+        setSaving(false);
+        return;
+      }
+      if (data.rebooted) {
+        setSuccess(data.message || 'SNMP applied — PDU rebooting');
+        waitForReboot();
+        return;
+      }
+      setSuccess(data.message || 'SNMP settings applied');
+      setTimeout(() => setSuccess(null), 4000);
+      setSaving(false);
+    } catch (e) { setError(e.message); setSaving(false); }
   };
 
   const saveTime = async () => {
@@ -408,7 +440,7 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
   if (!host) {
     return (
       <div className="flex items-center justify-center h-64 text-slate-500 text-sm">
-        <span className="material-icons-outlined mr-2">info</span>
+        <Icon className="material-icons-outlined mr-2">info</Icon>
         Select a PDU with web admin capabilities to view settings.
       </div>
     );
@@ -421,8 +453,8 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
       <div className="flex justify-between items-start mb-6">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <h1 className="text-2xl font-bold uppercase tracking-tight text-[#00E5FF]">
-              <span className="material-icons-outlined align-middle mr-2">settings</span>
+            <h1 className="text-2xl font-bold uppercase tracking-tight text-px-accent">
+              <Icon className="material-icons-outlined align-middle mr-2">settings</Icon>
               PDU Settings
             </h1>
           </div>
@@ -430,11 +462,19 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
             {deviceInfo.name || host} &middot; FW {deviceInfo.firmware || '?'} &middot; MAC {deviceInfo.mac || '?'}
           </p>
         </div>
-        <button onClick={fetchSettings} disabled={loading || credentialsMissing}
-          className="px-3 py-1.5 bg-[#161E2E] border border-[#233544] hover:border-[#00E5FF]/30 text-slate-300 rounded-lg text-xs flex items-center gap-1.5 transition-all">
-          <span className={`material-icons-outlined text-sm ${loading ? 'animate-spin' : ''}`}>refresh</span>
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <a href={consoleUrl} target="_blank" rel="noopener noreferrer"
+            className="px-3 py-1.5 bg-px-panel border border-cyan-500/40 hover:border-cyan-400 text-cyan-300 rounded-lg text-xs flex items-center gap-1.5 transition-all"
+            title="This PDU web UI is HTTP only. Do not use https:// — port 443 is closed.">
+            <Icon className="material-icons-outlined text-sm">open_in_new</Icon>
+            Open web console
+          </a>
+          <button onClick={fetchSettings} disabled={loading || credentialsMissing}
+            className="px-3 py-1.5 bg-px-panel border border-px-stroke hover:border-px-accent/30 text-slate-300 rounded-lg text-xs flex items-center gap-1.5 transition-all">
+            <Icon className={`material-icons-outlined text-sm ${loading ? 'animate-spin' : ''}`}>refresh</Icon>
+            Refresh
+          </button>
+        </div>
       </div>
       )}
 
@@ -443,11 +483,19 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
           <p className="text-xs text-slate-500 font-mono truncate">
             {deviceInfo.name || host} · FW {deviceInfo.firmware || '?'}
           </p>
-          <button onClick={fetchSettings} disabled={loading || credentialsMissing}
-            className="px-3 py-1.5 bg-[#161E2E] border border-[#233544] hover:border-[#00E5FF]/30 text-slate-300 rounded-lg text-xs flex items-center gap-1.5 transition-all flex-shrink-0">
-            <span className={`material-icons-outlined text-sm ${loading ? 'animate-spin' : ''}`}>refresh</span>
-            Refresh
-          </button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <a href={consoleUrl} target="_blank" rel="noopener noreferrer"
+              className="px-3 py-1.5 bg-px-panel border border-cyan-500/40 hover:border-cyan-400 text-cyan-300 rounded-lg text-xs flex items-center gap-1.5 transition-all"
+              title="This PDU web UI is HTTP only. Do not use https:// — port 443 is closed.">
+              <Icon className="material-icons-outlined text-sm">open_in_new</Icon>
+              Open web console
+            </a>
+            <button onClick={fetchSettings} disabled={loading || credentialsMissing}
+              className="px-3 py-1.5 bg-px-panel border border-px-stroke hover:border-px-accent/30 text-slate-300 rounded-lg text-xs flex items-center gap-1.5 transition-all">
+              <Icon className={`material-icons-outlined text-sm ${loading ? 'animate-spin' : ''}`}>refresh</Icon>
+              Refresh
+            </button>
+          </div>
         </div>
       )}
 
@@ -457,10 +505,10 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
           <button key={t.id} onClick={() => setTab(t.id)}
             className={`${embedded ? 'flex-shrink-0' : 'flex-1'} py-2 px-3 text-xs uppercase rounded-md flex items-center justify-center gap-1.5 transition-all whitespace-nowrap ${
               tab === t.id
-                ? 'bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/40'
+                ? 'bg-px-accent/20 text-px-accent border border-px-accent/40'
                 : 'text-slate-500 hover:text-slate-300 border border-transparent'
             }`}>
-            <span className="material-icons-outlined text-sm">{t.icon}</span>
+            <Icon className="material-icons-outlined text-sm">{t.icon}</Icon>
             {t.label}
           </button>
         ))}
@@ -469,7 +517,7 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
       {/* Banners */}
       {chain?.role === 'slave' && (
         <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-amber-200 text-sm flex items-start gap-2">
-          <span className="material-icons-outlined text-sm mt-0.5">cable</span>
+          <Icon className="material-icons-outlined text-sm mt-0.5">cable</Icon>
           <span>
             Daisy slave — this unit has no LAN port. Settings are the chain master
             {' '}{chain.master_hostname || chain.via} ({chain.via}). Network / SNMP / reboot apply to the whole chain.
@@ -478,31 +526,31 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
       )}
       {error && (
         <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm flex items-center gap-2">
-          <span className="material-icons-outlined text-sm">error</span>
+          <Icon className="material-icons-outlined text-sm">error</Icon>
           {error}
-          <button onClick={() => setError(null)} className="ml-auto"><span className="material-icons-outlined text-sm">close</span></button>
+          <button onClick={() => setError(null)} className="ml-auto"><Icon className="material-icons-outlined text-sm">close</Icon></button>
         </div>
       )}
       {success && (
         <div className="mb-4 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-emerald-400 text-sm flex items-center gap-2">
-          <span className="material-icons-outlined text-sm">check_circle</span>
+          <Icon className="material-icons-outlined text-sm">check_circle</Icon>
           {success}
         </div>
       )}
 
       {loading ? (
         <div className="flex items-center justify-center h-40 text-slate-500">
-          <span className="material-icons-outlined animate-spin mr-2">sync</span> Loading settings...
+          <Icon className="material-icons-outlined animate-spin mr-2">sync</Icon> Loading settings...
         </div>
       ) : (
         <>
           {/* NETWORK TAB */}
           {tab === 'network' && (
             <div className="space-y-4">
-              <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+              <div className="p-5 rounded-xl bg-app-bg border border-px-stroke">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                    <span className="material-icons-outlined text-[#00E5FF] text-sm">lan</span>
+                    <Icon className="material-icons-outlined text-px-accent text-sm">lan</Icon>
                     IPv4 Configuration
                   </h3>
                   <div className="flex items-center gap-2">
@@ -513,12 +561,12 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
                       title="Reboot without changing network settings"
                       className="px-3 py-1.5 bg-amber-500/15 border border-amber-500/40 text-amber-300 rounded-lg text-xs hover:bg-amber-500/25 disabled:opacity-50 transition-all flex items-center gap-1.5"
                     >
-                      <span className="material-icons-outlined text-sm">restart_alt</span>
+                      <Icon className="material-icons-outlined text-sm">restart_alt</Icon>
                       Reboot PDU
                     </button>
                     <button onClick={saveNetwork} disabled={saving || rebootStatus === 'rebooting' || credentialsMissing}
                       className="px-4 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded-lg text-xs hover:bg-emerald-500/30 disabled:opacity-50 transition-all flex items-center gap-1.5">
-                      {saving ? <span className="material-icons-outlined text-sm animate-spin">sync</span> : <span className="material-icons-outlined text-sm">save</span>}
+                      {saving ? <Icon className="material-icons-outlined text-sm animate-spin">sync</Icon> : <Icon className="material-icons-outlined text-sm">save</Icon>}
                       {rebootStatus === 'rebooting' ? 'Rebooting...' : 'Apply & Reboot'}
                     </button>
                   </div>
@@ -530,12 +578,12 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
                     rebootStatus === 'online' ? 'bg-emerald-500/10 border-emerald-500/30' :
                     'bg-red-500/10 border-red-500/30'
                   }`}>
-                    <span className={`material-icons-outlined text-base ${
+                    <Icon className={`material-icons-outlined text-base ${
                       rebootStatus === 'rebooting' ? 'text-amber-400 animate-spin' :
                       rebootStatus === 'online' ? 'text-emerald-400' : 'text-red-400'
                     }`}>
                       {rebootStatus === 'rebooting' ? 'sync' : rebootStatus === 'online' ? 'check_circle' : 'error'}
-                    </span>
+                    </Icon>
                     <span className={`text-xs font-mono ${
                       rebootStatus === 'rebooting' ? 'text-amber-300' :
                       rebootStatus === 'online' ? 'text-emerald-300' : 'text-red-300'
@@ -548,34 +596,34 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
                 )}
 
                 {/* DHCP / Static toggle */}
-                <div className="mb-3 p-3 rounded-lg bg-[#161E2E] border border-[#233544]">
+                <div className="mb-3 p-3 rounded-lg bg-px-panel border border-px-stroke">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <span className="material-icons-outlined text-sm text-slate-400">settings_ethernet</span>
+                      <Icon className="material-icons-outlined text-sm text-slate-400">settings_ethernet</Icon>
                       <span className="text-xs text-slate-300">IP Assignment</span>
                     </div>
-                    <div className="flex rounded-lg overflow-hidden border border-[#233544]">
+                    <div className="flex rounded-lg overflow-hidden border border-px-stroke">
                       <button
                         onClick={() => setNetwork(p => ({ ...p, dhcp: 'OFF' }))}
-                        className={`px-3 py-1 text-[10px] font-bold transition-all ${
+                        className={`px-3 py-1 text-[11px] font-bold transition-all ${
                           network.dhcp !== 'ON'
-                            ? 'bg-[#00E5FF]/20 text-[#00E5FF] border-r border-[#00E5FF]/30'
-                            : 'bg-[#0B1120] text-slate-500 border-r border-[#233544] hover:text-slate-300'
+                            ? 'bg-px-accent/20 text-px-accent border-r border-px-accent/30'
+                            : 'bg-app-bg text-slate-500 border-r border-px-stroke hover:text-slate-300'
                         }`}
                       >STATIC IP</button>
                       <button
                         onClick={() => setNetwork(p => ({ ...p, dhcp: 'ON' }))}
-                        className={`px-3 py-1 text-[10px] font-bold transition-all ${
+                        className={`px-3 py-1 text-[11px] font-bold transition-all ${
                           network.dhcp === 'ON'
                             ? 'bg-amber-500/20 text-amber-400'
-                            : 'bg-[#0B1120] text-slate-500 hover:text-slate-300'
+                            : 'bg-app-bg text-slate-500 hover:text-slate-300'
                         }`}
                       >DHCP</button>
                     </div>
                   </div>
                   {network.dhcp === 'ON' && (
-                    <p className="text-[10px] text-amber-400 mt-2 flex items-center gap-1">
-                      <span className="material-icons-outlined text-xs">warning</span>
+                    <p className="text-[11px] text-amber-400 mt-2 flex items-center gap-1">
+                      <Icon className="material-icons-outlined text-xs">warning</Icon>
                       DHCP is active — the PDU gets its IP from a DHCP server. Switch to Static to assign a fixed IP.
                     </p>
                   )}
@@ -596,9 +644,9 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
               </div>
 
               {/* Read-only current values */}
-              <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+              <div className="p-5 rounded-xl bg-app-bg border border-px-stroke">
                 <h3 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
-                  <span className="material-icons-outlined text-slate-500 text-sm">info</span>
+                  <Icon className="material-icons-outlined text-slate-500 text-sm">info</Icon>
                   Current Active Values (read-only)
                 </h3>
                 <div className="grid grid-cols-3 gap-3">
@@ -610,8 +658,8 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
                     { l: 'DNS 1', v: network.current_dns1 },
                     { l: 'DNS 2', v: network.current_dns2 },
                   ].map(f => (
-                    <div key={f.l} className="bg-[#161E2E] rounded-lg p-2">
-                      <p className="text-[9px] text-slate-500 uppercase">{f.l}</p>
+                    <div key={f.l} className="bg-px-panel rounded-lg p-2">
+                      <p className="text-[10px] text-slate-500 uppercase">{f.l}</p>
                       <p className="text-xs font-mono text-white mt-0.5">{f.v || '-'}</p>
                     </div>
                   ))}
@@ -623,65 +671,111 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
           {/* SNMP TAB */}
           {tab === 'snmp' && (
             <div className="space-y-4">
-              <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+              <div className="p-5 rounded-xl bg-app-bg border border-px-stroke">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                    <span className="material-icons-outlined text-[#00E5FF] text-sm">vpn_key</span>
+                    <Icon className="material-icons-outlined text-px-accent text-sm">vpn_key</Icon>
                     SNMP Configuration
                   </h3>
                   <button onClick={saveSnmp} disabled={saving}
                     className="px-4 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded-lg text-xs hover:bg-emerald-500/30 disabled:opacity-50 transition-all flex items-center gap-1.5">
-                    {saving ? <span className="material-icons-outlined text-sm animate-spin">sync</span> : <span className="material-icons-outlined text-sm">save</span>}
+                    {saving ? <Icon className="material-icons-outlined text-sm animate-spin">sync</Icon> : <Icon className="material-icons-outlined text-sm">save</Icon>}
                     Apply to PDU
                   </button>
                 </div>
 
-                {/* Version toggles */}
-                <div className="flex gap-4 mb-4">
-                  {[
-                    { key: 'snmpv1_enabled', label: 'SNMPv1' },
-                    { key: 'snmpv2_enabled', label: 'SNMPv2c' },
-                    { key: 'snmpv3_enabled', label: 'SNMPv3' },
-                  ].map(v => (
-                    <label key={v.key} className="flex items-center gap-2 cursor-pointer">
-                      <input type="checkbox" checked={snmp[v.key] || false}
-                        onChange={e => setSnmp(p => ({ ...p, [v.key]: e.target.checked }))}
-                        className="accent-[#00E5FF]" />
-                      <StatusBadge ok={snmp[v.key]} label={v.label} />
-                    </label>
-                  ))}
+                {rebootStatus && tab === 'snmp' && (
+                  <div className={`mb-4 p-3 rounded-lg border flex items-center gap-2 ${
+                    rebootStatus === 'rebooting' ? 'bg-amber-500/10 border-amber-500/30' :
+                    rebootStatus === 'online' ? 'bg-emerald-500/10 border-emerald-500/30' :
+                    'bg-red-500/10 border-red-500/30'
+                  }`}>
+                    <Icon className={`material-icons-outlined text-base ${
+                      rebootStatus === 'rebooting' ? 'text-amber-400 animate-spin' :
+                      rebootStatus === 'online' ? 'text-emerald-400' : 'text-red-400'
+                    }`}>
+                      {rebootStatus === 'rebooting' ? 'sync' : rebootStatus === 'online' ? 'check_circle' : 'error'}
+                    </Icon>
+                    <span className={`text-xs font-mono ${
+                      rebootStatus === 'rebooting' ? 'text-amber-300' :
+                      rebootStatus === 'online' ? 'text-emerald-300' : 'text-red-300'
+                    }`}>
+                      {rebootStatus === 'rebooting' && 'SNMP written — PDU is rebooting so V3 is live (~60 s)'}
+                      {rebootStatus === 'online' && 'PDU is back. SNMP mode is now active on the chain master.'}
+                      {rebootStatus === 'failed' && 'PDU did not respond within 90 s. Check the master web UI.'}
+                    </span>
+                  </div>
+                )}
+
+                {/* Exclusive mode — same dropdown as NPDU /snmp.html (0/1/2). */}
+                <div className="mb-4">
+                  <label className="text-[10px] text-slate-500 uppercase tracking-wider block mb-1">SNMP Mode</label>
+                  <select
+                    value={snmp.snmpv3_enabled ? '2' : ((snmp.snmpv1_enabled || snmp.snmpv2_enabled) ? '1' : '0')}
+                    onChange={e => {
+                      const mode = e.target.value;
+                      setSnmp(p => ({
+                        ...p,
+                        snmpv1_enabled: mode === '1',
+                        snmpv2_enabled: mode === '1',
+                        snmpv3_enabled: mode === '2',
+                      }));
+                    }}
+                    className="bg-px-panel border border-px-stroke rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-px-accent"
+                  >
+                    <option value="0">Disable</option>
+                    <option value="1">SNMP V1/V2c</option>
+                    <option value="2">SNMP V3</option>
+                  </select>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
-                  <InputField label="Read Community" value={snmp.community_read}
-                    onChange={v => setSnmp(p => ({ ...p, community_read: v }))} />
-                  <InputField label="Write Community" value={snmp.community_write}
+                  <InputField label="Write community" value={snmp.community_write}
                     onChange={v => setSnmp(p => ({ ...p, community_write: v }))} />
-                  <InputField label="Trap Destination IP" value={snmp.trap_ip}
+                  <InputField label="Read community" value={snmp.community_read}
+                    onChange={v => setSnmp(p => ({ ...p, community_read: v }))} />
+                  <InputField label="Trap 1" value={snmp.trap_ip}
                     onChange={v => setSnmp(p => ({ ...p, trap_ip: v }))} />
+                  <InputField label="Trap 2" value={snmp.trap_ip2}
+                    onChange={v => setSnmp(p => ({ ...p, trap_ip2: v }))} />
+                  <div>
+                    <label className="text-[10px] text-slate-500 uppercase tracking-wider block mb-1">SNMP Control Logs</label>
+                    <select
+                      value={snmp.log_mode || '0'}
+                      onChange={e => setSnmp(p => ({ ...p, log_mode: e.target.value }))}
+                      className="w-full bg-app-bg border border-px-stroke rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-px-accent"
+                    >
+                      <option value="0">Disable</option>
+                      <option value="1">Enable</option>
+                    </select>
+                  </div>
                 </div>
               </div>
 
-              {/* SNMPv3 section */}
               {snmp.snmpv3_enabled && (
-                <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+                <div className="p-5 rounded-xl bg-app-bg border border-px-stroke">
                   <h3 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
-                    <span className="material-icons-outlined text-amber-400 text-sm">security</span>
-                    SNMPv3 Credentials
+                    <Icon className="material-icons-outlined text-amber-400 text-sm">security</Icon>
+                    SNMPv3
                   </h3>
+                  <p className="text-[11px] text-amber-200/90 mb-3 leading-relaxed">
+                    This NPDU firmware has no auth/privacy dropdown. Manufacturer lock: <span className="font-mono">MD5 + DES</span> only.
+                    SHA / SHA-256 / SHA-512 / AES / AES-256 will return an authentication error.
+                    Keys persist as 10 characters after reboot (UI allows 16).
+                  </p>
                   <div className="grid grid-cols-2 gap-3">
-                    <InputField label="Username" value={snmp.snmpv3_username}
+                    <InputField label="SNMP V3 Account" value={snmp.snmpv3_username}
                       onChange={v => setSnmp(p => ({ ...p, snmpv3_username: v }))} />
-                    <InputField label="Auth Protocol" value={snmp.verify_protocol}
-                      onChange={v => setSnmp(p => ({ ...p, verify_protocol: v }))} />
-                    <PasswordField label="Auth Key" value={snmp.auth_key}
+                    <div className="bg-px-panel rounded-lg p-2">
+                      <p className="text-[10px] text-slate-500 uppercase">Auth / Privacy (fixed)</p>
+                      <p className="text-xs font-mono text-white mt-0.5">MD5 + DES</p>
+                    </div>
+                    <PasswordField label="SNMP V3 Password" value={snmp.auth_key}
                       onChange={v => setSnmp(p => ({ ...p, auth_key: v }))}
-                      placeholder="Leave blank to keep current" compact />
-                    <InputField label="Privacy Protocol" value={snmp.encrypt_protocol}
-                      onChange={v => setSnmp(p => ({ ...p, encrypt_protocol: v }))} />
-                    <PasswordField label="Privacy Key" value={snmp.priv_key}
+                      placeholder="Min 8 / max 16 (10 kept after reboot)" compact />
+                    <PasswordField label="SNMP V3 Private key" value={snmp.priv_key}
                       onChange={v => setSnmp(p => ({ ...p, priv_key: v }))}
-                      placeholder="Leave blank to keep current" compact />
+                      placeholder="Min 8 / max 16 (10 kept after reboot)" compact />
                   </div>
                 </div>
               )}
@@ -690,15 +784,15 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
 
           {/* TIME TAB */}
           {tab === 'time' && (
-            <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+            <div className="p-5 rounded-xl bg-app-bg border border-px-stroke">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                  <span className="material-icons-outlined text-[#00E5FF] text-sm">schedule</span>
+                  <Icon className="material-icons-outlined text-px-accent text-sm">schedule</Icon>
                   Time & SNTP Settings
                 </h3>
                 <button onClick={saveTime} disabled={saving}
                   className="px-4 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded-lg text-xs hover:bg-emerald-500/30 disabled:opacity-50 transition-all flex items-center gap-1.5">
-                  {saving ? <span className="material-icons-outlined text-sm animate-spin">sync</span> : <span className="material-icons-outlined text-sm">save</span>}
+                  {saving ? <Icon className="material-icons-outlined text-sm animate-spin">sync</Icon> : <Icon className="material-icons-outlined text-sm">save</Icon>}
                   Apply to PDU
                 </button>
               </div>
@@ -714,25 +808,25 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
           {tab === 'alarms' && (
             <div className="space-y-4">
               {/* Device Alarm Thresholds */}
-              <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+              <div className="p-5 rounded-xl bg-app-bg border border-px-stroke">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                    <span className="material-icons-outlined text-amber-400 text-sm">warning_amber</span>
+                    <Icon className="material-icons-outlined text-amber-400 text-sm">warning_amber</Icon>
                     Device Alarm Thresholds
                   </h3>
                   <button onClick={saveAlarms} disabled={saving}
                     className="px-4 py-1.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded-lg text-xs hover:bg-emerald-500/30 disabled:opacity-50 transition-all flex items-center gap-1.5">
-                    {saving ? <span className="material-icons-outlined text-sm animate-spin">sync</span> : <span className="material-icons-outlined text-sm">save</span>}
+                    {saving ? <Icon className="material-icons-outlined text-sm animate-spin">sync</Icon> : <Icon className="material-icons-outlined text-sm">save</Icon>}
                     Apply to PDU
                   </button>
                 </div>
 
                 {/* Beep Alarm */}
-                <div className="flex items-center gap-3 mb-4 pb-4 border-b border-[#233544]">
+                <div className="flex items-center gap-3 mb-4 pb-4 border-b border-px-stroke">
                   <span className="text-xs text-slate-400">Beep Alarm</span>
                   <select value={alarms.beep_alarm || '0'}
                     onChange={e => setAlarms(p => ({ ...p, beep_alarm: e.target.value }))}
-                    className="bg-[#161E2E] border border-[#233544] rounded-lg px-3 py-1.5 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF]">
+                    className="bg-px-panel border border-px-stroke rounded-lg px-3 py-1.5 text-sm text-white font-mono focus:outline-none focus:border-px-accent">
                     <option value="1">ON</option>
                     <option value="0">OFF</option>
                   </select>
@@ -750,76 +844,76 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
                   <div key={row.upper} className="grid grid-cols-[1fr_1fr_1fr] gap-3 items-center mb-2">
                     <span className={`text-xs font-mono ${row.color}`}>{row.label}</span>
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[9px] text-slate-500 w-12">Upper</span>
+                      <span className="text-[10px] text-slate-500 w-12">Upper</span>
                       <input type="text" value={alarms[row.upper] || ''}
                         onChange={e => setAlarms(p => ({ ...p, [row.upper]: e.target.value }))}
-                        className="w-24 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF]" />
-                      <span className="text-[10px] text-slate-500">{row.unit}</span>
+                        className="w-24 bg-px-panel border border-px-stroke rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-px-accent" />
+                      <span className="text-[11px] text-slate-500">{row.unit}</span>
                     </div>
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[9px] text-slate-500 w-12">Lower</span>
+                      <span className="text-[10px] text-slate-500 w-12">Lower</span>
                       <input type="text" value={alarms[row.lower] || ''}
                         onChange={e => setAlarms(p => ({ ...p, [row.lower]: e.target.value }))}
-                        className="w-24 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF]" />
-                      <span className="text-[10px] text-slate-500">{row.unit}</span>
+                        className="w-24 bg-px-panel border border-px-stroke rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-px-accent" />
+                      <span className="text-[11px] text-slate-500">{row.unit}</span>
                     </div>
                   </div>
                 ))}
 
                 {/* Neutral + Phase Unbalance */}
-                <div className="grid grid-cols-2 gap-3 mt-4 pt-4 border-t border-[#233544]">
+                <div className="grid grid-cols-2 gap-3 mt-4 pt-4 border-t border-px-stroke">
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-slate-400 w-28">Neutral Line</span>
                     <input type="text" value={alarms.neutral_line || ''}
                       onChange={e => setAlarms(p => ({ ...p, neutral_line: e.target.value }))}
-                      className="w-24 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF]" />
-                    <span className="text-[10px] text-slate-500">A</span>
+                      className="w-24 bg-px-panel border border-px-stroke rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-px-accent" />
+                    <span className="text-[11px] text-slate-500">A</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-slate-400 w-28">Phase Unbalance</span>
                     <input type="text" value={alarms.phase_unbalance || ''}
                       onChange={e => setAlarms(p => ({ ...p, phase_unbalance: e.target.value }))}
-                      className="w-24 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF]" />
-                    <span className="text-[10px] text-slate-500">%</span>
+                      className="w-24 bg-px-panel border border-px-stroke rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-px-accent" />
+                    <span className="text-[11px] text-slate-500">%</span>
                   </div>
                 </div>
               </div>
 
               {/* Sensor Alarm Thresholds */}
-              <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+              <div className="p-5 rounded-xl bg-app-bg border border-px-stroke">
                 <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
-                  <span className="material-icons-outlined text-emerald-400 text-sm">thermostat</span>
+                  <Icon className="material-icons-outlined text-emerald-400 text-sm">thermostat</Icon>
                   Sensor Alarm Thresholds
                 </h3>
 
                 {[1, 2, 3, 4].map(n => (
-                  <div key={n} className={`mb-4 ${n < 4 ? 'pb-4 border-b border-[#233544]/50' : ''}`}>
-                    <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-2">Sensor {n}</p>
+                  <div key={n} className={`mb-4 ${n < 4 ? 'pb-4 border-b border-px-stroke/50' : ''}`}>
+                    <p className="text-[11px] text-slate-500 uppercase tracking-wider mb-2">Sensor {n}</p>
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <p className="text-[9px] text-slate-500 mb-1">Temperature Upper / Lower</p>
+                        <p className="text-[10px] text-slate-500 mb-1">Temperature Upper / Lower</p>
                         <div className="flex items-center gap-1.5">
                           <input type="text" value={alarms[`temp${n}_upper`] || ''}
                             onChange={e => setAlarms(p => ({ ...p, [`temp${n}_upper`]: e.target.value }))}
-                            className="w-20 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF]" />
+                            className="w-20 bg-px-panel border border-px-stroke rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-px-accent" />
                           <span className="text-slate-600">/</span>
                           <input type="text" value={alarms[`temp${n}_lower`] || ''}
                             onChange={e => setAlarms(p => ({ ...p, [`temp${n}_lower`]: e.target.value }))}
-                            className="w-20 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF]" />
-                          <span className="text-[10px] text-slate-500">°C</span>
+                            className="w-20 bg-px-panel border border-px-stroke rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-px-accent" />
+                          <span className="text-[11px] text-slate-500">°C</span>
                         </div>
                       </div>
                       <div>
-                        <p className="text-[9px] text-slate-500 mb-1">Humidity Upper / Lower</p>
+                        <p className="text-[10px] text-slate-500 mb-1">Humidity Upper / Lower</p>
                         <div className="flex items-center gap-1.5">
                           <input type="text" value={alarms[`hum${n}_upper`] || ''}
                             onChange={e => setAlarms(p => ({ ...p, [`hum${n}_upper`]: e.target.value }))}
-                            className="w-20 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF]" />
+                            className="w-20 bg-px-panel border border-px-stroke rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-px-accent" />
                           <span className="text-slate-600">/</span>
                           <input type="text" value={alarms[`hum${n}_lower`] || ''}
                             onChange={e => setAlarms(p => ({ ...p, [`hum${n}_lower`]: e.target.value }))}
-                            className="w-20 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-[#00E5FF]" />
-                          <span className="text-[10px] text-slate-500">%RH</span>
+                            className="w-20 bg-px-panel border border-px-stroke rounded px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-px-accent" />
+                          <span className="text-[11px] text-slate-500">%RH</span>
                         </div>
                       </div>
                     </div>
@@ -833,14 +927,14 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
           {tab === 'system' && (
             <div className="space-y-5">
               {/* Device / Hostname */}
-              <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+              <div className="p-5 rounded-xl bg-app-bg border border-px-stroke">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                    <span className="material-icons-outlined text-[#00E5FF] text-sm">dns</span>
+                    <Icon className="material-icons-outlined text-px-accent text-sm">dns</Icon>
                     Device & Hostname
                   </h3>
                   <button onClick={saveSystem} disabled={saving}
-                    className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[10px] hover:bg-emerald-500/30 disabled:opacity-50">
+                    className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[11px] hover:bg-emerald-500/30 disabled:opacity-50">
                     {saving ? 'Saving...' : 'Apply'}
                   </button>
                 </div>
@@ -848,20 +942,20 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
                   <div>
                     <InputField label="Device Name" value={systemConfig.device_name || ''}
                       onChange={v => setSystemConfig(p => ({ ...p, device_name: v }))} />
-                    <p className="text-[9px] text-slate-600 mt-0.5">Display name used in PDUMind sidebar and reports.</p>
+                    <p className="text-[10px] text-slate-600 mt-0.5">Display name used in PDUMind sidebar and reports.</p>
                   </div>
                   <div>
                     <InputField label="Router Hostname" value={systemConfig.router_hostname || ''}
                       onChange={v => setSystemConfig(p => ({ ...p, router_hostname: v }))} />
-                    <p className="text-[9px] text-slate-600 mt-0.5">Network hostname set on the PDU device itself.</p>
+                    <p className="text-[10px] text-slate-600 mt-0.5">Network hostname set on the PDU device itself.</p>
                   </div>
                   <InputField label="LCD Title" value={systemConfig.lcd_title || ''}
                     onChange={v => setSystemConfig(p => ({ ...p, lcd_title: v }))} />
                   <div>
-                    <label className="text-[9px] text-slate-500 uppercase tracking-wider">LCD Display Direction</label>
+                    <label className="text-[10px] text-slate-500 uppercase tracking-wider">LCD Display Direction</label>
                     <select value={systemConfig.display_direction || '0'}
                       onChange={e => setSystemConfig(p => ({ ...p, display_direction: e.target.value }))}
-                      className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white text-xs focus:outline-none focus:border-[#00E5FF]">
+                      className="w-full bg-px-panel border border-px-stroke rounded px-2 py-1.5 text-white text-xs focus:outline-none focus:border-px-accent">
                       <option value="0">Normal</option>
                       <option value="1">Rotate 90°</option>
                       <option value="2">Rotate 180°</option>
@@ -871,10 +965,10 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
                 </div>
                 <div className="grid grid-cols-3 gap-3 mt-3">
                   <div>
-                    <label className="text-[9px] text-slate-500 uppercase tracking-wider">LCD Backlight</label>
+                    <label className="text-[10px] text-slate-500 uppercase tracking-wider">LCD Backlight</label>
                     <select value={systemConfig.lcd_backlight_mode || '0'}
                       onChange={e => setSystemConfig(p => ({ ...p, lcd_backlight_mode: e.target.value }))}
-                      className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white text-xs focus:outline-none focus:border-[#00E5FF]">
+                      className="w-full bg-px-panel border border-px-stroke rounded px-2 py-1.5 text-white text-xs focus:outline-none focus:border-px-accent">
                       <option value="0">Always On</option>
                       <option value="1">Custom</option>
                       <option value="2">Always Off</option>
@@ -887,10 +981,10 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
                 </div>
                 <div className="grid grid-cols-3 gap-3 mt-3">
                   <div>
-                    <label className="text-[9px] text-slate-500 uppercase tracking-wider">Auto Logout</label>
+                    <label className="text-[10px] text-slate-500 uppercase tracking-wider">Auto Logout</label>
                     <select value={systemConfig.logout_enabled || '1'}
                       onChange={e => setSystemConfig(p => ({ ...p, logout_enabled: e.target.value }))}
-                      className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white text-xs focus:outline-none focus:border-[#00E5FF]">
+                      className="w-full bg-px-panel border border-px-stroke rounded px-2 py-1.5 text-white text-xs focus:outline-none focus:border-px-accent">
                       <option value="1">ON</option>
                       <option value="0">OFF</option>
                     </select>
@@ -898,10 +992,10 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
                   <InputField label="Logout Time (min)" value={systemConfig.logout_time || '3'}
                     onChange={v => setSystemConfig(p => ({ ...p, logout_time: v }))} />
                   <div>
-                    <label className="text-[9px] text-slate-500 uppercase tracking-wider">Web Title</label>
+                    <label className="text-[10px] text-slate-500 uppercase tracking-wider">Web Title</label>
                     <select value={systemConfig.web_title_enabled || '0'}
                       onChange={e => setSystemConfig(p => ({ ...p, web_title_enabled: e.target.value }))}
-                      className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white text-xs focus:outline-none focus:border-[#00E5FF]">
+                      className="w-full bg-px-panel border border-px-stroke rounded px-2 py-1.5 text-white text-xs focus:outline-none focus:border-px-accent">
                       <option value="1">ON</option>
                       <option value="0">OFF</option>
                     </select>
@@ -910,21 +1004,21 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
               </div>
 
               {/* User Credentials */}
-              <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+              <div className="p-5 rounded-xl bg-app-bg border border-px-stroke">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                    <span className="material-icons-outlined text-[#00E5FF] text-sm">manage_accounts</span>
+                    <Icon className="material-icons-outlined text-px-accent text-sm">manage_accounts</Icon>
                     User Credentials
                   </h3>
                   <button onClick={saveUsers} disabled={saving}
-                    className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[10px] hover:bg-emerald-500/30 disabled:opacity-50">
+                    className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[11px] hover:bg-emerald-500/30 disabled:opacity-50">
                     {saving ? 'Saving...' : 'Apply'}
                   </button>
                 </div>
                 <div className="space-y-4">
-                  <div className="p-3 rounded-lg bg-[#161E2E] border border-[#233544]">
-                    <p className="text-[10px] text-amber-400 uppercase tracking-wider mb-2 flex items-center gap-1">
-                      <span className="material-icons-outlined text-xs">shield</span> Superuser (Admin)
+                  <div className="p-3 rounded-lg bg-px-panel border border-px-stroke">
+                    <p className="text-[11px] text-amber-400 uppercase tracking-wider mb-2 flex items-center gap-1">
+                      <Icon className="material-icons-outlined text-xs">shield</Icon> Superuser (Admin)
                     </p>
                     <div className="grid grid-cols-2 gap-3">
                       <InputField label="Username" value={users.admin_username || 'admin'}
@@ -934,8 +1028,8 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
                         placeholder="Leave blank to keep current" compact />
                     </div>
                   </div>
-                  <div className="p-3 rounded-lg bg-[#161E2E] border border-[#233544]">
-                    <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-2">General User 1</p>
+                  <div className="p-3 rounded-lg bg-px-panel border border-px-stroke">
+                    <p className="text-[11px] text-slate-400 uppercase tracking-wider mb-2">General User 1</p>
                     <div className="grid grid-cols-2 gap-3">
                       <InputField label="Username" value={users.user1_username || ''}
                         onChange={v => setUsers(p => ({ ...p, user1_username: v }))} />
@@ -944,8 +1038,8 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
                         placeholder="Leave blank to keep current" compact />
                     </div>
                   </div>
-                  <div className="p-3 rounded-lg bg-[#161E2E] border border-[#233544]">
-                    <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-2">General User 2</p>
+                  <div className="p-3 rounded-lg bg-px-panel border border-px-stroke">
+                    <p className="text-[11px] text-slate-400 uppercase tracking-wider mb-2">General User 2</p>
                     <div className="grid grid-cols-2 gap-3">
                       <InputField label="Username" value={users.user2_username || ''}
                         onChange={v => setUsers(p => ({ ...p, user2_username: v }))} />
@@ -964,7 +1058,7 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
             <div className="space-y-4">
               {!telemetry ? (
                 <div className="flex items-center justify-center h-40 text-slate-500">
-                  <span className="material-icons-outlined animate-spin mr-2">sync</span> Connecting to PDU...
+                  <Icon className="material-icons-outlined animate-spin mr-2">sync</Icon> Connecting to PDU...
                 </div>
               ) : (
                 <>
@@ -984,7 +1078,7 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
                     return (
                       <div className={`grid gap-4 ${phases.length === 1 ? 'grid-cols-1' : 'grid-cols-3'}`}>
                         {phases.map(phase => (
-                          <div key={phase} className="p-4 rounded-xl bg-[#0B1120] border border-[#233544]">
+                          <div key={phase} className="p-4 rounded-xl bg-app-bg border border-px-stroke">
                             <h4 className={`text-sm font-bold mb-3 ${colors[phase]}`}>
                               {phaseCount === 1 ? 'Single Phase' : labels[phase]}
                             </h4>
@@ -1003,10 +1097,10 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
                                 if (val === undefined || val === null || val === '-1') return null;
                                 return (
                                   <div key={m.k} className="flex justify-between items-baseline">
-                                    <span className="text-[10px] text-slate-500">{m.l}</span>
+                                    <span className="text-[11px] text-slate-500">{m.l}</span>
                                     <span className="text-sm font-mono text-white">
                                       {val}
-                                      {m.u && <span className="text-[10px] text-slate-500 ml-1">{m.u}</span>}
+                                      {m.u && <span className="text-[11px] text-slate-500 ml-1">{m.u}</span>}
                                     </span>
                                   </div>
                                 );
@@ -1019,8 +1113,8 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
                   })()}
 
                   {/* Totals */}
-                  <div className="p-4 rounded-xl bg-[#0B1120] border border-[#233544]">
-                    <h4 className="text-sm font-bold text-[#00E5FF] mb-3">Totals</h4>
+                  <div className="p-4 rounded-xl bg-app-bg border border-px-stroke">
+                    <h4 className="text-sm font-bold text-px-accent mb-3">Totals</h4>
                     <div className="grid grid-cols-3 gap-4">
                       {[
                         { l: 'Active Power', k: 'total_active_power', u: 'W' },
@@ -1052,7 +1146,7 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
 
                   {/* Breakers */}
                   {telemetry.breakers && telemetry.breakers.length > 0 && (
-                    <div className="p-4 rounded-xl bg-[#0B1120] border border-[#233544]">
+                    <div className="p-4 rounded-xl bg-app-bg border border-px-stroke">
                       <h4 className="text-sm font-bold text-white mb-3">Breakers</h4>
                       <div className="flex flex-wrap gap-2">
                         {telemetry.breakers.map((b, i) => (
@@ -1074,9 +1168,9 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
 
           {/* LOGS TAB */}
           {tab === 'logs' && (
-            <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+            <div className="p-5 rounded-xl bg-app-bg border border-px-stroke">
               <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
-                <span className="material-icons-outlined text-[#00E5FF] text-sm">history</span>
+                <Icon className="material-icons-outlined text-px-accent text-sm">history</Icon>
                 Event Log ({logs.length} entries)
               </h3>
               {logs.length === 0 ? (
@@ -1085,7 +1179,7 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
                 <div className="max-h-[500px] overflow-y-auto">
                   <table className="w-full text-xs">
                     <thead>
-                      <tr className="text-slate-500 uppercase text-[10px] border-b border-[#233544]">
+                      <tr className="text-slate-500 uppercase text-[11px] border-b border-px-stroke">
                         <th className="text-left py-2 px-2">Date</th>
                         <th className="text-left py-2 px-2">Time</th>
                         <th className="text-left py-2 px-2">Category</th>
@@ -1094,11 +1188,11 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
                     </thead>
                     <tbody>
                       {logs.map((log, i) => (
-                        <tr key={i} className="border-b border-[#233544]/50 hover:bg-[#161E2E]">
+                        <tr key={i} className="border-b border-px-stroke/50 hover:bg-px-panel">
                           <td className="py-1.5 px-2 font-mono text-slate-300">{log.date}</td>
                           <td className="py-1.5 px-2 font-mono text-slate-300">{log.time}</td>
                           <td className="py-1.5 px-2">
-                            <span className={`px-1.5 py-0.5 rounded text-[9px] ${
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] ${
                               log.color === 'red' ? 'bg-red-500/20 text-red-400' :
                               log.color === 'green' ? 'bg-emerald-500/20 text-emerald-400' :
                               'bg-slate-500/20 text-slate-400'
@@ -1122,12 +1216,12 @@ const PDUSettingsPanel = ({ pdu, embedded = false }) => {
 const TeleCard = ({ label, value, unit, icon }) => {
   const isNA = value === undefined || value === null || value === '-1' || value === -1;
   return (
-    <div className="p-4 rounded-xl bg-[#0B1120] border border-[#233544] flex items-center gap-3">
-      <div className="w-10 h-10 rounded-lg bg-[#161E2E] flex items-center justify-center">
-        <span className="material-icons-outlined text-[#00E5FF]">{icon}</span>
+    <div className="p-4 rounded-xl bg-app-bg border border-px-stroke flex items-center gap-3">
+      <div className="w-10 h-10 rounded-lg bg-px-panel flex items-center justify-center">
+        <Icon className="material-icons-outlined text-px-accent">{icon}</Icon>
       </div>
       <div>
-        <p className="text-[10px] text-slate-500 uppercase">{label}</p>
+        <p className="text-[11px] text-slate-500 uppercase">{label}</p>
         <p className={`text-xl font-mono font-bold ${isNA ? 'text-slate-600' : 'text-white'}`}>
           {isNA ? '—' : value}
           {!isNA && unit && <span className="text-xs text-slate-500 ml-1">{unit}</span>}

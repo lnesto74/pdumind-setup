@@ -1,0 +1,24 @@
+{
+  "id": "agoda-white-racks-black-cage",
+  "name": "Agoda \u2014 White Racks / Black Cage",
+  "units": "metres",
+  "rack_template": [
+    0.6,
+    1.8669,
+    1
+  ],
+  "provisional": [
+    "All colours are photo approximations, not measured specifications.",
+    "Cage panel 1.2 x 2.7 m, square grid pitch 50 mm, tray width .34 m are provisional.",
+    "Infrastructure is an editable visual preset, not a surveyed floor plan.",
+    "Rack size/position/PDU population comes from application data. No installed servers are supplied."
+  ],
+  "assets": {
+    "rack.glb": 373480,
+    "cage-panel.glb": 40848,
+    "cage-gate.glb": 72956,
+    "floor-tile.glb": 33892,
+    "tray.glb": 139392,
+    "ceiling.glb": 41168
+  }
+}

@@ -1,3 +1,4 @@
+import Icon from './presentation/Icon';
 import React, { useState, useEffect, useCallback } from 'react';
 import PduSnmpSettingsForm from './PduSnmpSettingsForm';
 import PduNtpSettingsForm from './PduNtpSettingsForm';
@@ -35,11 +36,11 @@ function isDemoUserFromStorage() {
 const demoUserOnMount = isDemoUserFromStorage();
 
 const wizardPwClass =
-  'bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF] pr-9';
+  'bg-app-bg border border-px-stroke rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-px-accent pr-9';
 const repairPwClass =
-  'w-full bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF] pr-9';
+  'w-full bg-app-bg border border-px-stroke rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-px-accent pr-9';
 const batchPwClass =
-  'w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF] pr-9';
+  'w-full bg-px-panel border border-px-stroke rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-px-accent pr-9';
 
 const STEPS = [
   { id: 'scan', label: 'Detect PDU', icon: 'wifi_find' },
@@ -174,6 +175,14 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
   const [invLastResult, setInvLastResult] = useState(null);
   const [invDiag, setInvDiag] = useState(null); // web-admin login diagnostic report
   const [invSelectedIp, setInvSelectedIp] = useState(null); // manually chosen target (overrides auto-next)
+  const agodaWebPreset = /agoda/i.test(hallName || '');
+  const consolePassKey = `pdumind_console_pass_${hallId || 'default'}`;
+  const [invWebUser, setInvWebUser] = useState(agodaWebPreset ? 'ITGNIALL' : '');
+  const [invWebPass, setInvWebPass] = useState(() => {
+    try { return localStorage.getItem(consolePassKey) || ''; } catch { return ''; }
+  });
+  const [invHttpsOn, setInvHttpsOn] = useState(true);
+  const [invWebIp, setInvWebIp] = useState(null);
 
   // Web credential repair (uses hall DB + live probe — no manual curl)
   const [repairPdus, setRepairPdus] = useState([]);
@@ -772,7 +781,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
   };
 
   // ---- Guided inventory commissioning -------------------------------------
-  const invStorageKey = `pdumind_inventory_${hallId || 'default'}`;
+  const invStorageKey = `pdumind_inventory_v2_${hallId || 'default'}`;
 
   // Restore a saved inventory + progress for this hall.
   useEffect(() => {
@@ -919,6 +928,52 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
     }
   };
 
+  const applyGuidedWeb = async (target) => {
+    if (!target?.ip || invBusy) return;
+    if (target.https_done && invHttpsOn) return;
+    const user1 = invWebUser.trim();
+    const pass1 = invWebPass;
+    if (!user1 || !pass1.trim()) {
+      setError('Console user and password are required. Superuser admin is not changed.');
+      return;
+    }
+    setInvBusy(true);
+    setInvWebIp(target.ip);
+    setError(null);
+    setInvLastResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/commission/guided-web`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ip: target.ip,
+          hall_id: hallId,
+          current_credentials: { username: 'admin', password: 'admin' },
+          user1_username: user1,
+          user1_password: pass1,
+          enable_https: invHttpsOn,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setError(data.error || `Update failed on ${target.ip}`);
+        if (data.attempts) setInvDiag({ success: false, attempts: data.attempts, host: target.ip });
+        return;
+      }
+      try { localStorage.setItem(consolePassKey, pass1); } catch {}
+      setTargetStatus(target.ip, target.status || 'done', {
+        https_done: invHttpsOn ? true : !!target.https_done,
+        console_user_done: true,
+      });
+      setInvLastResult({ ...data, target });
+    } catch (e) {
+      setError(`Update failed: ${e.message}`);
+    } finally {
+      setInvBusy(false);
+      setInvWebIp(null);
+    }
+  };
+
   const applyGuidedTarget = async (target) => {
     if (!target) return;
     setInvBusy(true);
@@ -935,11 +990,23 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
           current_credentials: { username: 'admin', password: 'admin' },
           web_admin_port: invDetected?.web_admin_port || 443,
           web_admin_https: (invDetected?.web_admin_port || 443) === 443 ? 1 : 0,
+          snmp: target.snmp || undefined,
           target: {
             ip: target.ip,
             mask: target.mask,
             gateway: target.gateway,
             hostname: target.hostname,
+            dns1: target.dns1 || '',
+            dns2: target.dns2 || '',
+            ntp1: target.ntp1 || '',
+            ntp2: target.ntp2 || '',
+            syslog1: target.syslog1 || '',
+            syslog2: target.syslog2 || '',
+            feed: target.feed || '',
+            rack: target.rack || '',
+            site: target.site || '',
+            layout: target.layout || '',
+            snmp: target.snmp || undefined,
           },
         }),
       });
@@ -1206,7 +1273,13 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
         })
       });
       const data = await res.json();
-      if (!data.success) setError(data.error || 'Failed to apply SNMP settings');
+      if (!data.success) {
+        setError(data.error || 'Failed to apply SNMP settings');
+        return;
+      }
+      if (data.rebooted) {
+        setError(null);
+      }
     } catch (e) {
       setError(`Failed: ${e.message}`);
     } finally {
@@ -1250,16 +1323,50 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
     }
   };
 
-  // Final commission
+  // Final commission: push static IP + reboot on the live box, THEN save the hall row.
   const handleCommission = async () => {
     setLoading(true);
     setError(null);
+    const liveIp = detectedDevice?.ip || remoteHost;
     const finalIp = isRemoteMode
       ? (editNetwork.ip || remoteHost)
       : (useCustomIp ? customIp : suggestedIp);
     const label = pduLabel || `PDU-${finalIp}`;
     const rackCode = selectedRack?.rack_code || null;
     const mountPosition = selectedSlot || 'A';
+
+    if (isRemoteMode && finalIp && liveIp && finalIp !== liveIp) {
+      try {
+        const applyRes = await fetch(`${API_BASE}/api/pdu-admin/${liveIp}/settings/network`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...editNetwork,
+            ip: finalIp,
+            dhcp: 'OFF',
+            web_port: parseInt(remotePort) || 80,
+            username: remoteUser,
+            password: remotePass,
+            reboot: true,
+          }),
+        });
+        const applyData = await applyRes.json();
+        if (!applyRes.ok || !applyData.success) {
+          setError(applyData.error || 'PDU rejected the static IP — not saved to the hall');
+          setLoading(false);
+          return;
+        }
+        if (!applyData.rebooting) {
+          setError('Static IP was written but the PDU did not reboot. LCD would keep the factory address — not saved to the hall.');
+          setLoading(false);
+          return;
+        }
+      } catch (e) {
+        setError(`Failed to apply static IP / reboot: ${e.message}`);
+        setLoading(false);
+        return;
+      }
+    }
 
     const payload = {
       ip_address: finalIp,
@@ -1271,7 +1378,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
       snmp_version: detectedDevice?.snmp_version || '2c',
     };
     if (isRemoteMode) {
-      payload.remote_host = remoteHost;
+      payload.remote_host = finalIp;
       payload.web_admin_port = parseInt(remotePort) || 80;
       payload.web_admin_https = remoteUseHttps ? 1 : 0;
       payload.web_admin_user = remoteUser;
@@ -1364,21 +1471,21 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
   return (
     <>
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-[#0d1526] rounded-2xl border border-[#233544] w-full max-w-3xl max-h-[85vh] overflow-hidden flex flex-col shadow-2xl shadow-cyan-500/10">
+      <div className="bg-[#0d1526] rounded-2xl border border-px-stroke w-full max-w-3xl max-h-[85vh] overflow-hidden flex flex-col shadow-2xl shadow-cyan-500/10">
 
         {/* Header */}
-        <div className="p-5 border-b border-[#233544] flex items-center justify-between">
+        <div className="p-5 border-b border-px-stroke flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-[#00E5FF]/20 flex items-center justify-center">
-              <span className="material-icons-outlined text-[#00E5FF]">bolt</span>
+            <div className="w-10 h-10 rounded-xl bg-px-accent/20 flex items-center justify-center">
+              <Icon className="material-icons-outlined text-px-accent">bolt</Icon>
             </div>
             <div>
               <h2 className="text-lg font-bold text-white">Commission PDU</h2>
               <p className="text-xs text-slate-500">{hallName || 'Data Hall'}</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors p-1">
-            <span className="material-icons-outlined">close</span>
+          <button aria-label="Close commissioning" onClick={onClose} className="text-slate-400 hover:text-white transition-colors p-1">
+            <Icon className="material-icons-outlined">close</Icon>
           </button>
         </div>
 
@@ -1387,16 +1494,16 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
           <div className="flex items-center justify-between">
             {STEPS.map((s, i) => (
               <div key={s.id} className="flex items-center flex-1">
-                <div className={`flex items-center gap-2 ${i <= step ? 'text-[#00E5FF]' : 'text-slate-600'}`}>
+                <div className={`flex items-center gap-2 ${i <= step ? 'text-px-accent' : 'text-slate-600'}`}>
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold transition-all ${
-                    i < step ? 'bg-[#00E5FF] text-[#0B1120]' :
-                    i === step ? 'bg-[#00E5FF]/20 border-2 border-[#00E5FF] text-[#00E5FF]' :
-                    'bg-[#161E2E] border border-[#233544] text-slate-600'
+                    i < step ? 'bg-px-accent text-app-bg' :
+                    i === step ? 'bg-px-accent/20 border-2 border-px-accent text-px-accent' :
+                    'bg-px-panel border border-px-stroke text-slate-600'
                   }`}>
                     {i < step ? (
-                      <span className="material-icons-outlined text-sm">check</span>
+                      <Icon className="material-icons-outlined text-sm">check</Icon>
                     ) : (
-                      <span className="material-icons-outlined text-sm">{s.icon}</span>
+                      <Icon className="material-icons-outlined text-sm">{s.icon}</Icon>
                     )}
                   </div>
                   <span className={`text-xs uppercase tracking-wider hidden sm:inline ${
@@ -1404,7 +1511,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   }`}>{s.label}</span>
                 </div>
                 {i < STEPS.length - 1 && (
-                  <div className={`flex-1 h-px mx-3 ${i < step ? 'bg-[#00E5FF]' : 'bg-[#233544]'}`} />
+                  <div className={`flex-1 h-px mx-3 ${i < step ? 'bg-px-accent' : 'bg-px-stroke'}`} />
                 )}
               </div>
             ))}
@@ -1414,10 +1521,10 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
         {/* Error Banner */}
         {error && (
           <div className="mx-5 mt-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm flex items-center gap-2">
-            <span className="material-icons-outlined text-sm">error</span>
+            <Icon className="material-icons-outlined text-sm">error</Icon>
             {error}
             <button onClick={() => setError(null)} className="ml-auto text-red-400 hover:text-red-300">
-              <span className="material-icons-outlined text-sm">close</span>
+              <Icon className="material-icons-outlined text-sm">close</Icon>
             </button>
           </div>
         )}
@@ -1449,11 +1556,11 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     onClick={() => { setScanMode(m.id); setError(null); setDetectedDevice(null); setSubnetDevices([]); setRemoteSettings(null); setIsRemoteMode(false); }}
                     className={`flex-1 py-2 px-3 text-xs uppercase rounded-md flex items-center justify-center gap-1.5 transition-all ${
                       scanMode === m.id
-                        ? 'bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/40'
+                        ? 'bg-px-accent/20 text-px-accent border border-px-accent/40'
                         : 'text-slate-500 hover:text-slate-300 border border-transparent'
                     }`}
                   >
-                    <span className="material-icons-outlined text-sm">{m.icon}</span>
+                    <Icon className="material-icons-outlined text-sm">{m.icon}</Icon>
                     {m.label}
                   </button>
                 ))}
@@ -1466,23 +1573,23 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     <input
                       type="text" value={factoryIp}
                       onChange={e => setFactoryIp(e.target.value)}
-                      className="flex-1 bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
+                      className="flex-1 bg-app-bg border border-px-stroke rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-px-accent"
                       placeholder="192.168.0.163"
                     />
                     <input
                       type="text" value={community}
                       onChange={e => setCommunity(e.target.value)}
-                      className="w-28 bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
+                      className="w-28 bg-app-bg border border-px-stroke rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-px-accent"
                       placeholder="Community"
                     />
                     <button onClick={scanFactory} disabled={loading}
-                      className="px-5 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 hover:bg-[#00E5FF]/30 disabled:opacity-50 text-[#00E5FF] rounded-lg flex items-center gap-2 transition-all text-sm">
-                      {loading ? <span className="material-icons-outlined text-sm animate-spin">sync</span> :
-                        <span className="material-icons-outlined text-sm">wifi_find</span>}
+                      className="px-5 py-2.5 bg-px-accent/20 border border-px-accent/50 hover:bg-px-accent/30 disabled:opacity-50 text-px-accent rounded-lg flex items-center gap-2 transition-all text-sm">
+                      {loading ? <Icon className="material-icons-outlined text-sm animate-spin">sync</Icon> :
+                        <Icon className="material-icons-outlined text-sm">wifi_find</Icon>}
                       Detect
                     </button>
                   </div>
-                  <p className="text-[10px] text-slate-600">
+                  <p className="text-[11px] text-slate-600">
                     Probes the factory default IP for a new unboxed PDU.
                   </p>
                 </div>
@@ -1494,19 +1601,19 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   <input
                     type="text" value={manualIp}
                     onChange={e => setManualIp(e.target.value)}
-                    className="flex-1 bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
+                    className="flex-1 bg-app-bg border border-px-stroke rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-px-accent"
                     placeholder="e.g. 10.20.0.50"
                   />
                   <input
                     type="text" value={community}
                     onChange={e => setCommunity(e.target.value)}
-                    className="w-28 bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
+                    className="w-28 bg-app-bg border border-px-stroke rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-px-accent"
                     placeholder="Community"
                   />
                   <button onClick={scanManual} disabled={loading}
-                    className="px-5 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 hover:bg-[#00E5FF]/30 disabled:opacity-50 text-[#00E5FF] rounded-lg flex items-center gap-2 transition-all text-sm">
-                    {loading ? <span className="material-icons-outlined text-sm animate-spin">sync</span> :
-                      <span className="material-icons-outlined text-sm">search</span>}
+                    className="px-5 py-2.5 bg-px-accent/20 border border-px-accent/50 hover:bg-px-accent/30 disabled:opacity-50 text-px-accent rounded-lg flex items-center gap-2 transition-all text-sm">
+                    {loading ? <Icon className="material-icons-outlined text-sm animate-spin">sync</Icon> :
+                      <Icon className="material-icons-outlined text-sm">search</Icon>}
                     Scan
                   </button>
                 </div>
@@ -1519,23 +1626,23 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     <input
                       type="text" value={subnet}
                       onChange={e => setSubnet(e.target.value)}
-                      className="flex-1 bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
+                      className="flex-1 bg-app-bg border border-px-stroke rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-px-accent"
                       placeholder="192.168.1.0/24"
                     />
                     <input
                       type="text" value={community}
                       onChange={e => setCommunity(e.target.value)}
-                      className="w-28 bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
+                      className="w-28 bg-app-bg border border-px-stroke rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-px-accent"
                       placeholder="Community"
                     />
                     <button onClick={scanSubnet} disabled={loading}
-                      className="px-5 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 hover:bg-[#00E5FF]/30 disabled:opacity-50 text-[#00E5FF] rounded-lg flex items-center gap-2 transition-all text-sm">
-                      {loading ? <span className="material-icons-outlined text-sm animate-spin">sync</span> :
-                        <span className="material-icons-outlined text-sm">radar</span>}
+                      className="px-5 py-2.5 bg-px-accent/20 border border-px-accent/50 hover:bg-px-accent/30 disabled:opacity-50 text-px-accent rounded-lg flex items-center gap-2 transition-all text-sm">
+                      {loading ? <Icon className="material-icons-outlined text-sm animate-spin">sync</Icon> :
+                        <Icon className="material-icons-outlined text-sm">radar</Icon>}
                       Scan
                     </button>
                   </div>
-                  <p className="text-[10px] text-slate-600">Scans up to 1024 addresses via SNMP. May take a minute.</p>
+                  <p className="text-[11px] text-slate-600">Scans up to 1024 addresses via SNMP. May take a minute.</p>
                 </div>
               )}
 
@@ -1546,7 +1653,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     <input
                       type="text" value={remoteHost}
                       onChange={e => setRemoteHost(e.target.value)}
-                      className="bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
+                      className="bg-app-bg border border-px-stroke rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-px-accent"
                       placeholder="IP address (e.g. 218.16.58.43)"
                     />
                     <input
@@ -1557,7 +1664,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         if (next === '443') setRemoteUseHttps(true);
                         else if (next === '80') setRemoteUseHttps(false);
                       }}
-                      className="bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
+                      className="bg-app-bg border border-px-stroke rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-px-accent"
                       placeholder="Port (80 or 443)"
                     />
                     <label className="col-span-2 flex items-center gap-2 px-1 py-0.5 cursor-pointer select-none">
@@ -1569,14 +1676,14 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                           if (e.target.checked && remotePort === '80') setRemotePort('443');
                           if (!e.target.checked && remotePort === '443') setRemotePort('80');
                         }}
-                        className="rounded border-[#233544] bg-[#0B1120] text-[#00E5FF] focus:ring-[#00E5FF]"
+                        className="rounded border-px-stroke bg-app-bg text-px-accent focus:ring-px-accent"
                       />
                       <span className="text-xs text-slate-400">Use HTTPS (required if the PDU web UI is HTTPS-only)</span>
                     </label>
                     <input
                       type="text" value={remoteUser}
                       onChange={e => setRemoteUser(e.target.value)}
-                      className="bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
+                      className="bg-app-bg border border-px-stroke rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-px-accent"
                       placeholder="Username"
                     />
                     <PasswordInput
@@ -1588,12 +1695,12 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     />
                   </div>
                   <button onClick={connectRemotePdu} disabled={loading}
-                    className="w-full px-5 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 hover:bg-[#00E5FF]/30 disabled:opacity-50 text-[#00E5FF] rounded-lg flex items-center justify-center gap-2 transition-all text-sm">
-                    {loading ? <span className="material-icons-outlined text-sm animate-spin">sync</span> :
-                      <span className="material-icons-outlined text-sm">cloud_sync</span>}
+                    className="w-full px-5 py-2.5 bg-px-accent/20 border border-px-accent/50 hover:bg-px-accent/30 disabled:opacity-50 text-px-accent rounded-lg flex items-center justify-center gap-2 transition-all text-sm">
+                    {loading ? <Icon className="material-icons-outlined text-sm animate-spin">sync</Icon> :
+                      <Icon className="material-icons-outlined text-sm">cloud_sync</Icon>}
                     Connect via Web Admin
                   </button>
-                  <p className="text-[10px] text-slate-600">
+                  <p className="text-[11px] text-slate-600">
                     Connects to the PDU's web admin panel (CGI interface) using HMAC-SHA1 authentication.
                     Reads device info, network config, and SNMP settings.
                   </p>
@@ -1603,23 +1710,26 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
               {/* GUIDED INVENTORY — factory-default → assigned IP, one PDU at a time */}
               {scanMode === 'inventory' && (
                 <div className="space-y-4">
-                  <div className="p-3 rounded-lg bg-[#00E5FF]/10 border border-[#00E5FF]/30">
+                  <div className="p-3 rounded-lg bg-px-accent/10 border border-px-accent/30">
                     <p className="text-xs text-slate-200 leading-relaxed">
-                      <span className="font-semibold text-[#00E5FF]">Guided commissioning.</span> Upload your PDU inventory, then for each
-                      unit: plug your laptop's RJ45 into the PDU, click <span className="font-mono text-white">Detect</span>, then
-                      <span className="font-mono text-white"> Assign</span>. PDUMind pushes the next IP + hostname and reboots the PDU.
+                      <span className="font-semibold text-px-accent">Guided commissioning.</span> Upload the inventory. An NTT sheet is one PDU per row.
+                      An Agoda sheet is one rack row with two PDUs (feed A and feed B) plus shared SNMPv3, NTP, syslog, and DNS —
+                      both PDUs are listed. Then for each unit: plug in, click <span className="font-mono text-white">Detect</span>, then
+                      <span className="font-mono text-white"> Assign</span>.
                     </p>
-                    <p className="text-[10px] text-amber-300/90 mt-2 flex items-start gap-1.5">
-                      <span className="material-icons-outlined text-[12px] mt-0.5">info</span>
+                    <p className="text-[11px] text-amber-300/90 mt-2 flex items-start gap-1.5">
+                      <Icon className="material-icons-outlined text-[12px] mt-0.5">info</Icon>
                       Keep your laptop on the <span className="font-mono">192.168.0.100 / 255.255.255.0</span> subnet while detecting factory PDUs.
                       After each reboot the PDU moves to its production IP — verify later with a Batch scan on the customer subnet.
+                      Hostnames come from the <span className="font-mono text-white">Hostname</span> column
+                      (e.g. <span className="font-mono">RDC2-PDU-F02-SRC-A-1</span>), not OLD Hostname.
                     </p>
                   </div>
 
                   {/* Upload */}
                   <div className="flex flex-wrap items-center gap-2">
-                    <label className="px-4 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 hover:bg-[#00E5FF]/30 text-[#00E5FF] rounded-lg text-sm flex items-center gap-2 cursor-pointer">
-                      <span className="material-icons-outlined text-sm">upload_file</span>
+                    <label className="px-4 py-2.5 bg-px-accent/20 border border-px-accent/50 hover:bg-px-accent/30 text-px-accent rounded-lg text-sm flex items-center gap-2 cursor-pointer">
+                      <Icon className="material-icons-outlined text-sm">upload_file</Icon>
                       {invTargets.length > 0 ? 'Replace inventory' : 'Upload inventory (.xlsx)'}
                       <input type="file" accept=".xlsx,.xls" className="hidden"
                         onChange={e => { handleInventoryFile(e.target.files?.[0]); e.target.value = ''; }} />
@@ -1627,7 +1737,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     {invFileName && <span className="text-[11px] text-slate-400 font-mono truncate max-w-[16rem]">{invFileName}</span>}
                     {invTargets.length > 0 && (
                       <button onClick={() => { updateInvTargets([], ''); setInvFileName(''); setInvDetected(null); }}
-                        className="text-[10px] text-slate-500 hover:text-red-300 ml-auto">Clear list</button>
+                        className="text-[11px] text-slate-500 hover:text-red-300 ml-auto">Clear list</button>
                     )}
                   </div>
 
@@ -1640,15 +1750,15 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                             <span className="font-mono text-emerald-400 font-bold">{invDone}</span>
                             <span className="text-slate-500"> / {invTargets.length} done</span>
                           </div>
-                          <div className="h-1.5 w-40 rounded-full bg-[#0B1120] overflow-hidden">
+                          <div className="h-1.5 w-40 rounded-full bg-app-bg overflow-hidden">
                             <div className="h-full bg-emerald-500 transition-all" style={{ width: `${invTargets.length ? (invDone / invTargets.length) * 100 : 0}%` }} />
                           </div>
                         </div>
                         {invSites.length > 1 && (
                           <div className="flex items-center gap-1">
-                            <span className="text-[10px] text-slate-500 uppercase">Site</span>
+                            <span className="text-[11px] text-slate-500 uppercase">Site</span>
                             <select value={invSiteFilter} onChange={e => setInvSiteFilter(e.target.value)}
-                              className="bg-[#0B1120] border border-[#233544] rounded px-2 py-1 text-xs text-white">
+                              className="bg-app-bg border border-px-stroke rounded px-2 py-1 text-xs text-white">
                               <option value="all">All</option>
                               {invSites.map(s => <option key={s} value={s}>{s}</option>)}
                             </select>
@@ -1657,42 +1767,49 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                       </div>
 
                       {/* Current target action card */}
-                      <div className="p-3 rounded-lg bg-[#0B1120] border border-[#233544]">
+                      <div className="p-3 rounded-lg bg-app-bg border border-px-stroke">
                         <div className="flex items-center justify-between mb-2">
-                          <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider flex items-center gap-1">
-                            <span className="material-icons-outlined text-xs">bolt</span>
+                          <p className="text-[11px] text-px-accent uppercase tracking-wider flex items-center gap-1">
+                            <Icon className="material-icons-outlined text-xs">bolt</Icon>
                             {invSelected ? 'Selected PDU to commission' : 'Next PDU to commission'}
                           </p>
                           <input value={invFactoryIp} onChange={e => setInvFactoryIp(e.target.value)}
-                            className="w-36 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-white font-mono text-[11px]"
-                            placeholder="192.168.0.163" title="Factory default IP" />
+                            className="w-36 bg-px-panel border border-px-stroke rounded px-2 py-1 text-white font-mono text-[11px]"
+                            placeholder="PDU address" title="Address on the PDU you are cabled to — DHCP address from the display, or factory 192.168.0.163" />
                         </div>
 
                         {invActive ? (
                           <div className="space-y-3">
                             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                              <div><p className="text-[9px] text-slate-500 uppercase">Hostname</p><p className="font-mono text-white truncate" title={invActive.hostname}>{invActive.hostname || '—'}</p></div>
-                              <div><p className="text-[9px] text-slate-500 uppercase">Assign IP</p><p className="font-mono text-[#00E5FF]">{invActive.ip}/{invActive.cidr}</p></div>
-                              <div><p className="text-[9px] text-slate-500 uppercase">Gateway</p><p className="font-mono text-slate-300">{invActive.gateway}</p></div>
-                              <div><p className="text-[9px] text-slate-500 uppercase">Rack</p><p className="font-mono text-slate-300">{invActive.rack || '—'}</p></div>
+                              <div><p className="text-[10px] text-slate-500 uppercase">Hostname</p><p className="font-mono text-white truncate" title={invActive.hostname}>{invActive.hostname || '—'}</p></div>
+                              <div><p className="text-[10px] text-slate-500 uppercase">Assign IP</p><p className="font-mono text-px-accent">{invActive.ip}/{invActive.cidr}</p></div>
+                              <div><p className="text-[10px] text-slate-500 uppercase">Gateway</p><p className="font-mono text-slate-300">{invActive.gateway || 'keep current'}</p></div>
+                              <div><p className="text-[10px] text-slate-500 uppercase">Rack</p><p className="font-mono text-slate-300">{invActive.rack || '—'}{invActive.feed ? ` · ${invActive.feed}` : ''}</p></div>
                             </div>
+                            {(invActive.snmp?.snmpv3_username || invActive.ntp1 || invActive.dns1) && (
+                              <p className="text-[11px] text-slate-400 font-mono leading-relaxed">
+                                {invActive.snmp?.snmpv3_username ? `SNMPv3 ${invActive.snmp.snmpv3_username}` : ''}
+                                {invActive.ntp1 ? ` · NTP ${invActive.ntp1}${invActive.ntp2 ? ` / ${invActive.ntp2}` : ''}` : ''}
+                                {invActive.dns1 ? ` · DNS ${invActive.dns1}${invActive.dns2 ? ` / ${invActive.dns2}` : ''}` : ''}
+                              </p>
+                            )}
 
                             {invSelected ? (
-                              <p className="text-[10px] text-[#00E5FF]/90 flex items-center gap-1.5">
-                                <span className="material-icons-outlined text-[12px]">touch_app</span>
+                              <p className="text-[11px] text-px-accent/90 flex items-center gap-1.5">
+                                <Icon className="material-icons-outlined text-[12px]">touch_app</Icon>
                                 Hand-picked target — assigning to the connected PDU instead of the sequential next.
                                 <button onClick={() => setInvSelectedIp(null)} className="ml-1 text-slate-500 hover:text-amber-300 underline">use sequential next</button>
                               </p>
                             ) : (
-                              <p className="text-[10px] text-slate-500 flex items-center gap-1.5">
-                                <span className="material-icons-outlined text-[12px]">info</span>
+                              <p className="text-[11px] text-slate-500 flex items-center gap-1.5">
+                                <Icon className="material-icons-outlined text-[12px]">info</Icon>
                                 Sequential next. Pick any <span className="text-slate-300">Pending</span> row below to assign a different IP to this PDU.
                               </p>
                             )}
 
                             {invDetected && (
                               <div className="p-2 rounded bg-emerald-500/10 border border-emerald-500/30 text-[11px] text-emerald-200 flex items-center gap-2">
-                                <span className="material-icons-outlined text-sm">check_circle</span>
+                                <Icon className="material-icons-outlined text-sm">check_circle</Icon>
                                 Detected factory PDU at {invDetected.ip}
                                 {invDetected.mac && <span className="font-mono text-slate-400">· {invDetected.mac}</span>}
                                 {invDetected.firmware && <span className="text-slate-500">· FW {invDetected.firmware}</span>}
@@ -1701,24 +1818,24 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
 
                             <div className="flex flex-wrap gap-2">
                               <button onClick={detectFactoryPdu} disabled={invBusy}
-                                className="px-4 py-2 bg-[#161E2E] border border-[#00E5FF]/40 hover:bg-[#00E5FF]/10 disabled:opacity-50 text-[#00E5FF] rounded-lg text-sm flex items-center gap-1.5">
+                                className="px-4 py-2 bg-px-panel border border-px-accent/40 hover:bg-px-accent/10 disabled:opacity-50 text-px-accent rounded-lg text-sm flex items-center gap-1.5">
                                 {invBusy && invStage === 'detecting'
-                                  ? <span className="material-icons-outlined text-sm animate-spin">sync</span>
-                                  : <span className="material-icons-outlined text-sm">wifi_find</span>}
+                                  ? <Icon className="material-icons-outlined text-sm animate-spin">sync</Icon>
+                                  : <Icon className="material-icons-outlined text-sm">wifi_find</Icon>}
                                 1. Detect
                               </button>
                               <button onClick={() => applyGuidedTarget(invActive)} disabled={invBusy || !invDetected}
                                 className="px-4 py-2 bg-emerald-500/20 border border-emerald-500/50 hover:bg-emerald-500/30 disabled:opacity-40 text-emerald-300 rounded-lg text-sm flex items-center gap-1.5"
                                 title={!invDetected ? 'Detect a factory PDU first' : ''}>
                                 {invBusy && invStage === 'applying'
-                                  ? <span className="material-icons-outlined text-sm animate-spin">sync</span>
-                                  : <span className="material-icons-outlined text-sm">send</span>}
+                                  ? <Icon className="material-icons-outlined text-sm animate-spin">sync</Icon>
+                                  : <Icon className="material-icons-outlined text-sm">send</Icon>}
                                 2. Assign {invActive.ip} &amp; reboot
                               </button>
                               <button onClick={testGuidedLogin} disabled={invBusy}
-                                className="px-3 py-2 bg-[#161E2E] border border-[#233544] hover:border-amber-400/50 disabled:opacity-50 text-amber-300 rounded-lg text-xs flex items-center gap-1.5"
+                                className="px-3 py-2 bg-px-panel border border-px-stroke hover:border-amber-400/50 disabled:opacity-50 text-amber-300 rounded-lg text-xs flex items-center gap-1.5"
                                 title="Probe web-admin login on ports 443/80/6662/8080 with admin/admin">
-                                <span className="material-icons-outlined text-sm">vpn_key</span>
+                                <Icon className="material-icons-outlined text-sm">vpn_key</Icon>
                                 Test login
                               </button>
                               <button onClick={() => { setTargetStatus(invActive.ip, 'skipped'); setInvSelectedIp(null); }} disabled={invBusy}
@@ -1732,7 +1849,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                     ? `Login OK on ${invDiag.url} (use admin/admin)`
                                     : `Login failed on all ports for ${invDiag.host || invFactoryIp}`}
                                 </p>
-                                <div className="space-y-0.5 font-mono text-[10px]">
+                                <div className="space-y-0.5 font-mono text-[11px]">
                                   {(invDiag.attempts || []).map((a, i) => (
                                     <div key={i} className="flex items-center gap-2">
                                       <span className={a.success ? 'text-emerald-400' : a.tcp_reachable ? 'text-amber-400' : 'text-slate-600'}>
@@ -1746,7 +1863,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                   ))}
                                 </div>
                                 {!invDiag.success && (
-                                  <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
+                                  <p className="text-[11px] text-slate-400 mt-1.5 leading-relaxed">
                                     If all show <span className="text-slate-300">no TCP</span>: laptop not on the PDU subnet, or Docker can't reach it — check IP <span className="font-mono">192.168.0.100/24</span>.
                                     If a port is <span className="text-amber-300">reachable but login rejected</span>: the factory password isn't admin/admin — try the label/QR password.
                                   </p>
@@ -1756,23 +1873,60 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
 
                             {invLastResult && (
                               <p className="text-[11px] text-emerald-300/90 flex items-center gap-1.5">
-                                <span className="material-icons-outlined text-xs">task_alt</span>
+                                <Icon className="material-icons-outlined text-xs">task_alt</Icon>
                                 {invLastResult.message}
                               </p>
                             )}
                           </div>
                         ) : (
                           <p className="text-sm text-emerald-300 py-2 flex items-center gap-2">
-                            <span className="material-icons-outlined text-base">verified</span>
+                            <Icon className="material-icons-outlined text-base">verified</Icon>
                             All PDUs in this view are commissioned. Switch your laptop to the production subnet and run a Batch scan to verify.
                           </p>
                         )}
                       </div>
 
+                      <div className="p-3 rounded-lg border border-px-stroke bg-px-panel/40 space-y-2">
+                        <p className="text-[11px] text-slate-300 leading-relaxed">
+                          Plug the cable into a PDU and click that row. It uses the address already in the list, writes the console user, and — with HTTPS checked — reboots onto port 443.
+                          Superuser admin is left in place. Close any browser tab on the PDU first.
+                          {' '}Type the console password once; it is remembered on this computer for this hall.
+                        </p>
+                        <div className="flex flex-wrap items-end gap-3">
+                          <div>
+                            <label className="text-[10px] text-slate-500 uppercase">Console user</label>
+                            <input
+                              value={invWebUser}
+                              onChange={e => setInvWebUser(e.target.value)}
+                              className="block w-36 bg-app-bg border border-px-stroke rounded px-2 py-1.5 text-white font-mono text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] text-slate-500 uppercase">Console password</label>
+                            <PasswordInput
+                              value={invWebPass}
+                              onChange={e => setInvWebPass(e.target.value)}
+                              inputClassName="w-40 bg-app-bg border border-px-stroke rounded px-2 py-1.5 text-white font-mono text-xs"
+                            />
+                          </div>
+                          <label className="flex items-center gap-2 text-[11px] text-amber-200 pb-1.5">
+                            <input
+                              type="checkbox"
+                              checked={invHttpsOn}
+                              onChange={e => setInvHttpsOn(e.target.checked)}
+                            />
+                            HTTPS (reboot)
+                          </label>
+                          <span className="text-[11px] text-slate-500 pb-1.5">
+                            {invTargets.filter(t => t.https_done).length}/{invTargets.length} on HTTPS
+                          </span>
+                        </div>
+                      </div>
+
                       {/* Inventory list */}
-                      <div className="max-h-[320px] overflow-y-auto rounded-lg border border-[#233544]">
+                      <div className="max-h-[320px] overflow-y-auto rounded-lg border border-px-stroke">
                         <table className="w-full text-xs">
-                          <thead className="sticky top-0 bg-[#0B1120] text-slate-500 text-[10px] uppercase">
+                          <thead className="sticky top-0 bg-app-bg text-slate-500 text-[11px] uppercase">
                             <tr>
                               <th className="text-left px-2 py-1.5">#</th>
                               <th className="text-left px-2 py-1.5">Hostname</th>
@@ -1788,37 +1942,46 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                               const isActive = invActive && t.ip === invActive.ip;
                               const isPicked = invSelected && t.ip === invSelected.ip;
                               const selectable = t.status === 'pending' && !invBusy;
+                              const webReady = !t.https_done || !invHttpsOn;
+                              const applying = invWebIp === t.ip;
                               return (
                                 <tr key={t.ip}
-                                  onClick={selectable ? () => setInvSelectedIp(t.ip) : undefined}
-                                  className={`border-t border-[#233544]/60 ${isActive ? 'bg-[#00E5FF]/10' : ''} ${selectable ? 'cursor-pointer hover:bg-[#00E5FF]/5' : ''}`}>
+                                  onClick={() => { if (!invBusy && webReady) applyGuidedWeb(t); }}
+                                  className={`border-t border-px-stroke/60 ${applying ? 'bg-amber-500/15' : isActive ? 'bg-px-accent/10' : ''} ${!invBusy && webReady ? 'cursor-pointer hover:bg-px-accent/5' : ''}`}>
                                   <td className="px-2 py-1.5 text-slate-600">
                                     {isActive
-                                      ? <span className="material-icons-outlined text-[14px] text-[#00E5FF]" title={isPicked ? 'Selected target' : 'Next target'}>{isPicked ? 'radio_button_checked' : 'play_arrow'}</span>
+                                      ? <Icon className="material-icons-outlined text-[14px] text-px-accent" title={isPicked ? 'Selected target' : 'Next target'}>{isPicked ? 'radio_button_checked' : 'play_arrow'}</Icon>
                                       : (t.sr_no || i + 1)}
                                   </td>
                                   <td className="px-2 py-1.5 font-mono text-slate-300 truncate max-w-[14rem]" title={t.hostname}>{t.hostname}</td>
-                                  <td className="px-2 py-1.5 font-mono text-[#00E5FF]">{t.ip}</td>
+                                  <td className="px-2 py-1.5 font-mono text-px-accent">{t.ip}</td>
                                   <td className="px-2 py-1.5 font-mono text-slate-500">{t.gateway}</td>
                                   <td className="px-2 py-1.5 font-mono text-slate-500">{t.rack || '—'}</td>
                                   <td className="px-2 py-1.5">
-                                    {t.status === 'done' && <span className="text-emerald-400 flex items-center gap-1"><span className="material-icons-outlined text-[13px]">check_circle</span>Done</span>}
-                                    {t.status === 'pending' && <span className={isPicked ? 'text-[#00E5FF] font-semibold' : 'text-slate-500'}>{isPicked ? 'Selected' : 'Pending'}</span>}
+                                    {t.status === 'done' && <span className="text-emerald-400 flex items-center gap-1"><Icon className="material-icons-outlined text-[13px]">check_circle</Icon>Done</span>}
+                                    {t.status === 'pending' && <span className={isPicked ? 'text-px-accent font-semibold' : 'text-slate-500'}>{isPicked ? 'Selected' : 'Pending'}</span>}
                                     {t.status === 'skipped' && <span className="text-amber-400">Skipped</span>}
                                     {t.status === 'failed' && <span className="text-red-400" title={t.error}>Failed</span>}
                                   </td>
                                   <td className="px-2 py-1.5 text-right whitespace-nowrap">
                                     {t.status === 'pending' && !isPicked && (
                                       <button onClick={(e) => { e.stopPropagation(); setInvSelectedIp(t.ip); }}
-                                        className="text-[10px] text-slate-600 hover:text-[#00E5FF]" title="Assign this IP to the connected PDU">select</button>
+                                        className="text-[11px] text-slate-600 hover:text-px-accent" title="Assign this IP to the connected PDU">select</button>
                                     )}
                                     {isPicked && (
                                       <button onClick={(e) => { e.stopPropagation(); setInvSelectedIp(null); }}
-                                        className="text-[10px] text-[#00E5FF] hover:text-amber-300" title="Clear selection (use sequential next)">clear</button>
+                                        className="text-[11px] text-px-accent hover:text-amber-300" title="Clear selection (use sequential next)">clear</button>
                                     )}
                                     {t.status !== 'pending' && (
                                       <button onClick={(e) => { e.stopPropagation(); setTargetStatus(t.ip, 'pending'); }}
-                                        className="text-[10px] text-slate-600 hover:text-[#00E5FF]" title="Reset to pending">redo</button>
+                                        className="text-[11px] text-slate-600 hover:text-px-accent" title="Reset to pending">redo</button>
+                                    )}
+                                    {applying ? (
+                                      <span className="ml-2 text-[11px] text-amber-300">applying…</span>
+                                    ) : t.https_done ? (
+                                      <span className="ml-2 text-[11px] text-emerald-400">HTTPS</span>
+                                    ) : (
+                                      <span className="ml-2 text-[11px] text-amber-300/80">click</span>
                                     )}
                                   </td>
                                 </tr>
@@ -1852,26 +2015,26 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                       type="button"
                       onClick={fetchRepairPdus}
                       disabled={repairLoading}
-                      className="text-[10px] text-[#00E5FF] hover:text-[#00E5FF]/80 flex items-center gap-1"
+                      className="text-[11px] text-px-accent hover:text-px-accent/80 flex items-center gap-1"
                     >
-                      <span className={`material-icons-outlined text-xs ${repairLoading ? 'animate-spin' : ''}`}>refresh</span>
+                      <Icon className={`material-icons-outlined text-xs ${repairLoading ? 'animate-spin' : ''}`}>refresh</Icon>
                       Reload from hall
                     </button>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <label className="text-[9px] text-slate-500 uppercase">Username (try on each PDU)</label>
+                      <label className="text-[10px] text-slate-500 uppercase">Username (try on each PDU)</label>
                       <input
                         type="text"
                         value={repairUser}
                         onChange={e => setRepairUser(e.target.value)}
-                        className="w-full bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
+                        className="w-full bg-app-bg border border-px-stroke rounded-lg px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-px-accent"
                         placeholder="admin"
                       />
                     </div>
                     <div>
-                      <label className="text-[9px] text-slate-500 uppercase">Password (must work in Chrome now)</label>
+                      <label className="text-[10px] text-slate-500 uppercase">Password (must work in Chrome now)</label>
                       <PasswordInput
                         value={repairPass}
                         onChange={e => setRepairPass(e.target.value)}
@@ -1887,7 +2050,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         setRepairUser(batchTemplate.current_credentials.username || 'admin');
                         setRepairPass(batchTemplate.current_credentials.password);
                       }}
-                      className="text-[10px] text-slate-400 hover:text-[#00E5FF]"
+                      className="text-[11px] text-slate-400 hover:text-px-accent"
                     >
                       Use batch template password ({batchTemplate.current_credentials.username || 'admin'})
                     </button>
@@ -1904,12 +2067,12 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                             : 'bg-red-500/15 border-red-500/50 text-red-100'
                     }`}>
                       <div className="flex items-start gap-2">
-                        <span className="material-icons-outlined text-base mt-0.5">
+                        <Icon className="material-icons-outlined text-base mt-0.5">
                           {repairStatus.phase === 'success' ? 'check_circle'
                             : repairStatus.phase === 'partial' ? 'warning'
                             : repairStatus.phase === 'running' ? 'sync'
                             : 'error'}
-                        </span>
+                        </Icon>
                         <div>
                           <p className="font-semibold">{repairStatus.message}</p>
                           {repairResults && (
@@ -1925,14 +2088,14 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   {repairPdus.length > 0 && (
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
-                        <p className="text-[10px] text-slate-500 uppercase tracking-wider">Active PDUs in hall</p>
+                        <p className="text-[11px] text-slate-500 uppercase tracking-wider">Active PDUs in hall</p>
                         <button
                           type="button"
                           onClick={() => {
                             const ids = repairPdus.map(p => p.id);
                             setRepairSelected(prev => (prev.size === ids.length ? new Set() : new Set(ids)));
                           }}
-                          className="text-[10px] text-[#00E5FF] hover:text-[#00E5FF]/80"
+                          className="text-[11px] text-px-accent hover:text-px-accent/80"
                         >
                           {repairSelected.size === repairPdus.length ? 'Deselect all' : 'Select all'}
                         </button>
@@ -1955,8 +2118,8 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                   : result
                                     ? 'bg-red-500/10 border-red-500/40'
                                     : repairSelected.has(pdu.id)
-                                      ? 'bg-[#0B1120] border-[#00E5FF]/30'
-                                      : 'bg-[#0B1120] border-[#233544]'
+                                      ? 'bg-app-bg border-px-accent/30'
+                                      : 'bg-app-bg border-px-stroke'
                               }`}
                             >
                               <div className="flex items-start gap-3">
@@ -1968,14 +2131,14 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                   }`}
                                 >
                                   {repairSelected.has(pdu.id) && (
-                                    <span className="material-icons-outlined text-emerald-400 text-xs">check</span>
+                                    <Icon className="material-icons-outlined text-emerald-400 text-xs">check</Icon>
                                   )}
                                 </button>
                                 <div className="flex-1 min-w-0">
                                   <div className="flex flex-wrap items-center gap-2">
                                     <span className="font-mono text-white text-sm">{pdu.ip_address}</span>
-                                    {pdu.label && <span className="text-[10px] text-slate-500 truncate">{pdu.label}</span>}
-                                    <span className={`text-[9px] px-1.5 py-0.5 rounded border ${
+                                    {pdu.label && <span className="text-[11px] text-slate-500 truncate">{pdu.label}</span>}
+                                    <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
                                       dbIssues.length
                                         ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
                                         : 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
@@ -1984,7 +2147,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                       {dbIssues.length ? ` (${dbIssues.join(', ')})` : ''}
                                     </span>
                                     {result && (
-                                      <span className={`text-[9px] px-1.5 py-0.5 rounded border font-semibold ${
+                                      <span className={`text-[10px] px-1.5 py-0.5 rounded border font-semibold ${
                                         result.success
                                           ? 'bg-emerald-500/30 text-emerald-200 border-emerald-500/50'
                                           : 'bg-red-500/30 text-red-200 border-red-500/50'
@@ -2003,18 +2166,18 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                     </p>
                                   )}
                                   {result?.recommendation && !result.success && (
-                                    <p className="text-[10px] text-amber-200/90 mt-1 leading-relaxed">
+                                    <p className="text-[11px] text-amber-200/90 mt-1 leading-relaxed">
                                       → {result.recommendation}
                                     </p>
                                   )}
                                   {result?.steps?.length > 0 && (
                                     <details className="mt-2">
-                                      <summary className="text-[10px] text-slate-400 cursor-pointer hover:text-slate-300">
+                                      <summary className="text-[11px] text-slate-400 cursor-pointer hover:text-slate-300">
                                         Repair steps ({result.steps.length})
                                       </summary>
                                       <div className="mt-1 space-y-0.5 pl-2 border-l border-slate-700">
                                         {result.steps.map((step, i) => (
-                                          <p key={i} className="text-[9px] font-mono text-slate-500 leading-relaxed">
+                                          <p key={i} className="text-[10px] font-mono text-slate-500 leading-relaxed">
                                             {step.label || step.phase}
                                             {step.source ? ` [${step.source}]` : ''}
                                             {step.code ? ` — ${step.code}` : ''}
@@ -2027,7 +2190,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                   {probe && !probe.success && (
                                     <div className="mt-2 space-y-1">
                                       {probe.attempts?.slice(0, 4).map((a) => (
-                                        <p key={a.url} className="text-[10px] font-mono text-slate-400">
+                                        <p key={a.url} className="text-[11px] font-mono text-slate-400">
                                           {a.url}: {a.success ? 'OK' : (a.error || 'failed')}
                                         </p>
                                       ))}
@@ -2039,7 +2202,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                     type="button"
                                     onClick={() => testProbeLogin(pdu.ip_address)}
                                     disabled={repairLoading}
-                                    className="text-[10px] text-slate-400 hover:text-white disabled:opacity-40"
+                                    className="text-[11px] text-slate-400 hover:text-white disabled:opacity-40"
                                   >
                                     Test
                                   </button>
@@ -2047,7 +2210,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                     type="button"
                                     onClick={() => runRepairWebAccess([pdu.id])}
                                     disabled={repairLoading}
-                                    className="text-[10px] text-[#00E5FF] hover:text-[#00E5FF]/80 disabled:opacity-40"
+                                    className="text-[11px] text-px-accent hover:text-px-accent/80 disabled:opacity-40"
                                   >
                                     Repair
                                   </button>
@@ -2071,14 +2234,14 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     className="w-full px-5 py-2.5 bg-emerald-500/20 border border-emerald-500/50 hover:bg-emerald-500/30 disabled:opacity-50 text-emerald-300 rounded-lg flex items-center justify-center gap-2 transition-all text-sm"
                   >
                     {repairLoading ? (
-                      <span className="material-icons-outlined text-sm animate-spin">sync</span>
+                      <Icon className="material-icons-outlined text-sm animate-spin">sync</Icon>
                     ) : (
-                      <span className="material-icons-outlined text-sm">healing</span>
+                      <Icon className="material-icons-outlined text-sm">healing</Icon>
                     )}
                     Smart Repair {repairSelected.size || 0} selected PDU{repairSelected.size === 1 ? '' : 's'}
                   </button>
 
-                  <p className="text-[10px] text-slate-600 leading-relaxed">
+                  <p className="text-[11px] text-slate-600 leading-relaxed">
                     Tries: your password → DB stored password → factory admin/admin, on HTTPS:443 then HTTP:80.
                     If batch commissioning changed the password, enter that password above.
                     Use <span className="text-slate-400">Test</span> first to diagnose without changing the database.
@@ -2092,26 +2255,26 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   {batchStep === 0 && (
                     <>
                       <p className="text-xs text-slate-400">Scan a subnet for all DHCP-connected PDUs, then configure them all at once.</p>
-                      <p className="text-[10px] text-slate-500 leading-relaxed px-0.5">
+                      <p className="text-[11px] text-slate-500 leading-relaxed px-0.5">
                         Daisy-chain slaves have no Ethernet — the scan reads them through each master
                         (<span className="font-mono">getstatus</span> / SNMP <span className="font-mono">.3.2–.3.4</span>).
                         SNMP in the template is written on the master and applied to the whole chain.
                       </p>
 
                       {/* Discovery method selector — HTTP mode is for VPN/firewalled networks where SNMP UDP/161 is blocked */}
-                      <div className="flex items-center gap-2 p-2 rounded-lg bg-[#0a1222] border border-[#233544]">
-                        <span className="text-[10px] uppercase tracking-wider text-slate-500 px-2">Discovery</span>
+                      <div className="flex items-center gap-2 p-2 rounded-lg bg-[#0a1222] border border-px-stroke">
+                        <span className="text-[11px] uppercase tracking-wider text-slate-500 px-2">Discovery</span>
                         <div className="flex gap-1 flex-1">
                           <button
                             onClick={() => setBatchScanMethod('snmp')}
                             className={`flex-1 py-1.5 px-2 text-[11px] rounded transition-all flex items-center justify-center gap-1.5 ${
                               batchScanMethod === 'snmp'
-                                ? 'bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/40'
+                                ? 'bg-px-accent/20 text-px-accent border border-px-accent/40'
                                 : 'text-slate-400 hover:text-white border border-transparent'
                             }`}
                             title="SNMP UDP/161 — fastest, requires SNMP to be reachable"
                           >
-                            <span className="material-icons-outlined text-xs">router</span>
+                            <Icon className="material-icons-outlined text-xs">router</Icon>
                             SNMP (UDP/161)
                           </button>
                           <button
@@ -2123,21 +2286,21 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                             }`}
                             title="HTTP TCP/80 — use this when SNMP is blocked by VPN or corporate firewall"
                           >
-                            <span className="material-icons-outlined text-xs">vpn_lock</span>
+                            <Icon className="material-icons-outlined text-xs">vpn_lock</Icon>
                             HTTP (TCP/80) — VPN-safe
                           </button>
                         </div>
                       </div>
                       {batchScanMethod === 'http' && (
-                        <p className="text-[10px] text-amber-300/80 flex items-start gap-1.5 px-1">
-                          <span className="material-icons-outlined text-[12px] mt-0.5">info</span>
+                        <p className="text-[11px] text-amber-300/80 flex items-start gap-1.5 px-1">
+                          <Icon className="material-icons-outlined text-[12px] mt-0.5">info</Icon>
                           HTTP mode probes port 80 (and 6662/8080/443) on each IP. Use this when single-IP scan works but subnet/range scan returns nothing — typically a sign that SNMP UDP/161 is blocked by the customer VPN or firewall.
                         </p>
                       )}
 
                       {isDemoMode && (
                         <div className="flex items-start gap-2 p-2.5 rounded-lg bg-fuchsia-500/10 border border-fuchsia-500/30">
-                          <span className="material-icons-outlined text-sm text-fuchsia-300 mt-0.5">science</span>
+                          <Icon className="material-icons-outlined text-sm text-fuchsia-300 mt-0.5">science</Icon>
                           <div className="text-[11px] leading-relaxed flex-1 min-w-0">
                             <p className="font-medium text-fuchsia-200">Demo scan range</p>
                             <p className="font-mono text-fuchsia-300/90 mt-0.5">{DEMO_SCAN_DEFAULTS.scan_subnet}</p>
@@ -2149,7 +2312,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                               type="button"
                               onClick={resetDemoForCommissioning}
                               disabled={loading}
-                              className="mt-2 px-2.5 py-1 rounded border border-fuchsia-500/40 text-fuchsia-200 hover:bg-fuchsia-500/15 text-[10px] font-bold uppercase tracking-wide disabled:opacity-50"
+                              className="mt-2 px-2.5 py-1 rounded border border-fuchsia-500/40 text-fuchsia-200 hover:bg-fuchsia-500/15 text-[11px] font-bold uppercase tracking-wide disabled:opacity-50"
                             >
                               Factory reset for commissioning
                             </button>
@@ -2159,17 +2322,17 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
 
                       <div className="flex gap-2">
                         <input type="text" value={subnet} onChange={e => setSubnet(e.target.value)}
-                          className="flex-1 bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
+                          className="flex-1 bg-app-bg border border-px-stroke rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-px-accent"
                           placeholder={isDemoMode ? DEMO_SCAN_DEFAULTS.scan_subnet : '10.106.76.206-223 or 192.168.0.0/24'} />
                         {batchScanMethod === 'snmp' && (
                           <input type="text" value={community} onChange={e => setCommunity(e.target.value)}
-                            className="w-24 bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
+                            className="w-24 bg-app-bg border border-px-stroke rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-px-accent"
                             placeholder="public" />
                         )}
                         <button onClick={batchScan} disabled={loading}
-                          className="px-4 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 hover:bg-[#00E5FF]/30 disabled:opacity-50 text-[#00E5FF] rounded-lg text-sm flex items-center gap-1.5">
-                          {loading ? <span className="material-icons-outlined text-sm animate-spin">sync</span> :
-                            <span className="material-icons-outlined text-sm">radar</span>}
+                          className="px-4 py-2.5 bg-px-accent/20 border border-px-accent/50 hover:bg-px-accent/30 disabled:opacity-50 text-px-accent rounded-lg text-sm flex items-center gap-1.5">
+                          {loading ? <Icon className="material-icons-outlined text-sm animate-spin">sync</Icon> :
+                            <Icon className="material-icons-outlined text-sm">radar</Icon>}
                           Scan
                         </button>
                       </div>
@@ -2187,7 +2350,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                               {' '}— select which to commission:
                             </p>
                             <button onClick={() => setBatchSelected(prev => prev.size === batchDevices.length ? new Set() : new Set(batchDevices.map(d => d.ip)))}
-                              className="text-[10px] text-[#00E5FF] hover:text-[#00E5FF]/80">
+                              className="text-[11px] text-px-accent hover:text-px-accent/80">
                               {batchSelected.size === batchDevices.length ? 'Deselect All' : 'Select All'}
                             </button>
                           </div>
@@ -2197,41 +2360,41 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                 className={`p-3 rounded-lg border cursor-pointer transition-all ${
                                   d.chain_role === 'slave' ? 'ml-4 ' : ''
                                 }${
-                                  batchSelected.has(d.ip) ? 'bg-emerald-500/10 border-emerald-500/40' : 'bg-[#0B1120] border-[#233544] hover:border-slate-500'
+                                  batchSelected.has(d.ip) ? 'bg-emerald-500/10 border-emerald-500/40' : 'bg-app-bg border-px-stroke hover:border-slate-500'
                                 }`}>
                                 <div className="flex items-center gap-3">
                                   <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
                                     batchSelected.has(d.ip) ? 'border-emerald-400 bg-emerald-500/20' : 'border-slate-600'
                                   }`}>
-                                    {batchSelected.has(d.ip) && <span className="material-icons-outlined text-emerald-400 text-xs">check</span>}
+                                    {batchSelected.has(d.ip) && <Icon className="material-icons-outlined text-emerald-400 text-xs">check</Icon>}
                                   </div>
                                   <div className="flex-1 min-w-0">
                                     <div className="flex items-center gap-2 flex-wrap">
                                       <span className="font-mono text-white text-sm">{d.ip}</span>
-                                      {d.mac && <span className="text-[10px] text-slate-500 font-mono">{d.mac}</span>}
+                                      {d.mac && <span className="text-[11px] text-slate-500 font-mono">{d.mac}</span>}
                                       {d.chain_role === 'master' && (d.chain_size || 0) > 1 && (
-                                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-[#00E5FF]/15 text-[#00E5FF] border border-[#00E5FF]/30">Chain master</span>
+                                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-px-accent/15 text-px-accent border border-px-accent/30">Chain master</span>
                                       )}
                                       {d.chain_role === 'slave' && (
-                                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/30">
+                                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/30">
                                           Daisy -{d.unit_index} via {d.master_ip}
                                         </span>
                                       )}
                                       {d.chain_role === 'slave' && d.chain_live === false && (
-                                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">0 V bus</span>
+                                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">0 V bus</span>
                                       )}
-                                      {d.dhcp === 'ON' && <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">DHCP</span>}
-                                      {d.web_admin_port && d.chain_role !== 'slave' && <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">Web:{d.web_admin_port}</span>}
+                                      {d.dhcp === 'ON' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">DHCP</span>}
+                                      {d.web_admin_port && d.chain_role !== 'slave' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">Web:{d.web_admin_port}</span>}
                                     </div>
-                                    {(d.hostname || d.name) && <p className="text-[10px] text-slate-500 truncate">{d.hostname || d.name} {d.firmware ? `(FW ${d.firmware})` : ''}</p>}
+                                    {(d.hostname || d.name) && <p className="text-[11px] text-slate-500 truncate">{d.hostname || d.name} {d.firmware ? `(FW ${d.firmware})` : ''}</p>}
                                   </div>
                                 </div>
                               </div>
                             ))}
                           </div>
                           <button onClick={() => setBatchStep(1)} disabled={batchSelected.size === 0}
-                            className="w-full py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 text-[#00E5FF] rounded-lg text-sm disabled:opacity-30 hover:bg-[#00E5FF]/30 flex items-center justify-center gap-2">
-                            <span className="material-icons-outlined text-sm">tune</span>
+                            className="w-full py-2.5 bg-px-accent/20 border border-px-accent/50 text-px-accent rounded-lg text-sm disabled:opacity-30 hover:bg-px-accent/30 flex items-center justify-center gap-2">
+                            <Icon className="material-icons-outlined text-sm">tune</Icon>
                             Configure Template ({batchSelected.size} PDUs)
                           </button>
                         </div>
@@ -2243,115 +2406,115 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     <div className="space-y-3">
                       <div className="flex items-center justify-between">
                         <h4 className="text-sm font-bold text-white">Batch Template</h4>
-                        <button onClick={() => setBatchStep(0)} className="text-[10px] text-slate-400 hover:text-white">
-                          <span className="material-icons-outlined text-xs mr-0.5">arrow_back</span> Back to scan
+                        <button onClick={() => setBatchStep(0)} className="text-[11px] text-slate-400 hover:text-white">
+                          <Icon className="material-icons-outlined text-xs mr-0.5">arrow_back</Icon> Back to scan
                         </button>
                       </div>
                       {/* Network */}
-                      <div className={`p-3 rounded-lg border ${batchTemplate.network.ip_start ? 'bg-[#0B1120] border-[#233544]' : 'bg-[#0a1222] border-[#1f2a3a] opacity-90'}`}>
+                      <div className={`p-3 rounded-lg border ${batchTemplate.network.ip_start ? 'bg-app-bg border-px-stroke' : 'bg-[#0a1222] border-[#1f2a3a] opacity-90'}`}>
                         <div className="flex items-center justify-between mb-2">
-                          <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider flex items-center gap-1">
-                            <span className="material-icons-outlined text-xs">lan</span> Network
-                            <span className="ml-2 text-[9px] text-slate-500 normal-case tracking-normal">(optional)</span>
+                          <p className="text-[11px] text-px-accent uppercase tracking-wider flex items-center gap-1">
+                            <Icon className="material-icons-outlined text-xs">lan</Icon> Network
+                            <span className="ml-2 text-[10px] text-slate-500 normal-case tracking-normal">(optional)</span>
                           </p>
                           {!batchTemplate.network.ip_start && (
-                            <span className="text-[9px] text-emerald-400 flex items-center gap-1">
-                              <span className="material-icons-outlined text-[10px]">check_circle</span>
+                            <span className="text-[10px] text-emerald-400 flex items-center gap-1">
+                              <Icon className="material-icons-outlined text-[11px]">check_circle</Icon>
                               Keeping current IPs (no reboot)
                             </span>
                           )}
                         </div>
-                        <p className="text-[10px] text-slate-400 mb-2 leading-relaxed">
+                        <p className="text-[11px] text-slate-400 mb-2 leading-relaxed">
                           Leave <span className="font-mono text-slate-300">Starting IP</span> empty to keep the IPs already assigned by your network administrator. Fill it in only if you want PDUMind to push new static IPs (will reboot each PDU).
                         </p>
                         <div className="grid grid-cols-2 gap-2">
                           <div>
-                            <label className="text-[9px] text-slate-500 uppercase">Starting IP</label>
+                            <label className="text-[10px] text-slate-500 uppercase">Starting IP</label>
                             <input type="text" value={batchTemplate.network.ip_start}
                               onChange={e => setBatchTemplate(p => ({ ...p, network: { ...p.network, ip_start: e.target.value } }))}
-                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
+                              className="w-full bg-px-panel border border-px-stroke rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-px-accent"
                               placeholder="(empty = keep current IPs)" />
-                            <p className="text-[9px] text-slate-600 mt-0.5">Auto-increments: .101, .102, .103...</p>
+                            <p className="text-[10px] text-slate-600 mt-0.5">Auto-increments: .101, .102, .103...</p>
                           </div>
                           {['mask', 'gateway', 'dns1', 'dns2'].map(k => (
                             <div key={k}>
-                              <label className="text-[9px] text-slate-500 uppercase">{k === 'mask' ? 'Subnet Mask' : k === 'dns1' ? 'DNS 1' : k === 'dns2' ? 'DNS 2' : 'Gateway'}</label>
+                              <label className="text-[10px] text-slate-500 uppercase">{k === 'mask' ? 'Subnet Mask' : k === 'dns1' ? 'DNS 1' : k === 'dns2' ? 'DNS 2' : 'Gateway'}</label>
                               <input type="text" value={batchTemplate.network[k] || ''}
                                 onChange={e => setBatchTemplate(p => ({ ...p, network: { ...p.network, [k]: e.target.value } }))}
                                 disabled={!batchTemplate.network.ip_start}
-                                className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF] disabled:opacity-40 disabled:cursor-not-allowed" />
+                                className="w-full bg-px-panel border border-px-stroke rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-px-accent disabled:opacity-40 disabled:cursor-not-allowed" />
                             </div>
                           ))}
                         </div>
                       </div>
                       {/* System */}
-                      <div className="p-3 rounded-lg bg-[#0B1120] border border-[#233544]">
-                        <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider mb-2 flex items-center gap-1">
-                          <span className="material-icons-outlined text-xs">dns</span> System
+                      <div className="p-3 rounded-lg bg-app-bg border border-px-stroke">
+                        <p className="text-[11px] text-px-accent uppercase tracking-wider mb-2 flex items-center gap-1">
+                          <Icon className="material-icons-outlined text-xs">dns</Icon> System
                         </p>
                         <div className="space-y-2">
-                          <label className="flex items-center gap-2 cursor-pointer p-2 rounded bg-[#161E2E] border border-[#233544] hover:border-[#00E5FF]/50 transition-colors">
+                          <label className="flex items-center gap-2 cursor-pointer p-2 rounded bg-px-panel border border-px-stroke hover:border-px-accent/50 transition-colors">
                             <input type="checkbox"
                               checked={batchTemplate.system.keep_hostname === true}
                               onChange={e => setBatchTemplate(p => ({ ...p, system: { ...p.system, keep_hostname: e.target.checked } }))}
-                              className="accent-[#00E5FF]" />
+                              className="accent-px-accent" />
                             <span className="text-[11px] text-white">Keep current device name (don't change)</span>
-                            <span className="text-[9px] text-slate-500 ml-1">— use when IPs/names were already set in Guided mode</span>
+                            <span className="text-[10px] text-slate-500 ml-1">— use when IPs/names were already set in Guided mode</span>
                           </label>
                           <div className={batchTemplate.system.keep_hostname ? 'opacity-40 pointer-events-none' : ''}>
-                            <label className="text-[9px] text-slate-500 uppercase">Hostname Pattern</label>
+                            <label className="text-[10px] text-slate-500 uppercase">Hostname Pattern</label>
                             <input type="text" value={batchTemplate.system.router_hostname}
                               onChange={e => setBatchTemplate(p => ({ ...p, system: { ...p.system, router_hostname: e.target.value } }))}
                               disabled={batchTemplate.system.keep_hostname === true}
-                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
+                              className="w-full bg-px-panel border border-px-stroke rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-px-accent"
                               placeholder="SIN1-PDU-2NBS{10-17}-A" />
-                            <div className="text-[9px] text-slate-600 mt-1 space-y-0.5">
+                            <div className="text-[10px] text-slate-600 mt-1 space-y-0.5">
                               <p className="text-slate-500 font-medium">Variables (auto-replaced per PDU):</p>
-                              <p><span className="text-[#00E5FF] font-mono">{'{N}'}</span> — start at N (e.g. <span className="font-mono text-white">{'{10}'}</span> → 10, 11, 12...)</p>
-                              <p><span className="text-[#00E5FF] font-mono">{'{N-M}'}</span> — start at N, width from M (e.g. <span className="font-mono text-white">{'{10-17}'}</span> → 10, 11, 12... 17)</p>
-                              <p><span className="text-[#00E5FF] font-mono">{'{seq}'}</span> — 3-digit zero-padded sequence: 001, 002, 003...</p>
-                              <p><span className="text-[#00E5FF] font-mono">{'{idx}'}</span> — zero-based index: 0, 1, 2...</p>
-                              <p><span className="text-[#00E5FF] font-mono">{'{ip}'}</span> — assigned IP address</p>
-                              <p><span className="text-[#00E5FF] font-mono">{'{mac}'}</span> — last 6 chars of MAC</p>
+                              <p><span className="text-px-accent font-mono">{'{N}'}</span> — start at N (e.g. <span className="font-mono text-white">{'{10}'}</span> → 10, 11, 12...)</p>
+                              <p><span className="text-px-accent font-mono">{'{N-M}'}</span> — start at N, width from M (e.g. <span className="font-mono text-white">{'{10-17}'}</span> → 10, 11, 12... 17)</p>
+                              <p><span className="text-px-accent font-mono">{'{seq}'}</span> — 3-digit zero-padded sequence: 001, 002, 003...</p>
+                              <p><span className="text-px-accent font-mono">{'{idx}'}</span> — zero-based index: 0, 1, 2...</p>
+                              <p><span className="text-px-accent font-mono">{'{ip}'}</span> — assigned IP address</p>
+                              <p><span className="text-px-accent font-mono">{'{mac}'}</span> — last 6 chars of MAC</p>
                               <p className="text-emerald-400 mt-1">
-                                <span className="material-icons-outlined text-[10px] mr-0.5">lightbulb</span>
+                                <Icon className="material-icons-outlined text-[11px] mr-0.5">lightbulb</Icon>
                                 Example: <span className="font-mono text-white">SIN1-PDU-2NBS{'{10-17}'}-A</span>
                                 {' '}with PDUs at 10.106.76.206-213 →
                                 {' '}<span className="font-mono text-white">SIN1-PDU-2NBS10-A … SIN1-PDU-2NBS17-A</span>
                               </p>
                             </div>
                           </div>
-                          <label className={`flex items-center gap-2 cursor-pointer p-2 rounded bg-[#161E2E] border border-[#233544] hover:border-[#00E5FF]/50 transition-colors ${batchTemplate.system.keep_hostname ? 'opacity-40 pointer-events-none' : ''}`}>
+                          <label className={`flex items-center gap-2 cursor-pointer p-2 rounded bg-px-panel border border-px-stroke hover:border-px-accent/50 transition-colors ${batchTemplate.system.keep_hostname ? 'opacity-40 pointer-events-none' : ''}`}>
                             <input type="checkbox"
                               checked={batchTemplate.system.sync_device_name !== false}
                               disabled={batchTemplate.system.keep_hostname === true}
                               onChange={e => setBatchTemplate(p => ({ ...p, system: { ...p.system, sync_device_name: e.target.checked } }))}
-                              className="accent-[#00E5FF]" />
+                              className="accent-px-accent" />
                             <span className="text-[11px] text-white">Use hostname as device name</span>
-                            <span className="text-[9px] text-slate-500 ml-1">— each PDU's device name will mirror its resolved hostname</span>
+                            <span className="text-[10px] text-slate-500 ml-1">— each PDU's device name will mirror its resolved hostname</span>
                           </label>
                           {batchTemplate.system.sync_device_name === false && !batchTemplate.system.keep_hostname && (
                             <div>
-                              <label className="text-[9px] text-slate-500 uppercase">Device Name (or pattern)</label>
+                              <label className="text-[10px] text-slate-500 uppercase">Device Name (or pattern)</label>
                               <input type="text" value={batchTemplate.system.device_name}
                                 onChange={e => setBatchTemplate(p => ({ ...p, system: { ...p.system, device_name: e.target.value } }))}
-                                className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
+                                className="w-full bg-px-panel border border-px-stroke rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-px-accent"
                                 placeholder="Same placeholders as hostname pattern" />
                             </div>
                           )}
                         </div>
                       </div>
                       {/* Credentials */}
-                      <div className="p-3 rounded-lg bg-[#0B1120] border border-[#233544]">
-                        <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider mb-2 flex items-center gap-1">
-                          <span className="material-icons-outlined text-xs">manage_accounts</span> PDU Web Login
+                      <div className="p-3 rounded-lg bg-app-bg border border-px-stroke">
+                        <p className="text-[11px] text-px-accent uppercase tracking-wider mb-2 flex items-center gap-1">
+                          <Icon className="material-icons-outlined text-xs">manage_accounts</Icon> PDU Web Login
                         </p>
-                        <p className="text-[9px] text-slate-600 mb-2">
+                        <p className="text-[10px] text-slate-600 mb-2">
                           Current credentials are used to connect during batch deploy. New values are written to each PDU.
                         </p>
                         <div className="grid grid-cols-2 gap-2">
                           <div>
-                            <label className="text-[9px] text-slate-500 uppercase">Current Username</label>
+                            <label className="text-[10px] text-slate-500 uppercase">Current Username</label>
                             <input
                               type="text"
                               value={batchTemplate.current_credentials.username}
@@ -2359,12 +2522,12 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                 ...p,
                                 current_credentials: { ...p.current_credentials, username: e.target.value },
                               }))}
-                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
+                              className="w-full bg-px-panel border border-px-stroke rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-px-accent"
                               placeholder="admin"
                             />
                           </div>
                           <div>
-                            <label className="text-[9px] text-slate-500 uppercase">Current Password</label>
+                            <label className="text-[10px] text-slate-500 uppercase">Current Password</label>
                             <PasswordInput
                               value={batchTemplate.current_credentials.password}
                               onChange={e => setBatchTemplate(p => ({ ...p, current_credentials: { ...p.current_credentials, password: e.target.value } }))}
@@ -2373,17 +2536,17 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                             />
                           </div>
                           <div>
-                            <label className="text-[9px] text-slate-500 uppercase">New Admin Username</label>
+                            <label className="text-[10px] text-slate-500 uppercase">New Admin Username</label>
                             <input
                               type="text"
                               value={batchTemplate.users.admin_username}
                               onChange={e => setBatchTemplate(p => ({ ...p, users: { ...p.users, admin_username: e.target.value } }))}
-                              className="w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]"
+                              className="w-full bg-px-panel border border-px-stroke rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-px-accent"
                               placeholder="Leave blank to keep current"
                             />
                           </div>
                           <div>
-                            <label className="text-[9px] text-slate-500 uppercase">New Admin Password</label>
+                            <label className="text-[10px] text-slate-500 uppercase">New Admin Password</label>
                             <PasswordInput
                               value={batchTemplate.users.admin_password}
                               onChange={e => setBatchTemplate(p => ({ ...p, users: { ...p.users, admin_password: e.target.value } }))}
@@ -2394,25 +2557,25 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         </div>
                       </div>
                       {/* SNMP */}
-                      <div className="p-3 rounded-lg bg-[#0B1120] border border-[#233544]">
-                        <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider mb-2 flex items-center gap-1">
-                          <span className="material-icons-outlined text-xs">vpn_key</span> SNMP
+                      <div className="p-3 rounded-lg bg-app-bg border border-px-stroke">
+                        <p className="text-[11px] text-px-accent uppercase tracking-wider mb-2 flex items-center gap-1">
+                          <Icon className="material-icons-outlined text-xs">vpn_key</Icon> SNMP
                         </p>
                         <PduSnmpSettingsForm
                           compact
                           value={batchTemplate.snmp}
                           onChange={snmp => setBatchTemplate(p => ({ ...p, snmp }))}
                         />
-                        <p className="text-[9px] text-slate-500 mt-2 leading-relaxed">
+                        <p className="text-[10px] text-slate-500 mt-2 leading-relaxed">
                           Daisy slaves have no SNMP agent of their own. This write goes to each chain master;
                           PDUMind stores the same community on every slave and polls them on the master
                           (<span className="font-mono">.3.2 / .3.3 / .3.4</span>).
                         </p>
                       </div>
                       {/* NTP */}
-                      <div className="p-3 rounded-lg bg-[#0B1120] border border-[#233544]">
-                        <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider mb-2 flex items-center gap-1">
-                          <span className="material-icons-outlined text-xs">schedule</span> Time &amp; SNTP
+                      <div className="p-3 rounded-lg bg-app-bg border border-px-stroke">
+                        <p className="text-[11px] text-px-accent uppercase tracking-wider mb-2 flex items-center gap-1">
+                          <Icon className="material-icons-outlined text-xs">schedule</Icon> Time &amp; SNTP
                         </p>
                         <PduNtpSettingsForm
                           compact
@@ -2421,9 +2584,9 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         />
                       </div>
                       {/* Web Access */}
-                      <div className="p-3 rounded-lg bg-[#0B1120] border border-[#233544]">
-                        <p className="text-[10px] text-[#00E5FF] uppercase tracking-wider mb-2 flex items-center gap-1">
-                          <span className="material-icons-outlined text-xs">lock</span> Web Access
+                      <div className="p-3 rounded-lg bg-app-bg border border-px-stroke">
+                        <p className="text-[11px] text-px-accent uppercase tracking-wider mb-2 flex items-center gap-1">
+                          <Icon className="material-icons-outlined text-xs">lock</Icon> Web Access
                         </p>
                         <PduWebAccessSettingsForm
                           compact
@@ -2434,7 +2597,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                       {/* Preview button */}
                       <button onClick={openBatchPreview} disabled={loading || batchSelected.size === 0}
                         className="w-full py-3 bg-emerald-500/20 border border-emerald-500/50 text-emerald-400 rounded-lg text-sm font-bold hover:bg-emerald-500/30 disabled:opacity-50 flex items-center justify-center gap-2">
-                        <span className="material-icons-outlined text-sm">visibility</span>
+                        <Icon className="material-icons-outlined text-sm">visibility</Icon>
                         Preview &amp; Commission {batchSelected.size} PDUs
                       </button>
                     </div>
@@ -2447,8 +2610,8 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         <h4 className="text-sm font-bold text-white">Deploying...</h4>
                         <span className="text-xs text-slate-400 font-mono">{batchProgress.completed}/{batchProgress.total}</span>
                       </div>
-                      <div className="w-full h-2 bg-[#0B1120] rounded-full overflow-hidden">
-                        <div className="h-full bg-[#00E5FF] transition-all rounded-full"
+                      <div className="w-full h-2 bg-app-bg rounded-full overflow-hidden">
+                        <div className="h-full bg-px-accent transition-all rounded-full"
                           style={{ width: `${(batchProgress.completed / batchProgress.total) * 100}%` }} />
                       </div>
                       <div className="max-h-48 overflow-y-auto space-y-1">
@@ -2458,9 +2621,9 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                             r.step === 'error' || r.step === 'reboot_timeout' || r.step === 'snmp_failed' ? 'bg-red-500/10 text-red-400' :
                             'bg-amber-500/10 text-amber-300'
                           }`}>
-                            <span className="material-icons-outlined text-sm">
+                            <Icon className="material-icons-outlined text-sm">
                               {r.step === 'done' ? 'check_circle' : r.step === 'error' || r.step === 'reboot_timeout' || r.step === 'snmp_failed' ? 'error' : 'sync'}
-                            </span>
+                            </Icon>
                             <span className="font-mono">{r.ip}</span>
                             {r.new_ip && r.new_ip !== r.ip && <span className="text-slate-500">→ {r.new_ip}</span>}
                             <span className="text-slate-500">{r.step}</span>
@@ -2475,7 +2638,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     <div className="space-y-3">
                       <div className="flex items-center gap-3">
                         <div className="w-12 h-12 rounded-full bg-emerald-500/20 flex items-center justify-center">
-                          <span className="material-icons-outlined text-emerald-400 text-2xl">task_alt</span>
+                          <Icon className="material-icons-outlined text-emerald-400 text-2xl">task_alt</Icon>
                         </div>
                         <div>
                           <h4 className="text-sm font-bold text-white">Batch Commissioning Complete</h4>
@@ -2493,21 +2656,21 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                           }`}>
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-2">
-                                <span className={`material-icons-outlined text-sm ${r.success ? 'text-emerald-400' : 'text-red-400'}`}>
+                                <Icon className={`material-icons-outlined text-sm ${r.success ? 'text-emerald-400' : 'text-red-400'}`}>
                                   {r.success ? 'check_circle' : 'error'}
-                                </span>
+                                </Icon>
                                 <span className="font-mono text-white text-xs">{r.ip}</span>
                                 {r.new_ip && r.new_ip !== r.ip && (
-                                  <span className="text-slate-500 text-xs">→ <span className="text-[#00E5FF] font-mono">{r.new_ip}</span></span>
+                                  <span className="text-slate-500 text-xs">→ <span className="text-px-accent font-mono">{r.new_ip}</span></span>
                                 )}
-                                {r.mac && <span className="text-[10px] text-slate-600 font-mono">{r.mac}</span>}
+                                {r.mac && <span className="text-[11px] text-slate-600 font-mono">{r.mac}</span>}
                               </div>
                             </div>
-                            {r.error && <p className="text-[10px] text-red-400 mt-1">{r.error}</p>}
+                            {r.error && <p className="text-[11px] text-red-400 mt-1">{r.error}</p>}
                             {r.sections && Object.keys(r.sections).length > 0 && (
                               <div className="flex flex-wrap gap-1 mt-1.5">
                                 {Object.entries(r.sections).map(([sec, res]) => (
-                                  <span key={sec} title={res.error || ''} className={`text-[9px] px-1.5 py-0.5 rounded ${
+                                  <span key={sec} title={res.error || ''} className={`text-[10px] px-1.5 py-0.5 rounded ${
                                     res.success ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
                                   }`}>{sec}{res.success ? '' : ' ✗'}</span>
                                 ))}
@@ -2518,12 +2681,12 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                       </div>
                       <div className="flex gap-2">
                         <button onClick={() => { setBatchStep(0); setBatchDevices([]); setBatchSelected(new Set()); setBatchJobId(null); setBatchProgress(null); }}
-                          className="flex-1 py-2.5 bg-[#0B1120] border border-[#233544] text-slate-400 rounded-lg text-sm hover:text-white">
+                          className="flex-1 py-2.5 bg-app-bg border border-px-stroke text-slate-400 rounded-lg text-sm hover:text-white">
                           Start New Batch
                         </button>
                         <button onClick={() => { fetchBatchRacks(); setBatchStep(4); }}
-                          className="flex-1 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 text-[#00E5FF] rounded-lg text-sm font-bold hover:bg-[#00E5FF]/30 flex items-center justify-center gap-2">
-                          <span className="material-icons-outlined text-sm">view_in_ar</span>
+                          className="flex-1 py-2.5 bg-px-accent/20 border border-px-accent/50 text-px-accent rounded-lg text-sm font-bold hover:bg-px-accent/30 flex items-center justify-center gap-2">
+                          <Icon className="material-icons-outlined text-sm">view_in_ar</Icon>
                           Assign to Racks
                         </button>
                       </div>
@@ -2538,20 +2701,20 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     <div className="space-y-3">
                       <div className="flex items-center justify-between">
                         <h4 className="text-sm font-bold text-white flex items-center gap-2">
-                          <span className="material-icons-outlined text-[#00E5FF] text-sm">view_in_ar</span>
+                          <Icon className="material-icons-outlined text-px-accent text-sm">view_in_ar</Icon>
                           Assign PDUs to Racks
                         </h4>
-                        <button onClick={() => setBatchStep(3)} className="text-[10px] text-slate-400 hover:text-white flex items-center gap-0.5">
-                          <span className="material-icons-outlined text-xs">arrow_back</span> Back to report
+                        <button onClick={() => setBatchStep(3)} className="text-[11px] text-slate-400 hover:text-white flex items-center gap-0.5">
+                          <Icon className="material-icons-outlined text-xs">arrow_back</Icon> Back to report
                         </button>
                       </div>
-                      <p className="text-[10px] text-slate-500">
+                      <p className="text-[11px] text-slate-500">
                         Select a PDU, then click a rack slot to assign. Click the <span className="text-red-400">X</span> to unassign.
                       </p>
 
                       {/* PDU list — click to select which one to place */}
                       <div>
-                        <p className="text-[9px] text-slate-500 uppercase tracking-wider mb-1">
+                        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">
                           Commissioned PDUs ({successPdus.length})
                         </p>
                         <div className="flex flex-wrap gap-1.5">
@@ -2563,26 +2726,26 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                 onClick={() => setDragPdu(isActive ? null : key)}
                                 className={`px-2.5 py-1.5 rounded-lg border text-left transition-all flex items-center gap-1.5 ${
                                   isActive
-                                    ? 'bg-[#00E5FF]/15 border-[#00E5FF]/60 ring-1 ring-[#00E5FF]/30'
+                                    ? 'bg-px-accent/15 border-px-accent/60 ring-1 ring-px-accent/30'
                                     : assigned
                                       ? 'bg-emerald-500/10 border-emerald-500/30'
-                                      : 'bg-[#0B1120] border-[#233544] hover:border-slate-500'
+                                      : 'bg-app-bg border-px-stroke hover:border-slate-500'
                                 }`}>
                                 <span className="font-mono text-white text-[11px]">{r.new_ip || r.ip}</span>
                                 {assigned && (
                                   <>
-                                    <span className="text-[9px] text-emerald-400">→ {assigned.rack_code}/{assigned.slot}</span>
+                                    <span className="text-[10px] text-emerald-400">→ {assigned.rack_code}/{assigned.slot}</span>
                                     <span onClick={(e) => { e.stopPropagation(); setBatchRackMap(p => { const n = { ...p }; delete n[key]; return n; }); }}
                                       className="text-slate-600 hover:text-red-400 cursor-pointer ml-0.5">
-                                      <span className="material-icons-outlined" style={{ fontSize: '11px' }}>close</span>
+                                      <Icon className="material-icons-outlined" style={{ fontSize: '11px' }}>close</Icon>
                                     </span>
                                   </>
                                 )}
                                 {!assigned && !isActive && (
-                                  <span className="text-[9px] text-slate-600">unassigned</span>
+                                  <span className="text-[10px] text-slate-600">unassigned</span>
                                 )}
                                 {isActive && !assigned && (
-                                  <span className="text-[9px] text-[#00E5FF] animate-pulse">selecting…</span>
+                                  <span className="text-[10px] text-px-accent animate-pulse">selecting…</span>
                                 )}
                               </button>
                             );
@@ -2592,12 +2755,12 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
 
                       {/* Rack grid — same layout as single commissioning */}
                       <div>
-                        <p className="text-[9px] text-slate-500 uppercase tracking-wider mb-2">
+                        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-2">
                           Available Racks ({batchRacks.length})
                         </p>
                         {batchRacks.length === 0 ? (
                           <div className="text-center py-6 text-slate-500">
-                            <span className="material-icons-outlined text-3xl opacity-50 mb-2 block">view_in_ar</span>
+                            <Icon className="material-icons-outlined text-3xl opacity-50 mb-2 block">view_in_ar</Icon>
                             <p className="text-sm">No racks with open slots</p>
                             <p className="text-xs mt-1">Save a hall layout in the Data Hall Designer first.</p>
                           </div>
@@ -2613,10 +2776,10 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                 <div key={rack.rack_code} className={`p-3 rounded-lg border text-left transition-all min-w-0 overflow-hidden ${
                                   slotsUsedByBatch.length > 0
                                     ? 'bg-emerald-500/5 border-emerald-500/30'
-                                    : 'bg-[#0B1120] border-[#233544]'
+                                    : 'bg-app-bg border-px-stroke'
                                 }`}>
                                   <p className="text-xs font-mono font-bold text-white truncate">{rack.rack_code}</p>
-                                  <p className="text-[10px] text-slate-500 mt-0.5">
+                                  <p className="text-[11px] text-slate-500 mt-0.5">
                                     Row {rack.row_index + 1}, Pos {rack.position_index + 1}
                                   </p>
 
@@ -2640,12 +2803,12 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                           <div key={slot}
                                             className="w-full min-w-0 rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-1">
                                             <div className="flex items-center justify-between gap-1 min-w-0">
-                                              <span className="text-[9px] font-bold text-emerald-300 shrink-0">{slot}</span>
+                                              <span className="text-[10px] font-bold text-emerald-300 shrink-0">{slot}</span>
                                               <button type="button"
                                                 title="Unassign"
                                                 onClick={() => setBatchRackMap(p => { const n = { ...p }; delete n[usedBy.pduKey]; return n; })}
                                                 className="shrink-0 w-4 h-4 flex items-center justify-center rounded hover:bg-red-500/20 text-slate-400 hover:text-red-400">
-                                                <span className="material-icons-outlined" style={{ fontSize: '12px' }}>close</span>
+                                                <Icon className="material-icons-outlined" style={{ fontSize: '12px' }}>close</Icon>
                                               </button>
                                             </div>
                                             <p className="text-[8px] font-mono text-emerald-200 truncate" title={ip}>{ip}</p>
@@ -2662,18 +2825,18 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                                               setDragPdu(null);
                                             }
                                           }}
-                                          className={`w-full px-1.5 py-1.5 rounded text-[9px] font-mono transition-all ${
+                                          className={`w-full px-1.5 py-1.5 rounded text-[10px] font-mono transition-all ${
                                             dragPdu && !batchRackMap[dragPdu]
-                                              ? 'bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/50 cursor-pointer hover:bg-[#00E5FF]/30'
-                                              : 'bg-[#161E2E] text-slate-500 border border-[#233544]'
+                                              ? 'bg-px-accent/20 text-px-accent border border-px-accent/50 cursor-pointer hover:bg-px-accent/30'
+                                              : 'bg-px-panel text-slate-500 border border-px-stroke'
                                           }`}>
-                                          <span className="font-bold text-[10px]">Pos {slot}</span>
+                                          <span className="font-bold text-[11px]">Pos {slot}</span>
                                           <span className="block text-[8px] opacity-80">empty — click to assign</span>
                                         </button>
                                       );
                                     })}
                                   </div>
-                                  <p className="text-[9px] text-slate-600 mt-1">
+                                  <p className="text-[10px] text-slate-600 mt-1">
                                     {rack.occupied + takenSlots.length}/{rack.total_slots} filled
                                   </p>
                                 </div>
@@ -2686,14 +2849,14 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                       {/* Actions */}
                       <div className="flex gap-2">
                         <button onClick={() => { setBatchStep(0); setBatchDevices([]); setBatchSelected(new Set()); setBatchJobId(null); setBatchProgress(null); setBatchRackMap({}); setDragPdu(null); }}
-                          className="flex-1 py-2.5 bg-[#0B1120] border border-[#233544] text-slate-400 rounded-lg text-sm hover:text-white">
+                          className="flex-1 py-2.5 bg-app-bg border border-px-stroke text-slate-400 rounded-lg text-sm hover:text-white">
                           Skip
                         </button>
                         <button onClick={saveBatchRackAssignments}
                           disabled={loading || Object.keys(batchRackMap).length === 0}
                           className="flex-1 py-2.5 bg-emerald-500/20 border border-emerald-500/50 text-emerald-400 rounded-lg text-sm font-bold hover:bg-emerald-500/30 disabled:opacity-30 flex items-center justify-center gap-2">
-                          {loading ? <span className="material-icons-outlined text-sm animate-spin">sync</span> :
-                            <span className="material-icons-outlined text-sm">save</span>}
+                          {loading ? <Icon className="material-icons-outlined text-sm animate-spin">sync</Icon> :
+                            <Icon className="material-icons-outlined text-sm">save</Icon>}
                           Save Assignments ({Object.keys(batchRackMap).length})
                         </button>
                       </div>
@@ -2710,15 +2873,15 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   <div className="max-h-40 overflow-y-auto space-y-1.5 pr-1">
                     {subnetDevices.map(d => (
                       <button key={d.ip} onClick={() => selectSubnetDevice(d)}
-                        className="w-full text-left p-3 rounded-lg bg-[#0B1120] border border-[#233544] hover:border-[#00E5FF]/50 transition-all">
+                        className="w-full text-left p-3 rounded-lg bg-app-bg border border-px-stroke hover:border-px-accent/50 transition-all">
                         <div className="flex items-center justify-between">
                           <div>
                             <span className="font-mono text-white text-sm">{d.ip}</span>
                             {d.name && d.name !== 'Unknown' && <span className="text-slate-400 text-xs ml-2">{d.name}</span>}
                           </div>
-                          <span className="material-icons-outlined text-slate-500 text-sm">arrow_forward</span>
+                          <Icon className="material-icons-outlined text-slate-500 text-sm">arrow_forward</Icon>
                         </div>
-                        {d.description && <p className="text-[10px] text-slate-600 mt-1 truncate">{d.description}</p>}
+                        {d.description && <p className="text-[11px] text-slate-600 mt-1 truncate">{d.description}</p>}
                       </button>
                     ))}
                   </div>
@@ -2730,45 +2893,45 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                 <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 mt-3">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 rounded-full bg-emerald-500/20 flex items-center justify-center">
-                      <span className="material-icons-outlined text-emerald-400">check_circle</span>
+                      <Icon className="material-icons-outlined text-emerald-400">check_circle</Icon>
                     </div>
                     <div className="flex-1">
                       <p className="text-sm font-bold text-emerald-300">PDU Detected</p>
                       <p className="text-xs text-slate-400 font-mono">{detectedDevice.ip}</p>
                     </div>
                     {detectedDevice.web_admin_port && (
-                      <span className="px-2 py-0.5 rounded-full bg-cyan-500/20 border border-cyan-500/40 text-[10px] text-cyan-300 whitespace-nowrap">
+                      <span className="px-2 py-0.5 rounded-full bg-cyan-500/20 border border-cyan-500/40 text-[11px] text-cyan-300 whitespace-nowrap">
                         Web Admin :{detectedDevice.web_admin_port}
                       </span>
                     )}
                   </div>
                   <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                    <div className="bg-[#0B1120]/50 rounded-lg p-2">
+                    <div className="bg-app-bg/50 rounded-lg p-2">
                       <span className="text-slate-500">Name</span>
                       <p className="text-white font-mono mt-0.5">{detectedDevice.name || 'Unknown'}</p>
                     </div>
-                    <div className="bg-[#0B1120]/50 rounded-lg p-2">
+                    <div className="bg-app-bg/50 rounded-lg p-2">
                       <span className="text-slate-500">{isRemoteMode ? 'Firmware' : 'SNMP'}</span>
                       <p className="text-white font-mono mt-0.5">
                         {isRemoteMode ? (detectedDevice.firmware || '?') : `${detectedDevice.snmp_version || '2c'} / ${community}`}
                       </p>
                     </div>
                     {isRemoteMode && detectedDevice.mac && (
-                      <div className="bg-[#0B1120]/50 rounded-lg p-2">
+                      <div className="bg-app-bg/50 rounded-lg p-2">
                         <span className="text-slate-500">MAC</span>
                         <p className="text-white font-mono mt-0.5">{detectedDevice.mac}</p>
                       </div>
                     )}
                     {isRemoteMode && remoteSettings?.network && (
-                      <div className="bg-[#0B1120]/50 rounded-lg p-2">
+                      <div className="bg-app-bg/50 rounded-lg p-2">
                         <span className="text-slate-500">Current IP</span>
                         <p className="text-white font-mono mt-0.5">{remoteSettings.network.current_ip}</p>
                       </div>
                     )}
                     {detectedDevice.description && (
-                      <div className="bg-[#0B1120]/50 rounded-lg p-2 col-span-2">
+                      <div className="bg-app-bg/50 rounded-lg p-2 col-span-2">
                         <span className="text-slate-500">Description</span>
-                        <p className="text-white font-mono mt-0.5 text-[10px] break-all">{detectedDevice.description}</p>
+                        <p className="text-white font-mono mt-0.5 text-[11px] break-all">{detectedDevice.description}</p>
                       </div>
                     )}
                   </div>
@@ -2789,13 +2952,13 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   </div>
 
                   {/* Network Settings */}
-                  <div className={`p-4 rounded-xl bg-[#0B1120] border ${ipConflict ? 'border-red-500/60' : 'border-[#233544]'}`}>
+                  <div className={`p-4 rounded-xl bg-app-bg border ${ipConflict ? 'border-red-500/60' : 'border-px-stroke'}`}>
                     <div className="flex items-center justify-between mb-3">
-                      <p className="text-xs font-bold text-[#00E5FF] uppercase tracking-wider flex items-center gap-1.5">
-                        <span className="material-icons-outlined text-sm">lan</span> Network (IPv4)
+                      <p className="text-xs font-bold text-px-accent uppercase tracking-wider flex items-center gap-1.5">
+                        <Icon className="material-icons-outlined text-sm">lan</Icon> Network (IPv4)
                       </p>
                       <button onClick={applyNetworkSettings} disabled={loading || rebootStatus === 'rebooting'}
-                        className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[10px] hover:bg-emerald-500/30 disabled:opacity-50 transition-all">
+                        className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[11px] hover:bg-emerald-500/30 disabled:opacity-50 transition-all">
                         {loading ? 'Applying...' : rebootStatus === 'rebooting' ? 'Rebooting...' : 'Apply & Reboot PDU'}
                       </button>
                     </div>
@@ -2807,12 +2970,12 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         rebootStatus === 'online' ? 'bg-emerald-500/10 border-emerald-500/30' :
                         'bg-red-500/10 border-red-500/30'
                       }`}>
-                        <span className={`material-icons-outlined text-base ${
+                        <Icon className={`material-icons-outlined text-base ${
                           rebootStatus === 'rebooting' ? 'text-amber-400 animate-spin' :
                           rebootStatus === 'online' ? 'text-emerald-400' : 'text-red-400'
                         }`}>
                           {rebootStatus === 'rebooting' ? 'sync' : rebootStatus === 'online' ? 'check_circle' : 'error'}
-                        </span>
+                        </Icon>
                         <span className={`text-xs font-mono ${
                           rebootStatus === 'rebooting' ? 'text-amber-300' :
                           rebootStatus === 'online' ? 'text-emerald-300' : 'text-red-300'
@@ -2826,14 +2989,14 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
 
                     {/* Suggested next IP */}
                     {suggestedIp && (
-                      <div className="mb-3 p-2 rounded-lg bg-[#00E5FF]/5 border border-[#00E5FF]/20 flex items-center justify-between">
+                      <div className="mb-3 p-2 rounded-lg bg-px-accent/5 border border-px-accent/20 flex items-center justify-between">
                         <div className="flex items-center gap-2">
-                          <span className="material-icons-outlined text-[#00E5FF] text-sm">auto_awesome</span>
-                          <span className="text-[10px] text-slate-400">Next available IP for this hall:</span>
-                          <span className="text-xs font-mono font-bold text-[#00E5FF]">{suggestedIp}</span>
+                          <Icon className="material-icons-outlined text-px-accent text-sm">auto_awesome</Icon>
+                          <span className="text-[11px] text-slate-400">Next available IP for this hall:</span>
+                          <span className="text-xs font-mono font-bold text-px-accent">{suggestedIp}</span>
                         </div>
                         <button onClick={() => setEditNetwork(prev => ({ ...prev, ip: suggestedIp }))}
-                          className="px-2 py-0.5 bg-[#00E5FF]/20 text-[#00E5FF] rounded text-[9px] font-mono hover:bg-[#00E5FF]/30 transition-all">
+                          className="px-2 py-0.5 bg-px-accent/20 text-px-accent rounded text-[10px] font-mono hover:bg-px-accent/30 transition-all">
                           Use this
                         </button>
                       </div>
@@ -2842,7 +3005,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     {/* IP Conflict Warning */}
                     {ipConflict && (
                       <div className="mb-3 p-2 rounded-lg bg-red-500/10 border border-red-500/30 flex items-center gap-2">
-                        <span className="material-icons-outlined text-red-400 text-sm">warning</span>
+                        <Icon className="material-icons-outlined text-red-400 text-sm">warning</Icon>
                         <span className="text-xs text-red-400">
                           IP <span className="font-mono font-bold">{editNetwork.ip}</span> is already commissioned in this data hall. Each PDU must have a unique IP address.
                         </span>
@@ -2850,34 +3013,34 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     )}
 
                     {/* DHCP / Static toggle */}
-                    <div className="mb-3 p-3 rounded-lg bg-[#161E2E] border border-[#233544]">
+                    <div className="mb-3 p-3 rounded-lg bg-px-panel border border-px-stroke">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
-                          <span className="material-icons-outlined text-sm text-slate-400">settings_ethernet</span>
+                          <Icon className="material-icons-outlined text-sm text-slate-400">settings_ethernet</Icon>
                           <span className="text-xs text-slate-300">IP Assignment</span>
                         </div>
-                        <div className="flex rounded-lg overflow-hidden border border-[#233544]">
+                        <div className="flex rounded-lg overflow-hidden border border-px-stroke">
                           <button
                             onClick={() => setEditNetwork(prev => ({ ...prev, dhcp: 'OFF' }))}
-                            className={`px-3 py-1 text-[10px] font-bold transition-all ${
+                            className={`px-3 py-1 text-[11px] font-bold transition-all ${
                               editNetwork.dhcp !== 'ON'
-                                ? 'bg-[#00E5FF]/20 text-[#00E5FF] border-r border-[#00E5FF]/30'
-                                : 'bg-[#0B1120] text-slate-500 border-r border-[#233544] hover:text-slate-300'
+                                ? 'bg-px-accent/20 text-px-accent border-r border-px-accent/30'
+                                : 'bg-app-bg text-slate-500 border-r border-px-stroke hover:text-slate-300'
                             }`}
                           >STATIC IP</button>
                           <button
                             onClick={() => setEditNetwork(prev => ({ ...prev, dhcp: 'ON' }))}
-                            className={`px-3 py-1 text-[10px] font-bold transition-all ${
+                            className={`px-3 py-1 text-[11px] font-bold transition-all ${
                               editNetwork.dhcp === 'ON'
                                 ? 'bg-amber-500/20 text-amber-400'
-                                : 'bg-[#0B1120] text-slate-500 hover:text-slate-300'
+                                : 'bg-app-bg text-slate-500 hover:text-slate-300'
                             }`}
                           >DHCP</button>
                         </div>
                       </div>
                       {editNetwork.dhcp === 'ON' && (
-                        <p className="text-[10px] text-amber-400 mt-2 flex items-center gap-1">
-                          <span className="material-icons-outlined text-xs">warning</span>
+                        <p className="text-[11px] text-amber-400 mt-2 flex items-center gap-1">
+                          <Icon className="material-icons-outlined text-xs">warning</Icon>
                           DHCP is active — the PDU will get its IP from a DHCP server. Switch to Static to assign a fixed IP.
                         </p>
                       )}
@@ -2885,12 +3048,12 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
 
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <label className="text-[9px] text-slate-500 uppercase">IP Address</label>
+                        <label className="text-[10px] text-slate-500 uppercase">IP Address</label>
                         <input type="text" value={editNetwork.ip || ''}
                           onChange={e => setEditNetwork(prev => ({ ...prev, ip: e.target.value }))}
                           disabled={editNetwork.dhcp === 'ON'}
-                          className={`w-full bg-[#161E2E] border rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none ${
-                            ipConflict ? 'border-red-500/60 focus:border-red-500' : 'border-[#233544] focus:border-[#00E5FF]'
+                          className={`w-full bg-px-panel border rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none ${
+                            ipConflict ? 'border-red-500/60 focus:border-red-500' : 'border-px-stroke focus:border-px-accent'
                           } ${editNetwork.dhcp === 'ON' ? 'opacity-50 cursor-not-allowed' : ''}`}
                         />
                       </div>
@@ -2901,11 +3064,11 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         { key: 'dns2', label: 'DNS 2' },
                       ].map(f => (
                         <div key={f.key}>
-                          <label className="text-[9px] text-slate-500 uppercase">{f.label}</label>
+                          <label className="text-[10px] text-slate-500 uppercase">{f.label}</label>
                           <input type="text" value={editNetwork[f.key] || ''}
                             onChange={e => setEditNetwork(prev => ({ ...prev, [f.key]: e.target.value }))}
                             disabled={editNetwork.dhcp === 'ON'}
-                            className={`w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF] ${editNetwork.dhcp === 'ON' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                            className={`w-full bg-px-panel border border-px-stroke rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-px-accent ${editNetwork.dhcp === 'ON' ? 'opacity-50 cursor-not-allowed' : ''}`}
                           />
                         </div>
                       ))}
@@ -2913,12 +3076,12 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
 
                     {/* Already commissioned IPs */}
                     {usedIps.length > 0 && (
-                      <div className="mt-3 pt-2 border-t border-[#233544]/50">
-                        <p className="text-[9px] text-slate-500 uppercase tracking-wider mb-1">Commissioned IPs in this hall ({usedIps.length})</p>
+                      <div className="mt-3 pt-2 border-t border-px-stroke/50">
+                        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Commissioned IPs in this hall ({usedIps.length})</p>
                         <div className="flex flex-wrap gap-1">
                           {usedIps.map(ip => (
-                            <span key={ip} className={`px-1.5 py-0.5 rounded text-[9px] font-mono border ${
-                              ip === editNetwork.ip ? 'bg-red-500/20 text-red-400 border-red-500/40' : 'bg-[#161E2E] text-slate-500 border-[#233544]'
+                            <span key={ip} className={`px-1.5 py-0.5 rounded text-[10px] font-mono border ${
+                              ip === editNetwork.ip ? 'bg-red-500/20 text-red-400 border-red-500/40' : 'bg-px-panel text-slate-500 border-px-stroke'
                             }`}>{ip}</span>
                           ))}
                         </div>
@@ -2927,13 +3090,13 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   </div>
 
                   {/* SNMP Settings */}
-                  <div className="p-4 rounded-xl bg-[#0B1120] border border-[#233544]">
+                  <div className="p-4 rounded-xl bg-app-bg border border-px-stroke">
                     <div className="flex items-center justify-between mb-3">
-                      <p className="text-xs font-bold text-[#00E5FF] uppercase tracking-wider flex items-center gap-1.5">
-                        <span className="material-icons-outlined text-sm">vpn_key</span> SNMP
+                      <p className="text-xs font-bold text-px-accent uppercase tracking-wider flex items-center gap-1.5">
+                        <Icon className="material-icons-outlined text-sm">vpn_key</Icon> SNMP
                       </p>
                       <button onClick={applySnmpSettings} disabled={loading}
-                        className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[10px] hover:bg-emerald-500/30 disabled:opacity-50 transition-all">
+                        className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[11px] hover:bg-emerald-500/30 disabled:opacity-50 transition-all">
                         {loading ? 'Applying...' : 'Apply to PDU'}
                       </button>
                     </div>
@@ -2941,13 +3104,13 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   </div>
 
                   {/* Time / SNTP Settings */}
-                  <div className="p-4 rounded-xl bg-[#0B1120] border border-[#233544]">
+                  <div className="p-4 rounded-xl bg-app-bg border border-px-stroke">
                     <div className="flex items-center justify-between mb-3">
-                      <p className="text-xs font-bold text-[#00E5FF] uppercase tracking-wider flex items-center gap-1.5">
-                        <span className="material-icons-outlined text-sm">schedule</span> Time & SNTP
+                      <p className="text-xs font-bold text-px-accent uppercase tracking-wider flex items-center gap-1.5">
+                        <Icon className="material-icons-outlined text-sm">schedule</Icon> Time & SNTP
                       </p>
                       <button onClick={applyTimeSettings} disabled={loading}
-                        className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[10px] hover:bg-emerald-500/30 disabled:opacity-50 transition-all">
+                        className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[11px] hover:bg-emerald-500/30 disabled:opacity-50 transition-all">
                         {loading ? 'Applying...' : 'Apply to PDU'}
                       </button>
                     </div>
@@ -2955,13 +3118,13 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   </div>
 
                   {/* Web Access */}
-                  <div className="p-4 rounded-xl bg-[#0B1120] border border-[#233544]">
+                  <div className="p-4 rounded-xl bg-app-bg border border-px-stroke">
                     <div className="flex items-center justify-between mb-3">
-                      <p className="text-xs font-bold text-[#00E5FF] uppercase tracking-wider flex items-center gap-1.5">
-                        <span className="material-icons-outlined text-sm">lock</span> Web Access
+                      <p className="text-xs font-bold text-px-accent uppercase tracking-wider flex items-center gap-1.5">
+                        <Icon className="material-icons-outlined text-sm">lock</Icon> Web Access
                       </p>
                       <button onClick={applyWebAccessSettings} disabled={loading}
-                        className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[10px] hover:bg-emerald-500/30 disabled:opacity-50 transition-all">
+                        className="px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded text-[11px] hover:bg-emerald-500/30 disabled:opacity-50 transition-all">
                         {loading ? 'Applying...' : 'Apply & Reboot'}
                       </button>
                     </div>
@@ -2975,27 +3138,27 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     <h3 className="text-sm font-bold text-white mb-1">Assign Production IP</h3>
                     <p className="text-xs text-slate-500">
                       Choose the IP address this PDU will use in your data hall network.
-                      {ipSubnet && <span className="text-[#00E5FF]"> Subnet: {ipSubnet}</span>}
+                      {ipSubnet && <span className="text-px-accent"> Subnet: {ipSubnet}</span>}
                     </p>
                   </div>
 
                   <div className={`p-4 rounded-xl border transition-all cursor-pointer ${
-                    !useCustomIp ? 'bg-[#00E5FF]/10 border-[#00E5FF]/50' : 'bg-[#0B1120] border-[#233544]'
+                    !useCustomIp ? 'bg-px-accent/10 border-px-accent/50' : 'bg-app-bg border-px-stroke'
                   }`} onClick={() => setUseCustomIp(false)}>
                     <div className="flex items-center gap-3">
-                      <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${!useCustomIp ? 'border-[#00E5FF]' : 'border-slate-600'}`}>
-                        {!useCustomIp && <div className="w-2.5 h-2.5 rounded-full bg-[#00E5FF]" />}
+                      <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${!useCustomIp ? 'border-px-accent' : 'border-slate-600'}`}>
+                        {!useCustomIp && <div className="w-2.5 h-2.5 rounded-full bg-px-accent" />}
                       </div>
                       <div className="flex-1">
                         <p className="text-sm font-bold text-white">Suggested (Next Sequential)</p>
-                        <p className="text-2xl font-mono font-bold text-[#00E5FF] mt-1">{suggestedIp || 'Loading...'}</p>
+                        <p className="text-2xl font-mono font-bold text-px-accent mt-1">{suggestedIp || 'Loading...'}</p>
                       </div>
-                      <span className="material-icons-outlined text-[#00E5FF] text-xl">auto_awesome</span>
+                      <Icon className="material-icons-outlined text-px-accent text-xl">auto_awesome</Icon>
                     </div>
                   </div>
 
                   <div className={`p-4 rounded-xl border transition-all cursor-pointer ${
-                    useCustomIp ? 'bg-amber-500/10 border-amber-500/50' : 'bg-[#0B1120] border-[#233544]'
+                    useCustomIp ? 'bg-amber-500/10 border-amber-500/50' : 'bg-app-bg border-px-stroke'
                   }`} onClick={() => setUseCustomIp(true)}>
                     <div className="flex items-center gap-3">
                       <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${useCustomIp ? 'border-amber-500' : 'border-slate-600'}`}>
@@ -3008,14 +3171,14 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                             <input type="text" value={customIp}
                               onChange={e => setCustomIp(e.target.value)}
                               onClick={e => e.stopPropagation()}
-                              className={`mt-2 w-full bg-[#0B1120] border rounded-lg px-3 py-2 text-white font-mono text-lg focus:outline-none ${
-                                usedIps.includes(customIp) ? 'border-red-500/60 focus:border-red-500' : 'border-[#233544] focus:border-amber-500'
+                              className={`mt-2 w-full bg-app-bg border rounded-lg px-3 py-2 text-white font-mono text-lg focus:outline-none ${
+                                usedIps.includes(customIp) ? 'border-red-500/60 focus:border-red-500' : 'border-px-stroke focus:border-amber-500'
                               }`}
                               placeholder="e.g. 10.20.0.100" autoFocus />
                             {usedIps.includes(customIp) && (
                               <div className="mt-2 p-2 rounded-lg bg-red-500/10 border border-red-500/30 flex items-center gap-2">
-                                <span className="material-icons-outlined text-red-400 text-sm">warning</span>
-                                <span className="text-[10px] text-red-400">This IP is already commissioned in this data hall.</span>
+                                <Icon className="material-icons-outlined text-red-400 text-sm">warning</Icon>
+                                <span className="text-[11px] text-red-400">This IP is already commissioned in this data hall.</span>
                               </div>
                             )}
                           </>
@@ -3026,10 +3189,10 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
 
                   {usedIps.length > 0 && (
                     <div>
-                      <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-2">Already Commissioned ({usedIps.length})</p>
+                      <p className="text-[11px] text-slate-500 uppercase tracking-wider mb-2">Already Commissioned ({usedIps.length})</p>
                       <div className="flex flex-wrap gap-1.5">
                         {usedIps.map(ip => (
-                          <span key={ip} className="px-2 py-0.5 bg-[#161E2E] rounded text-[10px] font-mono text-slate-500 border border-[#233544]">{ip}</span>
+                          <span key={ip} className="px-2 py-0.5 bg-px-panel rounded text-[11px] font-mono text-slate-500 border border-px-stroke">{ip}</span>
                         ))}
                       </div>
                     </div>
@@ -3049,23 +3212,23 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
 
               {/* PDU Label */}
               <div>
-                <label className="text-[10px] text-slate-500 uppercase tracking-wider mb-1 block">PDU Label</label>
+                <label className="text-[11px] text-slate-500 uppercase tracking-wider mb-1 block">PDU Label</label>
                 <input type="text" value={pduLabel}
                   onChange={e => setPduLabel(e.target.value)}
-                  className="w-full bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#00E5FF]"
+                  className="w-full bg-app-bg border border-px-stroke rounded-lg px-3 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-px-accent"
                   placeholder={`PDU-${finalIp}`} />
               </div>
 
               {/* Rack Grid */}
               {availableRacks.length === 0 ? (
                 <div className="text-center py-8 text-slate-500">
-                  <span className="material-icons-outlined text-3xl opacity-50 mb-2 block">view_in_ar</span>
+                  <Icon className="material-icons-outlined text-3xl opacity-50 mb-2 block">view_in_ar</Icon>
                   <p className="text-sm">No racks with open slots</p>
                   <p className="text-xs mt-1">Save a hall layout in the Data Hall Designer first, then re-open this wizard.</p>
                 </div>
               ) : (
                 <div>
-                  <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-2">
+                  <p className="text-[11px] text-slate-500 uppercase tracking-wider mb-2">
                     Available Racks ({availableRacks.length})
                   </p>
                   <div className="grid grid-cols-4 gap-2 max-h-[300px] overflow-y-auto pr-1">
@@ -3077,23 +3240,23 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         }}
                         className={`p-3 rounded-lg border text-left transition-all ${
                           selectedRack?.rack_code === rack.rack_code
-                            ? 'bg-[#00E5FF]/10 border-[#00E5FF]/50'
-                            : 'bg-[#0B1120] border-[#233544] hover:border-[#00E5FF]/30'
+                            ? 'bg-px-accent/10 border-px-accent/50'
+                            : 'bg-app-bg border-px-stroke hover:border-px-accent/30'
                         }`}>
                         <p className="text-xs font-mono font-bold text-white">{rack.rack_code}</p>
-                        <p className="text-[10px] text-slate-500 mt-0.5">
+                        <p className="text-[11px] text-slate-500 mt-0.5">
                           Row {rack.row_index + 1}, Pos {rack.position_index + 1}
                         </p>
                         <div className="flex gap-1 mt-2">
                           {rack.open_slots.map(slot => (
-                            <span key={slot} className={`px-1.5 py-0.5 rounded text-[9px] font-mono ${
+                            <span key={slot} className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
                               selectedRack?.rack_code === rack.rack_code && selectedSlot === slot
-                                ? 'bg-[#00E5FF] text-[#0B1120] font-bold'
-                                : 'bg-[#161E2E] text-slate-400 border border-[#233544]'
+                                ? 'bg-px-accent text-app-bg font-bold'
+                                : 'bg-px-panel text-slate-400 border border-px-stroke'
                             }`}>{slot}</span>
                           ))}
                         </div>
-                        <p className="text-[9px] text-slate-600 mt-1">{rack.occupied}/{rack.total_slots} filled</p>
+                        <p className="text-[10px] text-slate-600 mt-1">{rack.occupied}/{rack.total_slots} filled</p>
                       </button>
                     ))}
                   </div>
@@ -3101,15 +3264,15 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   {/* Slot selector when rack is selected */}
                   {selectedRack && selectedRack.open_slots.length > 1 && (
                     <div className="mt-3 p-3 rounded-lg bg-[#0a1222] border border-[#1a2744]">
-                      <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-2">Mount Position</p>
+                      <p className="text-[11px] text-slate-500 uppercase tracking-wider mb-2">Mount Position</p>
                       <div className="flex gap-2">
                         {selectedRack.open_slots.map(slot => (
                           <button key={slot}
                             onClick={() => setSelectedSlot(slot)}
                             className={`px-4 py-2 rounded-lg text-sm font-mono font-bold transition-all ${
                               selectedSlot === slot
-                                ? 'bg-[#00E5FF] text-[#0B1120]'
-                                : 'bg-[#161E2E] text-slate-400 border border-[#233544] hover:border-[#00E5FF]/30'
+                                ? 'bg-px-accent text-app-bg'
+                                : 'bg-px-panel text-slate-400 border border-px-stroke hover:border-px-accent/30'
                             }`}>{slot}</button>
                         ))}
                       </div>
@@ -3134,7 +3297,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                 )}
                 {detectedDevice?.web_admin_port && (
                   <div className="p-2 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-xs text-cyan-300 flex items-center gap-2">
-                    <span className="material-icons-outlined text-sm">auto_fix_high</span>
+                    <Icon className="material-icons-outlined text-sm">auto_fix_high</Icon>
                     <span>Web admin auto-detected on port {detectedDevice.web_admin_port} — IP changes will be applied directly to the device</span>
                   </div>
                 )}
@@ -3152,10 +3315,11 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
               </div>
 
               <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300 flex items-start gap-2">
-                <span className="material-icons-outlined text-sm mt-0.5">info</span>
-                <span>{isRemoteMode
-                  ? 'This will persist the PDU configuration (including web admin credentials) to the database. Telemetry will be polled via the web admin CGI interface.'
-                  : 'This will persist the PDU configuration to the database and start SNMP polling automatically.'}
+                <Icon className="material-icons-outlined text-sm mt-0.5">info</Icon>
+                <span>
+                  {isRemoteMode
+                    ? 'This will write the static IP on the PDU, reboot it so the LCD updates, then save it to the hall. If reboot fails, nothing is saved.'
+                    : 'This will persist the PDU configuration to the database and start SNMP polling automatically.'}
                 </span>
               </div>
             </div>
@@ -3165,11 +3329,11 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
           {step === 3 && commissioned && (
             <div className="flex flex-col items-center justify-center py-10 text-center">
               <div className="w-20 h-20 rounded-full bg-emerald-500/20 flex items-center justify-center mb-4">
-                <span className="material-icons-outlined text-emerald-400 text-4xl">check_circle</span>
+                <Icon className="material-icons-outlined text-emerald-400 text-4xl">check_circle</Icon>
               </div>
               <h3 className="text-xl font-bold text-white mb-2">PDU Commissioned</h3>
               <p className="text-sm text-slate-400 mb-1">
-                <span className="text-[#00E5FF] font-mono">{finalIp}</span> has been added to <span className="text-white">{hallName || `Hall #${hallId}`}</span>
+                <span className="text-px-accent font-mono">{finalIp}</span> has been added to <span className="text-white">{hallName || `Hall #${hallId}`}</span>
               </p>
               {selectedRack && (
                 <p className="text-sm text-slate-500">
@@ -3182,11 +3346,11 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
         </div>
 
         {/* Footer Navigation (hidden in batch mode) */}
-        {scanMode !== 'batch' && <div className="p-5 border-t border-[#233544] flex items-center justify-between bg-[#0a1222]">
+        {scanMode !== 'batch' && <div className="p-5 border-t border-px-stroke flex items-center justify-between bg-[#0a1222]">
           {step > 0 && !commissioned ? (
             <button onClick={goBack}
-              className="px-4 py-2.5 bg-[#161E2E] border border-[#233544] hover:border-[#00E5FF]/30 text-slate-300 rounded-lg flex items-center gap-2 transition-all text-sm">
-              <span className="material-icons-outlined text-sm">arrow_back</span>
+              className="px-4 py-2.5 bg-px-panel border border-px-stroke hover:border-px-accent/30 text-slate-300 rounded-lg flex items-center gap-2 transition-all text-sm">
+              <Icon className="material-icons-outlined text-sm">arrow_back</Icon>
               Back
             </button>
           ) : <div />}
@@ -3215,28 +3379,28 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                   setIpConflict(false);
                   setRebootStatus(null);
                 }}
-                  className="px-4 py-2.5 bg-[#00E5FF]/20 border border-[#00E5FF]/50 hover:bg-[#00E5FF]/30 text-[#00E5FF] rounded-lg flex items-center gap-2 transition-all text-sm">
-                  <span className="material-icons-outlined text-sm">add</span>
+                  className="px-4 py-2.5 bg-px-accent/20 border border-px-accent/50 hover:bg-px-accent/30 text-px-accent rounded-lg flex items-center gap-2 transition-all text-sm">
+                  <Icon className="material-icons-outlined text-sm">add</Icon>
                   Commission Another
                 </button>
                 <button onClick={() => { if (onComplete) onComplete(); onClose(); }}
-                  className="px-5 py-2.5 bg-[#00E5FF] hover:bg-[#00E5FF]/80 text-[#0B1120] rounded-lg font-bold text-sm transition-all">
+                  className="px-5 py-2.5 bg-px-accent hover:bg-px-accent/80 text-app-bg rounded-lg font-bold text-sm transition-all">
                   Done
                 </button>
               </>
             ) : step === 3 ? (
               <button onClick={handleCommission} disabled={loading}
                 className="px-6 py-2.5 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-white rounded-lg font-bold text-sm flex items-center gap-2 transition-all">
-                {loading ? <span className="material-icons-outlined text-sm animate-spin">sync</span> :
-                  <span className="material-icons-outlined text-sm">bolt</span>}
+                {loading ? <Icon className="material-icons-outlined text-sm animate-spin">sync</Icon> :
+                  <Icon className="material-icons-outlined text-sm">bolt</Icon>}
                 Commission PDU
               </button>
             ) : (
               <button onClick={goNext}
                 disabled={(step === 0 && !detectedDevice)}
-                className="px-5 py-2.5 bg-[#00E5FF] hover:bg-[#00E5FF]/80 disabled:opacity-30 disabled:cursor-not-allowed text-[#0B1120] rounded-lg font-bold text-sm flex items-center gap-2 transition-all">
+                className="px-5 py-2.5 bg-px-accent hover:bg-px-accent/80 disabled:opacity-30 disabled:cursor-not-allowed text-app-bg rounded-lg font-bold text-sm flex items-center gap-2 transition-all">
                 Next
-                <span className="material-icons-outlined text-sm">arrow_forward</span>
+                <Icon className="material-icons-outlined text-sm">arrow_forward</Icon>
               </button>
             )}
           </div>
@@ -3247,12 +3411,12 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
     {/* Batch Commission Preview & Confirmation overlay */}
     {batchPreviewOpen && (
       <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[60] flex items-center justify-center p-4">
-        <div className="bg-[#0B1120] border border-[#233544] rounded-xl shadow-2xl w-full max-w-5xl max-h-[92vh] flex flex-col">
+        <div className="bg-app-bg border border-px-stroke rounded-xl shadow-2xl w-full max-w-5xl max-h-[92vh] flex flex-col">
           {/* Header */}
-          <div className="flex items-center justify-between p-4 border-b border-[#233544]">
+          <div className="flex items-center justify-between p-4 border-b border-px-stroke">
             <div>
               <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                <span className="material-icons-outlined text-emerald-400">fact_check</span>
+                <Icon className="material-icons-outlined text-emerald-400">fact_check</Icon>
                 Review Batch Plan
               </h3>
               <p className="text-xs text-slate-400 mt-1">
@@ -3261,7 +3425,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
             </div>
             <button onClick={() => setBatchPreviewOpen(false)}
               className="text-slate-400 hover:text-white p-1 rounded transition-colors">
-              <span className="material-icons-outlined">close</span>
+              <Icon className="material-icons-outlined">close</Icon>
             </button>
           </div>
 
@@ -3276,7 +3440,7 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     setBatchOrder(sorted.map(d => d.ip));
                   }
                 }}
-                className="accent-[#00E5FF]" />
+                className="accent-px-accent" />
               Sort by IP
             </label>
             <button
@@ -3285,19 +3449,19 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                 setBatchOrder(sorted.map(d => d.ip));
                 setBatchSortByIp(true);
               }}
-              className="text-[#00E5FF] hover:text-[#00E5FF]/80 flex items-center gap-1">
-              <span className="material-icons-outlined text-xs">refresh</span>
+              className="text-px-accent hover:text-px-accent/80 flex items-center gap-1">
+              <Icon className="material-icons-outlined text-xs">refresh</Icon>
               Reset Order
             </button>
             <div className="ml-auto text-slate-500">
-              Hostnames are resolved using <span className="font-mono text-[#00E5FF]">{batchTemplate.system?.router_hostname || '(empty)'}</span>
+              Hostnames are resolved using <span className="font-mono text-px-accent">{batchTemplate.system?.router_hostname || '(empty)'}</span>
             </div>
           </div>
 
           {/* Preview table */}
           <div className="flex-1 overflow-auto">
             <table className="w-full text-xs">
-              <thead className="sticky top-0 bg-[#0a1222] border-b border-[#233544] text-slate-400 uppercase text-[9px] tracking-wider">
+              <thead className="sticky top-0 bg-[#0a1222] border-b border-px-stroke text-slate-400 uppercase text-[10px] tracking-wider">
                 <tr>
                   <th className="px-3 py-2 text-left w-10">#</th>
                   <th className="px-3 py-2 text-center w-16">Move</th>
@@ -3324,32 +3488,32 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                           <button
                             disabled={i === 0}
                             onClick={() => moveBatchRow(i, i - 1)}
-                            className="p-0.5 text-slate-500 hover:text-[#00E5FF] disabled:opacity-20 disabled:hover:text-slate-500"
+                            className="p-0.5 text-slate-500 hover:text-px-accent disabled:opacity-20 disabled:hover:text-slate-500"
                             title="Move up">
-                            <span className="material-icons-outlined text-xs">arrow_upward</span>
+                            <Icon className="material-icons-outlined text-xs">arrow_upward</Icon>
                           </button>
                           <button
                             disabled={i === rows.length - 1}
                             onClick={() => moveBatchRow(i, i + 1)}
-                            className="p-0.5 text-slate-500 hover:text-[#00E5FF] disabled:opacity-20 disabled:hover:text-slate-500"
+                            className="p-0.5 text-slate-500 hover:text-px-accent disabled:opacity-20 disabled:hover:text-slate-500"
                             title="Move down">
-                            <span className="material-icons-outlined text-xs">arrow_downward</span>
+                            <Icon className="material-icons-outlined text-xs">arrow_downward</Icon>
                           </button>
                         </div>
                       </td>
                       <td className="px-3 py-2 font-mono">
                         <span className="text-white">{row.assignedIp}</span>
                         {row.assignedIp !== row.currentIp && (
-                          <span className="ml-2 text-[10px] text-amber-300">
+                          <span className="ml-2 text-[11px] text-amber-300">
                             was {row.currentIp}
                           </span>
                         )}
                       </td>
                       <td className="px-3 py-2">
                         {row.chainRole === 'slave' ? (
-                          <span className="text-[10px] text-violet-300">Daisy via {row.masterIp}</span>
+                          <span className="text-[11px] text-violet-300">Daisy via {row.masterIp}</span>
                         ) : row.chainRole === 'master' ? (
-                          <span className="text-[10px] text-[#00E5FF]">Master</span>
+                          <span className="text-[11px] text-px-accent">Master</span>
                         ) : (
                           <span className="text-slate-600">—</span>
                         )}
@@ -3365,39 +3529,39 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
           </div>
 
           {/* Settings summary */}
-          <div className="px-4 py-3 border-t border-[#233544] bg-[#0a1222]">
-            <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-2">Other settings applied to all PDUs</p>
+          <div className="px-4 py-3 border-t border-px-stroke bg-[#0a1222]">
+            <p className="text-[11px] text-slate-500 uppercase tracking-wider mb-2">Other settings applied to all PDUs</p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
-              <div className="p-2 rounded bg-[#0B1120] border border-[#1a2638]">
-                <p className="text-slate-500 text-[9px] uppercase">Network IPs</p>
+              <div className="p-2 rounded bg-app-bg border border-[#1a2638]">
+                <p className="text-slate-500 text-[10px] uppercase">Network IPs</p>
                 <p className={`font-mono ${batchTemplate.network?.ip_start ? 'text-amber-300' : 'text-emerald-300'}`}>
                   {batchTemplate.network?.ip_start
                     ? `Static, from ${batchTemplate.network.ip_start}`
                     : 'Kept as-is (no reboot)'}
                 </p>
               </div>
-              <div className="p-2 rounded bg-[#0B1120] border border-[#1a2638]">
-                <p className="text-slate-500 text-[9px] uppercase">SNMP</p>
+              <div className="p-2 rounded bg-app-bg border border-[#1a2638]">
+                <p className="text-slate-500 text-[10px] uppercase">SNMP</p>
                 <p className="font-mono text-white truncate">
                   R:{batchTemplate.snmp?.read_community || '—'} / W:{batchTemplate.snmp?.write_community || '—'}
                 </p>
               </div>
-              <div className="p-2 rounded bg-[#0B1120] border border-[#1a2638]">
-                <p className="text-slate-500 text-[9px] uppercase">NTP</p>
+              <div className="p-2 rounded bg-app-bg border border-[#1a2638]">
+                <p className="text-slate-500 text-[10px] uppercase">NTP</p>
                 <p className="font-mono text-white truncate">
                   {combineSntpServers(batchTemplate.ntp?.sntp_server, batchTemplate.ntp?.sntp_server2) || '—'}
                 </p>
               </div>
-              <div className="p-2 rounded bg-[#0B1120] border border-[#1a2638]">
-                <p className="text-slate-500 text-[9px] uppercase">Web Access</p>
+              <div className="p-2 rounded bg-app-bg border border-[#1a2638]">
+                <p className="text-slate-500 text-[10px] uppercase">Web Access</p>
                 <p className="font-mono text-white">
                   {String(batchTemplate.web_access?.https_http) === '1'
                     ? `HTTPS :${batchTemplate.web_access?.https_port || '443'} (reboot)`
                     : `HTTP :${batchTemplate.web_access?.http_port || '80'}`}
                 </p>
               </div>
-              <div className="p-2 rounded bg-[#0B1120] border border-[#1a2638]">
-                <p className="text-slate-500 text-[9px] uppercase">PDU Login</p>
+              <div className="p-2 rounded bg-app-bg border border-[#1a2638]">
+                <p className="text-slate-500 text-[10px] uppercase">PDU Login</p>
                 <p className="font-mono text-white text-[11px]">
                   {batchTemplate.users?.admin_username &&
                    batchTemplate.users.admin_username !== batchTemplate.current_credentials?.username
@@ -3411,15 +3575,15 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
           </div>
 
           {/* Footer actions */}
-          <div className="flex items-center justify-between p-4 border-t border-[#233544]">
+          <div className="flex items-center justify-between p-4 border-t border-px-stroke">
             <button onClick={() => setBatchPreviewOpen(false)}
               className="px-4 py-2 text-slate-300 hover:text-white text-sm flex items-center gap-1.5">
-              <span className="material-icons-outlined text-sm">arrow_back</span>
+              <Icon className="material-icons-outlined text-sm">arrow_back</Icon>
               Back to Template
             </button>
             <button onClick={batchDeploy} disabled={loading || batchSelected.size === 0}
               className="px-5 py-2.5 bg-emerald-500/20 border border-emerald-500/50 hover:bg-emerald-500/30 disabled:opacity-50 text-emerald-300 rounded-lg font-bold text-sm flex items-center gap-2 transition-all">
-              <span className="material-icons-outlined text-sm">rocket_launch</span>
+              <Icon className="material-icons-outlined text-sm">rocket_launch</Icon>
               Confirm &amp; Commission {batchSelected.size} PDU{batchSelected.size === 1 ? '' : 's'}
             </button>
           </div>
@@ -3431,13 +3595,13 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
 };
 
 const SummaryRow = ({ label, value, icon, highlight }) => (
-  <div className="flex items-center gap-3 p-3 rounded-lg bg-[#0B1120] border border-[#233544]">
-    <div className="w-8 h-8 rounded-lg bg-[#161E2E] flex items-center justify-center">
-      <span className={`material-icons-outlined text-sm ${highlight ? 'text-[#00E5FF]' : 'text-slate-500'}`}>{icon}</span>
+  <div className="flex items-center gap-3 p-3 rounded-lg bg-app-bg border border-px-stroke">
+    <div className="w-8 h-8 rounded-lg bg-px-panel flex items-center justify-center">
+      <Icon className={`material-icons-outlined text-sm ${highlight ? 'text-px-accent' : 'text-slate-500'}`}>{icon}</Icon>
     </div>
     <div className="flex-1">
-      <p className="text-[10px] text-slate-500 uppercase tracking-wider">{label}</p>
-      <p className={`text-sm font-mono ${highlight ? 'text-[#00E5FF] font-bold' : 'text-white'}`}>{value}</p>
+      <p className="text-[11px] text-slate-500 uppercase tracking-wider">{label}</p>
+      <p className={`text-sm font-mono ${highlight ? 'text-px-accent font-bold' : 'text-white'}`}>{value}</p>
     </div>
   </div>
 );

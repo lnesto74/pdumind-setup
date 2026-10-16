@@ -1,3 +1,4 @@
+import Icon from './presentation/Icon';
 import React, { useState, useEffect, useCallback } from 'react';
 import SupportDebugTab from './SupportDebugTab';
 import HubSharePanel from './HubSharePanel';
@@ -13,7 +14,7 @@ function authHeaders() {
   return { 'Authorization': `Bearer ${getToken()}`, 'Content-Type': 'application/json' };
 }
 
-const fieldClass = 'px-3 py-2 rounded-lg bg-[#0f172a] border border-[#233544] text-white text-xs focus:border-[#00E5FF] focus:outline-none w-full';
+const fieldClass = 'px-3 py-2 rounded-lg bg-[#0f172a] border border-px-stroke text-white text-xs focus:border-px-accent focus:outline-none w-full';
 const pwFieldClass = `${fieldClass} pr-9`;
 
 export default function AdminPanel({ onClose, initialTab = 'share' }) {
@@ -136,7 +137,7 @@ export default function AdminPanel({ onClose, initialTab = 'share' }) {
       return { icon: 'badge', color: 'text-amber-400', label: 'Username Changed' };
     }
     if (action.startsWith('updated_user:')) {
-      return { icon: 'edit', color: 'text-[#00E5FF]', label: 'User Updated' };
+      return { icon: 'edit', color: 'text-px-accent', label: 'User Updated' };
     }
     if (action.startsWith('created_user:')) {
       return { icon: 'person_add', color: 'text-emerald-400', label: 'User Created' };
@@ -149,14 +150,14 @@ export default function AdminPanel({ onClose, initialTab = 'share' }) {
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className={`w-full ${tab === 'debug' || tab === 'share' ? 'max-w-3xl' : 'max-w-2xl'} max-h-[80vh] bg-[#0f172a] border border-[#233544] rounded-2xl shadow-2xl overflow-hidden`} onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[#233544]">
+      <div className={`w-full ${tab === 'debug' || tab === 'share' ? 'max-w-3xl' : 'max-w-2xl'} max-h-[80vh] bg-[#0f172a] border border-px-stroke rounded-2xl shadow-2xl overflow-hidden`} onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-px-stroke">
           <h2 className="text-sm font-bold text-white flex items-center gap-2">
-            <span className="material-icons-outlined text-[#00E5FF]">admin_panel_settings</span>
+            <Icon className="material-icons-outlined text-px-accent">admin_panel_settings</Icon>
             Administration
           </h2>
           <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors">
-            <span className="material-icons-outlined">close</span>
+            <Icon className="material-icons-outlined">close</Icon>
           </button>
         </div>
 
@@ -171,10 +172,10 @@ export default function AdminPanel({ onClose, initialTab = 'share' }) {
               key={t.id}
               onClick={() => setTab(t.id)}
               className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs transition-colors ${
-                tab === t.id ? 'bg-[#00E5FF]/10 text-[#00E5FF] border border-[#00E5FF]/30' : 'text-slate-500 hover:text-slate-300 border border-transparent'
+                tab === t.id ? 'bg-px-accent/10 text-px-accent border border-px-accent/30' : 'text-slate-500 hover:text-slate-300 border border-transparent'
               }`}
             >
-              <span className="material-icons-outlined text-sm">{t.icon}</span>
+              <Icon className="material-icons-outlined text-sm">{t.icon}</Icon>
               {t.label}
             </button>
           ))}
@@ -190,15 +191,15 @@ export default function AdminPanel({ onClose, initialTab = 'share' }) {
                 <span className="text-xs text-slate-500">{users.length} user{users.length !== 1 ? 's' : ''}</span>
                 <button
                   onClick={() => { setShowAddUser(!showAddUser); cancelEditUser(); }}
-                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs bg-[#00E5FF]/10 text-[#00E5FF] border border-[#00E5FF]/30 hover:bg-[#00E5FF]/20 transition-colors"
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs bg-px-accent/10 text-px-accent border border-px-accent/30 hover:bg-px-accent/20 transition-colors"
                 >
-                  <span className="material-icons-outlined text-sm">person_add</span>
+                  <Icon className="material-icons-outlined text-sm">person_add</Icon>
                   Add User
                 </button>
               </div>
 
               {showAddUser && (
-                <form onSubmit={handleAddUser} className="p-4 rounded-xl bg-[#0B1120] border border-[#233544] mb-4">
+                <form onSubmit={handleAddUser} className="p-4 rounded-xl bg-app-bg border border-px-stroke mb-4">
                   {error && <p className="text-red-400 text-xs mb-2">{error}</p>}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <input
@@ -218,14 +219,14 @@ export default function AdminPanel({ onClose, initialTab = 'share' }) {
                       className={fieldClass}
                     />
                   </div>
-                  <button type="submit" className="mt-3 px-4 py-1.5 rounded-lg bg-[#00E5FF] text-[#0B1120] font-bold text-xs">
+                  <button type="submit" className="mt-3 px-4 py-1.5 rounded-lg bg-px-accent text-app-bg font-bold text-xs">
                     Create
                   </button>
                 </form>
               )}
 
               {users.map(u => (
-                <div key={u.id} className="rounded-xl bg-[#0B1120] border border-[#233544] overflow-hidden">
+                <div key={u.id} className="rounded-xl bg-app-bg border border-px-stroke overflow-hidden">
                   {editingUser === u.id ? (
                     <form onSubmit={handleUpdateUser} className="p-4 space-y-3">
                       {error && <p className="text-red-400 text-xs">{error}</p>}
@@ -260,10 +261,10 @@ export default function AdminPanel({ onClose, initialTab = 'share' }) {
                         />
                       </div>
                       <div className="flex gap-2">
-                        <button type="submit" className="px-4 py-1.5 rounded-lg bg-[#00E5FF] text-[#0B1120] font-bold text-xs">
+                        <button type="submit" className="px-4 py-1.5 rounded-lg bg-px-accent text-app-bg font-bold text-xs">
                           Save
                         </button>
-                        <button type="button" onClick={cancelEditUser} className="px-4 py-1.5 rounded-lg text-xs text-slate-400 border border-[#233544] hover:text-white">
+                        <button type="button" onClick={cancelEditUser} className="px-4 py-1.5 rounded-lg text-xs text-slate-400 border border-px-stroke hover:text-white">
                           Cancel
                         </button>
                       </div>
@@ -271,8 +272,8 @@ export default function AdminPanel({ onClose, initialTab = 'share' }) {
                   ) : (
                     <div className="flex items-center justify-between px-4 py-3">
                       <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-[#233544] flex items-center justify-center">
-                          <span className="material-icons-outlined text-slate-400 text-sm">person</span>
+                        <div className="w-8 h-8 rounded-full bg-px-stroke flex items-center justify-center">
+                          <Icon className="material-icons-outlined text-slate-400 text-sm">person</Icon>
                         </div>
                         <div>
                           <p className="text-sm text-white">{u.display_name || u.username}</p>
@@ -285,10 +286,10 @@ export default function AdminPanel({ onClose, initialTab = 'share' }) {
                         )}
                         <button
                           onClick={() => startEditUser(u)}
-                          className="flex items-center gap-1 px-2 py-1 rounded text-[10px] text-[#00E5FF] border border-[#00E5FF]/30 hover:bg-[#00E5FF]/10 transition-colors"
+                          className="flex items-center gap-1 px-2 py-1 rounded text-[10px] text-px-accent border border-px-accent/30 hover:bg-px-accent/10 transition-colors"
                           title="Edit username, display name, or password"
                         >
-                          <span className="material-icons-outlined text-sm">edit</span>
+                          <Icon className="material-icons-outlined text-sm">edit</Icon>
                           Edit
                         </button>
                         <button
@@ -296,7 +297,7 @@ export default function AdminPanel({ onClose, initialTab = 'share' }) {
                           className="text-slate-600 hover:text-red-400 transition-colors"
                           title="Delete user"
                         >
-                          <span className="material-icons-outlined text-sm">delete</span>
+                          <Icon className="material-icons-outlined text-sm">delete</Icon>
                         </button>
                       </div>
                     </div>
@@ -310,14 +311,14 @@ export default function AdminPanel({ onClose, initialTab = 'share' }) {
             <div className="space-y-1">
               <div className="flex justify-between items-center mb-4">
                 <span className="text-xs text-slate-500">Last {logs.length} entries</span>
-                <button onClick={fetchLogs} className="text-xs text-slate-500 hover:text-[#00E5FF] transition-colors">
-                  <span className="material-icons-outlined text-sm align-middle mr-1">refresh</span>Refresh
+                <button onClick={fetchLogs} className="text-xs text-slate-500 hover:text-px-accent transition-colors">
+                  <Icon className="material-icons-outlined text-sm align-middle mr-1">refresh</Icon>Refresh
                 </button>
               </div>
-              <div className="rounded-xl bg-[#0B1120] border border-[#233544] overflow-hidden">
+              <div className="rounded-xl bg-app-bg border border-px-stroke overflow-hidden">
                 <table className="w-full text-xs font-mono">
                   <thead>
-                    <tr className="border-b border-[#233544] text-slate-500">
+                    <tr className="border-b border-px-stroke text-slate-500">
                       <th className="text-left px-4 py-2">Time</th>
                       <th className="text-left px-4 py-2">User</th>
                       <th className="text-left px-4 py-2">Action</th>
@@ -328,12 +329,12 @@ export default function AdminPanel({ onClose, initialTab = 'share' }) {
                     {logs.map(log => {
                       const info = actionLabel(log.action);
                       return (
-                        <tr key={log.id} className="border-b border-[#233544]/50 hover:bg-[#161E2E]">
+                        <tr key={log.id} className="border-b border-px-stroke/50 hover:bg-px-panel">
                           <td className="px-4 py-2 text-slate-400">{log.timestamp?.replace('T', ' ').slice(0, 19)}</td>
                           <td className="px-4 py-2 text-white">{log.username}</td>
                           <td className="px-4 py-2">
                             <span className={`flex items-center gap-1 ${info.color}`}>
-                              <span className="material-icons-outlined text-xs">{info.icon}</span>
+                              <Icon className="material-icons-outlined text-xs">{info.icon}</Icon>
                               {info.label}
                             </span>
                           </td>

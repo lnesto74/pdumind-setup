@@ -5,7 +5,7 @@ import {
 } from '../constants/pduSettings';
 
 const fieldClass =
-  'w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]';
+  'w-full bg-px-panel border border-px-stroke rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-px-accent';
 
 /**
  * Time / SNTP settings form matching sys_time.html.
@@ -37,7 +37,7 @@ export default function PduNtpSettingsForm({ value, onChange, showManualTime = f
         <input type="checkbox"
           checked={v.sntp_enabled === true || v.sntp_enabled === 'true'}
           onChange={e => set({ sntp_enabled: e.target.checked })}
-          className="accent-[#00E5FF]" />
+          className="accent-px-accent" />
         <span className="text-[11px] text-slate-300">SNTP Enable</span>
       </label>
 

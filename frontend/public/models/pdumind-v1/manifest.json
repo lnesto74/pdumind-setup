@@ -20,7 +20,7 @@
   ],
   "assets": {
     "rack.glb": {
-      "bytes": 391804
+      "bytes": 408604
     },
     "pdu.glb": {
       "bytes": 36620
@@ -53,5 +53,23 @@
     "Rear_perforated_screen",
     "RearDoor",
     "SidePanels"
-  ]
+  ],
+  "annotation": {
+    "templateDimensions": [
+      0.6,
+      1.8669000000000002,
+      1.0
+    ],
+    "front": [
+      0,
+      1.8389000000000002,
+      -0.525
+    ],
+    "rear": [
+      0,
+      1.8389000000000002,
+      0.525
+    ],
+    "source": "RackPlaqueAnchorFront / RackPlaqueAnchorRear in pdumind-rack-kit.blend"
+  }
 }

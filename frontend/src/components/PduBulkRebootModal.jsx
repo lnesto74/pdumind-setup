@@ -1,3 +1,4 @@
+import Icon from './presentation/Icon';
 import React, { useEffect, useMemo, useState } from 'react';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -73,11 +74,11 @@ const PduBulkRebootModal = ({ hallId, hallName, pdus, onClose, onComplete }) => 
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-      <div className="w-full max-w-lg bg-[#0B1120] border border-[#233544] rounded-xl shadow-2xl flex flex-col max-h-[90vh]">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[#233544]">
+      <div className="w-full max-w-lg bg-app-bg border border-px-stroke rounded-xl shadow-2xl flex flex-col max-h-[90vh]">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-px-stroke">
           <div>
             <h2 className="text-lg font-bold text-white flex items-center gap-2">
-              <span className="material-icons-outlined text-amber-400">restart_alt</span>
+              <Icon className="material-icons-outlined text-amber-400">restart_alt</Icon>
               Reboot PDUs
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">{hallName || `Hall ${hallId}`}</p>
@@ -88,7 +89,7 @@ const PduBulkRebootModal = ({ hallId, hallName, pdus, onClose, onComplete }) => 
             disabled={phase === 'running'}
             className="text-slate-500 hover:text-white disabled:opacity-40"
           >
-            <span className="material-icons-outlined">close</span>
+            <Icon className="material-icons-outlined">close</Icon>
           </button>
         </div>
 
@@ -104,14 +105,14 @@ const PduBulkRebootModal = ({ hallId, hallName, pdus, onClose, onComplete }) => 
                 <button
                   type="button"
                   onClick={selectAll}
-                  className="px-2.5 py-1 text-[10px] uppercase tracking-wider rounded bg-[#161E2E] border border-[#233544] text-slate-400 hover:text-white"
+                  className="px-2.5 py-1 text-[10px] uppercase tracking-wider rounded bg-px-panel border border-px-stroke text-slate-400 hover:text-white"
                 >
                   Select all
                 </button>
                 <button
                   type="button"
                   onClick={deselectAll}
-                  className="px-2.5 py-1 text-[10px] uppercase tracking-wider rounded bg-[#161E2E] border border-[#233544] text-slate-400 hover:text-white"
+                  className="px-2.5 py-1 text-[10px] uppercase tracking-wider rounded bg-px-panel border border-px-stroke text-slate-400 hover:text-white"
                 >
                   Deselect all
                 </button>
@@ -132,7 +133,7 @@ const PduBulkRebootModal = ({ hallId, hallName, pdus, onClose, onComplete }) => 
                         canReboot
                           ? checked
                             ? 'bg-amber-500/10 border-amber-500/40'
-                            : 'bg-[#0a1222] border-[#233544] hover:border-[#334155]'
+                            : 'bg-[#0a1222] border-px-stroke hover:border-[#334155]'
                           : 'bg-[#0a1222] border-[#1a2638] opacity-50 cursor-not-allowed'
                       }`}
                     >
@@ -141,7 +142,7 @@ const PduBulkRebootModal = ({ hallId, hallName, pdus, onClose, onComplete }) => 
                         checked={checked}
                         disabled={!canReboot}
                         onChange={() => canReboot && togglePdu(id)}
-                        className="rounded border-[#233544] bg-[#0B1120] text-amber-400 focus:ring-amber-500/50"
+                        className="rounded border-px-stroke bg-app-bg text-amber-400 focus:ring-amber-500/50"
                       />
                       <div className="flex-1 min-w-0">
                         <p className="text-sm text-white truncate">{pdu.label || pdu.ip}</p>
@@ -167,7 +168,7 @@ const PduBulkRebootModal = ({ hallId, hallName, pdus, onClose, onComplete }) => 
             <div className="space-y-3">
               <div className="p-4 rounded-lg bg-red-500/10 border border-red-500/40">
                 <p className="text-sm text-red-300 font-medium flex items-center gap-2">
-                  <span className="material-icons-outlined text-base">warning</span>
+                  <Icon className="material-icons-outlined text-base">warning</Icon>
                   Are you sure?
                 </p>
                 <p className="text-xs text-red-200/80 mt-2">
@@ -181,7 +182,7 @@ const PduBulkRebootModal = ({ hallId, hallName, pdus, onClose, onComplete }) => 
                   type="checkbox"
                   checked={waitForOnline}
                   onChange={e => setWaitForOnline(e.target.checked)}
-                  className="rounded border-[#233544]"
+                  className="rounded border-px-stroke"
                 />
                 Wait for each PDU to come back online before continuing (slower, safer)
               </label>
@@ -193,7 +194,7 @@ const PduBulkRebootModal = ({ hallId, hallName, pdus, onClose, onComplete }) => 
 
           {phase === 'running' && (
             <div className="flex flex-col items-center justify-center py-10 text-slate-400">
-              <span className="material-icons-outlined text-4xl animate-spin text-amber-400 mb-3">sync</span>
+              <Icon className="material-icons-outlined text-4xl animate-spin text-amber-400 mb-3">sync</Icon>
               <p className="text-sm">Rebooting {selectedCount} PDU{selectedCount === 1 ? '' : 's'}…</p>
               <p className="text-xs text-slate-600 mt-1">Do not close this window</p>
             </div>
@@ -229,7 +230,7 @@ const PduBulkRebootModal = ({ hallId, hallName, pdus, onClose, onComplete }) => 
           )}
         </div>
 
-        <div className="flex items-center justify-between gap-2 px-5 py-4 border-t border-[#233544]">
+        <div className="flex items-center justify-between gap-2 px-5 py-4 border-t border-px-stroke">
           {phase === 'select' && (
             <>
               <button
@@ -245,7 +246,7 @@ const PduBulkRebootModal = ({ hallId, hallName, pdus, onClose, onComplete }) => 
                 onClick={() => { setPhase('confirm'); setError(null); }}
                 className="px-4 py-2 bg-amber-500/20 border border-amber-500/50 text-amber-300 rounded-lg text-sm font-bold hover:bg-amber-500/30 disabled:opacity-40 flex items-center gap-2"
               >
-                <span className="material-icons-outlined text-sm">restart_alt</span>
+                <Icon className="material-icons-outlined text-sm">restart_alt</Icon>
                 Reboot selected ({selectedCount})
               </button>
             </>
@@ -265,7 +266,7 @@ const PduBulkRebootModal = ({ hallId, hallName, pdus, onClose, onComplete }) => 
                 onClick={runReboot}
                 className="px-4 py-2 bg-red-500/20 border border-red-500/50 text-red-300 rounded-lg text-sm font-bold hover:bg-red-500/30 flex items-center gap-2"
               >
-                <span className="material-icons-outlined text-sm">warning</span>
+                <Icon className="material-icons-outlined text-sm">warning</Icon>
                 Yes, reboot now
               </button>
             </>
@@ -275,7 +276,7 @@ const PduBulkRebootModal = ({ hallId, hallName, pdus, onClose, onComplete }) => 
             <button
               type="button"
               onClick={onClose}
-              className="ml-auto px-4 py-2 bg-[#233544] text-white rounded-lg text-sm hover:bg-[#2D4A5E]"
+              className="ml-auto px-4 py-2 bg-px-stroke text-white rounded-lg text-sm hover:bg-[#2D4A5E]"
             >
               Close
             </button>

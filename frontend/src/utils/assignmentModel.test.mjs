@@ -1,0 +1,23 @@
+import assert from 'node:assert/strict';
+import {deviceName,slotIds,slotZones,validateAssignment,applyAssignment,assignmentResult} from './assignmentModel.js';
+const data={config:{pdu:{pdusPerRack:4,mounting:'A/B'}},racks:[{id:10,rack_code:'R1'},{id:11,rack_code:'R2'}],pdus:[{id:1,ip_address:'test-1',rack_id:null},{id:2,ip_address:'test-2',rack_id:10,mount_position:'A'}]};
+assert.deepEqual(slotIds(data.config),['A','B','C','D']);
+assert.equal(validateAssignment(data,'test-1',10,'B'),null);
+assert.match(validateAssignment(data,'test-1',10,'A'),/occupied/);
+assert.match(validateAssignment(data,'test-1',10,'E'),/not configured/);
+assert.match(validateAssignment(data,'missing',10,'B'),/missing/);
+assert.match(validateAssignment(data,'test-1',404,'B'),/no longer/);
+const assigned=applyAssignment(data,'test-1',10,'B');
+assert.equal(data.pdus[0].rack_id,null);assert.equal(assigned.pdus[0].rack_code,'R1');
+const moved=applyAssignment(assigned,'test-1',11,'C');
+assert.equal(moved.pdus.filter(p=>p.ip_address==='test-1').length,1);assert.equal(moved.pdus[0].rack_id,11);
+assert.equal(applyAssignment(moved,'test-1',null,'C').pdus[0].rack_code,null);
+assert.throws(()=>assignmentResult({success:true,results:[{ip:'test-1',success:false,error:'Rejected'}]},'test-1'),/Rejected/);
+assert.throws(()=>assignmentResult({success:true},'test-1'),/not confirmed/);
+assignmentResult({success:true,results:[{ip:'test-1',success:true}]},'test-1');
+for(let n=1;n<=26;n++)for(const z of slotZones(Array.from({length:n},(_,i)=>String(i))))assert.ok(z.x>=0&&z.y>=0&&z.x+z.w<=1&&z.y+z.h<=1);
+assert.deepEqual(slotZones(['A'],{A:{x:.1,y:.2,w:.1,h:.6}})[0],{id:'A',x:.1,y:.2,w:.1,h:.6});
+console.log('PASS: assignment validation, occupancy, moves, immutable rollback baseline, per-item failures, configurable normalized mapping.');
+
+assert.equal(deviceName({label:'NTT-{seq}-{ip}-A',hostname:'existing-host'}),'existing-host');
+assert.equal(deviceName({label:'{name}'}),'—');

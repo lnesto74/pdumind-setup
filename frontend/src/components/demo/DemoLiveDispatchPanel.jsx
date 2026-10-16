@@ -1,3 +1,4 @@
+import Icon from '../presentation/Icon';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import IncidentHallMap from '../IncidentHallMap';
 
@@ -79,7 +80,7 @@ function EscBar({ label, thresholdSec, startIso, nowMs, color }) {
           {fired ? 'fired' : fmtDuration(remaining)}
         </span>
       </div>
-      <div className="h-1 rounded-full bg-[#0B1120] overflow-hidden">
+      <div className="h-1 rounded-full bg-app-bg overflow-hidden">
         <div
           className={`h-full rounded-full ${color} ${fired ? 'opacity-100' : 'opacity-80'}`}
           style={{ width: `${pct * 100}%`, transition: 'width 1s linear' }}
@@ -122,13 +123,13 @@ function Stepper({ steps }) {
         {steps.map((step) => (
           <div key={step.id || step.step} className="relative z-10 flex flex-1 flex-col items-center min-w-[3.5rem]">
             <div
-              className={`w-2.5 h-2.5 rounded-full ring-2 ring-[#161E2E] ${
-                step.done ? 'bg-emerald-500' : step.current ? 'bg-[#00E5FF] animate-pulse' : 'bg-slate-600'
+              className={`w-2.5 h-2.5 rounded-full ring-2 ring-px-panel ${
+                step.done ? 'bg-emerald-500' : step.current ? 'bg-px-accent animate-pulse' : 'bg-slate-600'
               }`}
             />
             <span
               className={`text-[8px] mt-1 text-center leading-tight uppercase ${
-                step.current ? 'text-[#00E5FF] font-bold' : step.done ? 'text-slate-400' : 'text-slate-600'
+                step.current ? 'text-px-accent font-bold' : step.done ? 'text-slate-400' : 'text-slate-600'
               }`}
             >
               {step.label}
@@ -148,9 +149,9 @@ function MemberChip({ m, isOwner, isPrimary, isHighlight, singleLivePulse }) {
         isOwner
           ? 'border-emerald-500 bg-emerald-500/20 text-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.35)]'
           : isHighlight
-            ? 'border-[#00E5FF] bg-[#00E5FF]/15 text-[#00E5FF] scale-105 shadow-[0_0_14px_rgba(0,229,255,0.4)]'
+            ? 'border-px-accent bg-px-accent/15 text-px-accent scale-105 shadow-[0_0_14px_rgba(0,229,255,0.4)]'
             : singleLivePulse
-              ? 'border-[#00E5FF] bg-[#00E5FF]/10 text-[#00E5FF] animate-pulse'
+              ? 'border-px-accent bg-px-accent/10 text-px-accent animate-pulse'
               : presence === 'live'
                 ? 'border-emerald-500/40 bg-emerald-500/5 text-emerald-200'
                 : presence === 'paused'
@@ -159,7 +160,7 @@ function MemberChip({ m, isOwner, isPrimary, isHighlight, singleLivePulse }) {
       }`}
     >
       {isHighlight && (
-        <span className="absolute -top-1.5 left-1/2 -translate-x-1/2 text-[8px] font-bold uppercase text-[#00E5FF]">
+        <span className="absolute -top-1.5 left-1/2 -translate-x-1/2 text-[8px] font-bold uppercase text-px-accent">
           ◉ turn
         </span>
       )}
@@ -252,13 +253,13 @@ function IncidentCard({ row, hallLayout, nowMs }) {
         row.phase === 'closed'
           ? 'border-emerald-500/40 bg-emerald-500/5'
           : row.is_active_alarm || row.kind === 'test'
-            ? 'border-[#00E5FF]/50 ring-1 ring-[#00E5FF]/20'
+            ? 'border-px-accent/50 ring-1 ring-px-accent/20'
             : sev
-              ? 'border-red-500/40 bg-[#161E2E]'
-              : 'border-amber-500/30 bg-[#161E2E]/80'
+              ? 'border-red-500/40 bg-px-panel'
+              : 'border-amber-500/30 bg-px-panel/80'
       }`}
     >
-      <header className="px-4 py-3 border-b border-[#233544]/80 flex flex-wrap items-start gap-2">
+      <header className="px-4 py-3 border-b border-px-stroke/80 flex flex-wrap items-start gap-2">
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-2 mb-1">
             <span className={`text-[9px] font-bold uppercase px-2 py-0.5 rounded ${
@@ -267,7 +268,7 @@ function IncidentCard({ row, hallLayout, nowMs }) {
               {inc.severity || 'warning'}
             </span>
             {row.kind === 'test' && (
-              <span className="text-[9px] font-bold uppercase px-2 py-0.5 rounded bg-[#00E5FF]/20 text-[#00E5FF]">Test</span>
+              <span className="text-[9px] font-bold uppercase px-2 py-0.5 rounded bg-px-accent/20 text-px-accent">Test</span>
             )}
             {row.is_active_alarm && (
               <span className="text-[9px] font-bold uppercase px-2 py-0.5 rounded bg-red-500/30 text-red-200 animate-pulse">Live alarm</span>
@@ -275,7 +276,7 @@ function IncidentCard({ row, hallLayout, nowMs }) {
             {row.phase === 'closed' && (
               <span className="text-[9px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">Closed</span>
             )}
-            <span className="text-[10px] font-mono text-[#00E5FF] uppercase tracking-wide">{row.phase_label}</span>
+            <span className="text-[10px] font-mono text-px-accent uppercase tracking-wide">{row.phase_label}</span>
           </div>
           <h4 className="text-sm font-bold text-white truncate">
             {inc.label || inc.ip} <span className="text-slate-500 font-normal">@ {inc.rack || '—'}</span>
@@ -306,11 +307,11 @@ function IncidentCard({ row, hallLayout, nowMs }) {
 
       <div className="flex flex-col lg:flex-row lg:items-stretch">
         <div className="flex-1 min-w-0 flex flex-col">
-          <div className="px-4 py-3 border-b border-[#233544]/60 bg-[#0B1120]/40">
+          <div className="px-4 py-3 border-b border-px-stroke/60 bg-app-bg/40">
             <Stepper steps={row.steps || []} />
           </div>
 
-          <div className="px-4 py-3 border-b border-[#233544]/60">
+          <div className="px-4 py-3 border-b border-px-stroke/60">
             <PoolLottery
               pool={row.pool}
               lotteryActive={row.lottery_active}
@@ -321,7 +322,7 @@ function IncidentCard({ row, hallLayout, nowMs }) {
           </div>
 
           {!row.acknowledged && esc.notify_at && (
-            <div className="px-4 py-3 flex gap-3 border-b border-[#233544]/60">
+            <div className="px-4 py-3 flex gap-3 border-b border-px-stroke/60">
               <EscBar label="Reminder" thresholdSec={esc.reminder_sec} startIso={notifyAt} nowMs={nowMs} color="bg-amber-500" />
               <EscBar label="Hall lead" thresholdSec={esc.lead_sec} startIso={notifyAt} nowMs={nowMs} color="bg-orange-500" />
               <EscBar label="Secondary" thresholdSec={esc.secondary_sec} startIso={notifyAt} nowMs={nowMs} color="bg-red-500" />
@@ -341,8 +342,8 @@ function IncidentCard({ row, hallLayout, nowMs }) {
           </div>
 
           {row.mobile_url && (
-            <footer className="px-4 py-2 border-t border-[#233544]/60 mt-auto">
-              <a href={row.mobile_url} target="_blank" rel="noreferrer" className="text-[10px] text-[#00E5FF] hover:underline font-mono truncate block">
+            <footer className="px-4 py-2 border-t border-px-stroke/60 mt-auto">
+              <a href={row.mobile_url} target="_blank" rel="noreferrer" className="text-[10px] text-px-accent hover:underline font-mono truncate block">
                 Mobile incident map ↗
               </a>
             </footer>
@@ -350,7 +351,7 @@ function IncidentCard({ row, hallLayout, nowMs }) {
         </div>
 
         {hallLayout?.hall && mapRacks.length > 0 && (
-          <aside className="lg:w-72 xl:w-80 flex-shrink-0 border-t lg:border-t-0 lg:border-l border-[#233544]/60 bg-[#0B1120]/20">
+          <aside className="lg:w-72 xl:w-80 flex-shrink-0 border-t lg:border-t-0 lg:border-l border-px-stroke/60 bg-app-bg/20">
             <div className="p-3">
               <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
                 <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
@@ -358,7 +359,7 @@ function IncidentCard({ row, hallLayout, nowMs }) {
                 </p>
                 <p className="text-[9px] font-mono text-slate-600">full cage · pan · zoom</p>
               </div>
-              <div className="rounded-lg border border-[#233544] overflow-hidden">
+              <div className="rounded-lg border border-px-stroke overflow-hidden">
                 <IncidentHallMap
                   key={row.token}
                   hall={hallLayout.hall}
@@ -422,8 +423,8 @@ export default function DemoLiveDispatchPanel({
         <div>
           <h3 className="text-sm font-bold uppercase tracking-wider text-white flex items-center gap-2">
             <span className="relative flex h-2.5 w-2.5">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#00E5FF] opacity-60" />
-              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#00E5FF]" />
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-px-accent opacity-60" />
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-px-accent" />
             </span>
             Live Dispatch
           </h3>
@@ -435,7 +436,7 @@ export default function DemoLiveDispatchPanel({
           <button
             type="button"
             onClick={fetchLive}
-            className="text-xs px-2 py-1 rounded border border-[#233544] text-slate-500 hover:text-white mb-1"
+            className="text-xs px-2 py-1 rounded border border-px-stroke text-slate-500 hover:text-white mb-1"
           >
             Refresh
           </button>
@@ -455,7 +456,7 @@ export default function DemoLiveDispatchPanel({
         <div className="py-12 text-center text-slate-600 text-sm">Loading live dispatch…</div>
       ) : openCount === 0 ? (
         <div className="py-12 px-6 rounded-xl border border-dashed border-emerald-500/30 bg-emerald-500/5 text-center">
-          <span className="material-icons-outlined text-3xl text-emerald-400 mb-2">verified</span>
+          <Icon className="material-icons-outlined text-3xl text-emerald-400 mb-2">verified</Icon>
           <p className="text-sm font-medium text-emerald-300">All clear — no active dispatches</p>
           <p className="text-xs text-slate-500 mt-1">Send a test from Integrations or wait for a fleet alarm.</p>
         </div>
@@ -498,10 +499,10 @@ export function DemoAlarmsSubNav({ section, onChange, openCount = 0, sticky = fa
   ];
   return (
     <div
-      className={`flex gap-1 p-1 rounded-xl border border-[#233544] w-fit max-w-full overflow-x-auto ${
+      className={`flex gap-1 p-1 rounded-xl border border-px-stroke w-fit max-w-full overflow-x-auto ${
         sticky
-          ? 'flex-shrink-0 relative z-10 mb-3 bg-[#161E2E] shadow-[0_8px_16px_-8px_rgba(0,0,0,0.85)]'
-          : 'mb-6 bg-[#161E2E]/60'
+          ? 'flex-shrink-0 relative z-10 mb-3 bg-px-panel shadow-[0_8px_16px_-8px_rgba(0,0,0,0.85)]'
+          : 'mb-6 bg-px-panel/60'
       }`}
     >
       {tabs.map((tab) => (
@@ -511,11 +512,11 @@ export function DemoAlarmsSubNav({ section, onChange, openCount = 0, sticky = fa
           onClick={() => onChange(tab.id)}
           className={`relative flex items-center gap-1.5 px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wide whitespace-nowrap transition-all ${
             section === tab.id
-              ? 'bg-[#161E2E] border border-[#00E5FF]/40 text-[#00E5FF]'
+              ? 'bg-px-panel border border-px-accent/40 text-px-accent'
               : 'border border-transparent text-slate-500 hover:text-slate-300'
           }`}
         >
-          <span className="material-icons-outlined text-sm">{tab.icon}</span>
+          <Icon className="material-icons-outlined text-sm">{tab.icon}</Icon>
           {tab.label}
           {tab.id === 'dispatch' && openCount > 0 && (
             <span className="min-w-[1rem] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-mono flex items-center justify-center animate-pulse">

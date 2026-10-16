@@ -1,3 +1,4 @@
+import Icon from './presentation/Icon';
 import React, { useCallback, useEffect, useState } from 'react';
 import { notifyDispatchRefresh } from './demo/DemoLiveDispatchPanel';
 
@@ -181,7 +182,7 @@ export default function DemoIntegrationsPanel({ open, onClose, embedded = false,
 
           {loading ? (
             <div className="py-12 text-center text-slate-500 text-sm">
-              <span className="material-icons-outlined animate-spin mr-2 align-middle">sync</span>
+              <Icon className="material-icons-outlined animate-spin mr-2 align-middle">sync</Icon>
               Loading integrations…
             </div>
           ) : (
@@ -197,10 +198,10 @@ export default function DemoIntegrationsPanel({ open, onClose, embedded = false,
                       key={key}
                       className={`relative rounded-xl border p-4 text-center transition-all ${
                         active
-                          ? 'border-[#00E5FF]/50 bg-[#00E5FF]/5'
+                          ? 'border-px-accent/50 bg-px-accent/5'
                           : comingSoon
-                            ? 'border-[#233544] bg-[#161E2E]/40 opacity-70'
-                            : 'border-[#233544] bg-[#161E2E]/60'
+                            ? 'border-px-stroke bg-px-panel/40 opacity-70'
+                            : 'border-px-stroke bg-px-panel/60'
                       }`}
                     >
                       {comingSoon && (
@@ -224,10 +225,10 @@ export default function DemoIntegrationsPanel({ open, onClose, embedded = false,
                 })}
               </div>
 
-              <div className="rounded-xl border border-[#233544] bg-[#161E2E] p-5 space-y-4">
+              <div className="rounded-xl border border-px-stroke bg-px-panel p-5 space-y-4">
                 {config?.telegram?.configured && (
                   <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs">
-                    <span className="material-icons-outlined text-sm">check_circle</span>
+                    <Icon className="material-icons-outlined text-sm">check_circle</Icon>
                     <span>
                       Saved — Chat ID <span className="font-mono">{config.telegram.chat_id}</span>
                       {config.telegram.has_token && (
@@ -241,7 +242,7 @@ export default function DemoIntegrationsPanel({ open, onClose, embedded = false,
                 )}
                 {!config?.telegram?.has_token && config?.telegram?.chat_id && (
                   <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs">
-                    <span className="material-icons-outlined text-sm">warning</span>
+                    <Icon className="material-icons-outlined text-sm">warning</Icon>
                     <span>Bot token missing or invalid — paste the full @BotFather token below (not your PDUMind login password).</span>
                   </div>
                 )}
@@ -260,7 +261,7 @@ export default function DemoIntegrationsPanel({ open, onClose, embedded = false,
                       role="switch"
                       aria-checked={enabled}
                       onClick={() => setEnabled(!enabled)}
-                      className={`relative w-10 h-5 rounded-full transition-colors ${enabled ? 'bg-[#00E5FF]' : 'bg-[#334155]'}`}
+                      className={`relative w-10 h-5 rounded-full transition-colors ${enabled ? 'bg-px-accent' : 'bg-[#334155]'}`}
                     >
                       <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${enabled ? 'left-5' : 'left-0.5'}`} />
                     </button>
@@ -290,7 +291,7 @@ export default function DemoIntegrationsPanel({ open, onClose, embedded = false,
                         setTokenDirty(true);
                       }}
                       placeholder={config?.telegram?.has_token ? `Saved — ends …${config.telegram.token_last4 || '????'}` : '123456789:ABCdefGHIjklMNOpqrsTUVwxyz'}
-                      className="w-full bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2 text-sm font-mono text-slate-300 focus:outline-none focus:border-[#00E5FF] [font-variant-ligatures:none]"
+                      className="w-full bg-app-bg border border-px-stroke rounded-lg px-3 py-2 text-sm font-mono text-slate-300 focus:outline-none focus:border-px-accent [font-variant-ligatures:none]"
                       style={{ WebkitTextSecurity: botToken ? 'disc' : 'none' }}
                     />
                     <p className="text-[10px] text-slate-600 mt-1">Paste once from @BotFather — stored in data/demo_integrations.json. Leave blank to keep saved token.</p>
@@ -302,7 +303,7 @@ export default function DemoIntegrationsPanel({ open, onClose, embedded = false,
                       value={chatId}
                       onChange={(e) => setChatId(e.target.value)}
                       placeholder="-1001234567890"
-                      className="w-full bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2 text-sm font-mono text-slate-300 focus:outline-none focus:border-[#00E5FF]"
+                      className="w-full bg-app-bg border border-px-stroke rounded-lg px-3 py-2 text-sm font-mono text-slate-300 focus:outline-none focus:border-px-accent"
                     />
                   </div>
                 </div>
@@ -314,7 +315,7 @@ export default function DemoIntegrationsPanel({ open, onClose, embedded = false,
                     value={frontendBaseUrl}
                     onChange={(e) => setFrontendBaseUrl(e.target.value)}
                     placeholder="http://192.168.1.10:3000"
-                    className="w-full bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2 text-sm font-mono text-slate-300 focus:outline-none focus:border-[#00E5FF]"
+                    className="w-full bg-app-bg border border-px-stroke rounded-lg px-3 py-2 text-sm font-mono text-slate-300 focus:outline-none focus:border-px-accent"
                   />
                   <p className="text-[10px] text-slate-600 mt-1">Tailscale or LAN IP — used for Telegram incident + ops subscribe links (not localhost)</p>
                 </div>
@@ -324,7 +325,7 @@ export default function DemoIntegrationsPanel({ open, onClose, embedded = false,
                     type="checkbox"
                     checked={notifyOnAlarm}
                     onChange={(e) => setNotifyOnAlarm(e.target.checked)}
-                    className="rounded border-[#233544] bg-[#0B1120] text-[#00E5FF]"
+                    className="rounded border-px-stroke bg-app-bg text-px-accent"
                   />
                   Push Telegram when demo alarms trigger (temp, door, overload…)
                 </label>
@@ -334,7 +335,7 @@ export default function DemoIntegrationsPanel({ open, onClose, embedded = false,
                     type="button"
                     onClick={handleSave}
                     disabled={saving}
-                    className="px-4 py-2 rounded-lg bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/40 text-xs font-bold uppercase tracking-wider hover:bg-[#00E5FF]/30 disabled:opacity-50"
+                    className="px-4 py-2 rounded-lg bg-px-accent/20 text-px-accent border border-px-accent/40 text-xs font-bold uppercase tracking-wider hover:bg-px-accent/30 disabled:opacity-50"
                   >
                     {saving ? 'Saving…' : 'Save'}
                   </button>
@@ -342,14 +343,14 @@ export default function DemoIntegrationsPanel({ open, onClose, embedded = false,
                     type="button"
                     onClick={handleTest}
                     disabled={testing || !canTest}
-                    className="px-4 py-2 rounded-lg bg-[#233544] text-slate-300 text-xs font-bold uppercase tracking-wider hover:bg-[#334155] disabled:opacity-40"
+                    className="px-4 py-2 rounded-lg bg-px-stroke text-slate-300 text-xs font-bold uppercase tracking-wider hover:bg-[#334155] disabled:opacity-40"
                   >
                     {testing ? 'Saving & sending…' : 'Save & send test'}
                   </button>
                 </div>
               </div>
 
-              <div className="rounded-xl border border-dashed border-[#233544] bg-[#161E2E]/30 p-4">
+              <div className="rounded-xl border border-dashed border-px-stroke bg-px-panel/30 p-4">
                 <p className="text-xs text-slate-500 leading-relaxed">
                   <span className="text-slate-400 font-medium">Email</span> and{' '}
                   <span className="text-slate-400 font-medium">WhatsApp</span> appear above for roadmap preview.
@@ -362,8 +363,8 @@ export default function DemoIntegrationsPanel({ open, onClose, embedded = false,
                   <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest mb-2">Workflow ledger</h3>
                   <div className="space-y-1.5 max-h-40 overflow-y-auto">
                     {config.workflow.map((entry, i) => (
-                      <div key={`${entry.ts}-${i}`} className="flex items-start gap-2 text-xs px-3 py-2 rounded-lg bg-[#161E2E] border border-[#233544]/60">
-                        <span className="material-icons-outlined text-sm text-[#00E5FF] flex-shrink-0 mt-0.5">history</span>
+                      <div key={`${entry.ts}-${i}`} className="flex items-start gap-2 text-xs px-3 py-2 rounded-lg bg-px-panel border border-px-stroke/60">
+                        <Icon className="material-icons-outlined text-sm text-px-accent flex-shrink-0 mt-0.5">history</Icon>
                         <div className="min-w-0 flex-1">
                           <span className="text-slate-300">{STEP_LABELS[entry.step] || entry.step}</span>
                           <span className="text-slate-500"> — {entry.detail}</span>
@@ -396,21 +397,21 @@ export default function DemoIntegrationsPanel({ open, onClose, embedded = false,
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={onClose}>
       <div
-        className="w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col bg-[#0B1120] border border-[#233544] rounded-2xl shadow-2xl"
+        className="w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col bg-app-bg border border-px-stroke rounded-2xl shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[#233544]">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-px-stroke">
           <div className="flex items-center gap-3">
-            <span className="flex items-center justify-center w-10 h-10 rounded-xl bg-[#00E5FF]/10 text-[#00E5FF]">
-              <span className="material-icons-outlined">settings</span>
+            <span className="flex items-center justify-center w-10 h-10 rounded-xl bg-px-accent/10 text-px-accent">
+              <Icon className="material-icons-outlined">settings</Icon>
             </span>
             <div>
               <h2 className="text-lg font-semibold text-white">Stencil Integrations</h2>
               <p className="text-xs text-slate-500">Alarm notifications &amp; incident dispatch (demo)</p>
             </div>
           </div>
-          <button type="button" onClick={onClose} className="text-slate-500 hover:text-white p-1 rounded-lg hover:bg-[#233544]">
-            <span className="material-icons-outlined">close</span>
+          <button type="button" onClick={onClose} className="text-slate-500 hover:text-white p-1 rounded-lg hover:bg-px-stroke">
+            <Icon className="material-icons-outlined">close</Icon>
           </button>
         </div>
         {body}

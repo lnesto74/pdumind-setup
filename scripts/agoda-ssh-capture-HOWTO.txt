@@ -1,0 +1,23 @@
+Agoda-2 SSH capture — Windows
+
+This script does not change the PDUs.
+It logs in over SSH and saves the command list the firmware prints.
+It was not tested on your network.
+
+These are not APC PDUs. APC commands are not sent.
+
+1. Connect the PC to the VPN.
+2. Save agoda-ssh-capture.ps1 in a folder.
+3. Open PowerShell in that folder and run:
+
+   powershell -ExecutionPolicy Bypass -File .\agoda-ssh-capture.ps1
+
+4. Username: admin
+   Password: the current superuser password.
+   If Posh-SSH is missing, answer y to install it for this Windows user only.
+
+5. It writes agoda-ssh-capture-<date>.txt
+   Send that file back.
+
+The 14 addresses, hostnames, NTP, and DNS from the sheet are already in the script.
+SSH may be closed on these units. The report will say "port 22 closed" for those.

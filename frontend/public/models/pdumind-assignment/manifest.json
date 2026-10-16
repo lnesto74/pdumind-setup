@@ -1,0 +1,32 @@
+{
+  "source": "pdumind-rack-kit-plaque.blend",
+  "renderer": "5.2.1 LTS",
+  "projection": "orthographic",
+  "view": "front",
+  "rack_canvas_m": [
+    0.84,
+    2.1
+  ],
+  "rack_height_m": 1.8669000000000002,
+  "pdu_height_m": 1.62,
+  "normalized_slots": {
+    "left": [
+      0.17,
+      0.07,
+      0.12,
+      0.86
+    ],
+    "right": [
+      0.71,
+      0.07,
+      0.12,
+      0.86
+    ]
+  },
+  "notes": [
+    "Existing schematic chassis, not vendor CAD. No invented outlet inventory.",
+    "Rear and front doors hidden in 2D asset only; live 3D unchanged.",
+    "Mount positions are schematic, not electrical feeds or phases.",
+    "No device names, power, status or selection baked into images."
+  ]
+}

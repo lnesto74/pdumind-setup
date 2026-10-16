@@ -1,10 +1,11 @@
+import Icon from '../presentation/Icon';
 import React, { useEffect, useMemo, useState } from 'react';
 import { displayPduLabel, groupPdusByChain } from '../../utils/pduChainTree';
 
 function RoleBadge({ role, idx }) {
   if (role === 'master') {
     return (
-      <span className="flex-shrink-0 text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-[#00E5FF]/15 text-[#00E5FF] border border-[#00E5FF]/35">
+      <span className="flex-shrink-0 text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-px-accent/15 text-px-accent border border-px-accent/35">
         Master
       </span>
     );
@@ -17,16 +18,16 @@ function RoleBadge({ role, idx }) {
     );
   }
   return (
-    <span className="flex-shrink-0 text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-[#233544] text-slate-400 border border-[#334155]">
+    <span className="flex-shrink-0 text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-px-stroke text-slate-400 border border-[#334155]">
       Unit
     </span>
   );
 }
 
 function rowClass(active, alarms) {
-  if (active) return 'bg-[#161E2E] border-[#00E5FF]/50 ring-1 ring-[#00E5FF]/20';
+  if (active) return 'px-tree-selected';
   if (alarms > 0) return 'border-red-500/30 bg-red-500/5 hover:bg-red-500/10';
-  return 'border-[#233544] hover:border-[#475569] bg-[#161E2E]/40';
+  return 'hover:bg-px-panel';
 }
 
 function PduRow({
@@ -50,23 +51,23 @@ function PduRow({
     <button
       type="button"
       onClick={() => onSelectPdu?.(pdu)}
-      className={`w-full text-left rounded-lg border transition-all ${
+      className={`px-tree-row w-full text-left transition-all ${
         indent ? 'ml-5 w-[calc(100%-1.25rem)]' : ''
       } ${dense ? 'p-2' : 'p-2.5'} ${rowClass(active, alarms)}`}
     >
       <div className="flex items-center gap-2 min-w-0">
-        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${online ? 'bg-emerald-500 animate-pulse' : 'bg-slate-500'}`} />
+        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${online ? 'bg-emerald-500 ' : 'bg-slate-500'}`} />
         <span className="text-xs font-medium text-white truncate flex-1" title={displayPduLabel(pdu)}>
           {displayPduLabel(pdu)}
         </span>
         <RoleBadge role={role} idx={unitIndex} />
         {alarms > 0 && (
-          <span className="text-[9px] font-mono font-bold text-red-400 bg-red-500/20 px-1 rounded">{alarms}</span>
+          <span className="text-[10px] font-mono font-bold text-red-400 bg-red-500/20 px-1 rounded">{alarms}</span>
         )}
       </div>
-      <p className="text-[10px] font-mono text-slate-500 truncate mt-0.5 ml-4">{pdu.ip}</p>
+      <p className="text-[11px] font-mono text-slate-500 truncate mt-0.5 ml-4">{pdu.ip}</p>
       {env && env.temp != null && env.hum != null && (
-        <p className="text-[9px] text-slate-600 truncate ml-4">
+        <p className="text-[10px] text-slate-600 truncate ml-4">
           {env.temp}° · {env.hum}%
         </p>
       )}
@@ -127,7 +128,7 @@ export default function PduMonitoringTree({
           <button
             type="button"
             onClick={toggleAll}
-            className="text-[9px] font-bold uppercase tracking-wider text-slate-500 hover:text-[#00E5FF] px-1 py-0.5"
+            className="text-[10px] font-bold uppercase tracking-wider text-slate-500 hover:text-px-accent px-1 py-0.5"
           >
             {allExpanded ? 'Collapse all' : 'Expand all'}
           </button>
@@ -150,23 +151,23 @@ export default function PduMonitoringTree({
         return (
           <div
             key={chain.stem}
-            className={`rounded-lg border overflow-hidden ${
+            className={`px-chain overflow-hidden ${
               selectedInChain && !masterActive
-                ? 'border-[#00E5FF]/25 bg-[#161E2E]/30'
-                : 'border-[#233544] bg-[#0B1120]/40'
+                ? 'border-px-accent/25 bg-px-panel/30'
+                : 'border-px-stroke bg-app-bg/40'
             }`}
           >
             <div className="flex items-stretch">
               <button
                 type="button"
                 onClick={(e) => toggleStem(chain.stem, e)}
-                className="flex-shrink-0 w-7 flex items-center justify-center text-slate-500 hover:text-[#00E5FF] hover:bg-[#161E2E]"
+                className="flex-shrink-0 w-7 flex items-center justify-center text-slate-500 hover:text-px-accent hover:bg-px-panel"
                 title={open ? 'Collapse chain' : 'Expand chain'}
                 aria-expanded={open}
               >
-                <span className={`material-icons-outlined text-base transition-transform ${open ? 'rotate-90' : ''}`}>
+                <Icon className={`material-icons-outlined text-base transition-transform ${open ? 'rotate-90' : ''}`}>
                   chevron_right
-                </span>
+                </Icon>
               </button>
 
               {master ? (
@@ -174,23 +175,23 @@ export default function PduMonitoringTree({
                   type="button"
                   onClick={() => onSelectPdu?.(master)}
                   className={`flex-1 min-w-0 text-left ${dense ? 'py-1.5 pr-2' : 'py-2 pr-2.5'} ${
-                    masterActive ? 'bg-[#161E2E]' : 'hover:bg-[#161E2E]/60'
+                    masterActive ? 'bg-px-panel' : 'hover:bg-px-panel/60'
                   }`}
                 >
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className={`w-2 h-2 rounded-full flex-shrink-0 ${masterOnline ? 'bg-emerald-500 animate-pulse' : 'bg-slate-500'}`} />
+                    <span className={`w-2 h-2 rounded-full flex-shrink-0 ${masterOnline ? 'bg-emerald-500 ' : 'bg-slate-500'}`} />
                     <span className="text-xs font-medium text-white truncate flex-1" title={displayPduLabel(master)}>
                       {displayPduLabel(master)}
                     </span>
                     <RoleBadge role="master" />
                     {chainAlarms > 0 && (
-                      <span className="text-[9px] font-mono font-bold text-red-400 bg-red-500/20 px-1 rounded">
+                      <span className="text-[10px] font-mono font-bold text-red-400 bg-red-500/20 px-1 rounded">
                         {chainAlarms}
                       </span>
                     )}
                   </div>
-                  <p className="text-[10px] font-mono text-slate-500 truncate mt-0.5 ml-4">{master.ip}</p>
-                  <p className="text-[9px] text-slate-600 font-mono truncate ml-4">
+                  <p className="text-[11px] font-mono text-slate-500 truncate mt-0.5 ml-4">{master.ip}</p>
+                  <p className="text-[10px] text-slate-600 font-mono truncate ml-4">
                     {liveSlaves}/{chain.slaves.length} slaves live
                     {env?.temp != null && env?.hum != null ? ` · ${env.temp}° · ${env.hum}%` : ''}
                   </p>
@@ -204,7 +205,7 @@ export default function PduMonitoringTree({
                     </span>
                     <RoleBadge role="master" />
                   </div>
-                  <p className="text-[9px] text-slate-600 font-mono truncate ml-4">
+                  <p className="text-[10px] text-slate-600 font-mono truncate ml-4">
                     {liveSlaves}/{chain.slaves.length} slaves live
                   </p>
                 </div>
@@ -212,8 +213,8 @@ export default function PduMonitoringTree({
             </div>
 
             {open && chain.slaves.length > 0 && (
-              <div className="relative pb-1.5 pr-1 space-y-1 border-t border-[#233544]/70 pt-1.5">
-                <span className="absolute left-[13px] top-0 bottom-2 w-px bg-[#233544]" aria-hidden />
+              <div className="relative pb-1.5 pr-1 space-y-1 border-t border-px-stroke/70 pt-1.5">
+                <span className="absolute left-[13px] top-0 bottom-2 w-px bg-px-stroke" aria-hidden />
                 {chain.slaves.map(({ pdu, idx }) => (
                   <PduRow
                     key={pdu.id}

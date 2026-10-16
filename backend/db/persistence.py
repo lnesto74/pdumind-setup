@@ -273,56 +273,31 @@ class RackRepo:
                 existing = cur.fetchone()
                 
                 if existing:
-                    # Update — only touch label when caller explicitly sends it
-                    if "label" in data:
-                        conn.execute(
-                            """UPDATE racks SET 
-                               row_index = ?, position_index = ?,
-                               x_m = ?, y_m = ?, z_m = ?,
-                               rotation_deg = ?, width_mm = ?, depth_mm = ?, height_u = ?,
-                               model = ?, label = ?, metadata_json = ?, updated_at = ?
-                               WHERE id = ?""",
-                            (
-                                data.get("row_index", 0),
-                                data.get("position_index", 0),
-                                data.get("x_m", 0),
-                                data.get("y_m", 0),
-                                data.get("z_m", 0),
-                                data.get("rotation_deg", 0),
-                                data.get("width_mm", 600),
-                                data.get("depth_mm", 1000),
-                                data.get("height_u", 42),
-                                data.get("model"),
-                                data.get("label"),
-                                json.dumps(data.get("metadata")) if data.get("metadata") else None,
-                                _utc_now(),
-                                existing["id"]
-                            )
+                    # Geometry only. Custom labels are written by PATCH /api/racks/<id>
+                    # so a layout autosave cannot put back the previous name.
+                    conn.execute(
+                        """UPDATE racks SET 
+                           row_index = ?, position_index = ?,
+                           x_m = ?, y_m = ?, z_m = ?,
+                           rotation_deg = ?, width_mm = ?, depth_mm = ?, height_u = ?,
+                           model = ?, metadata_json = ?, updated_at = ?
+                           WHERE id = ?""",
+                        (
+                            data.get("row_index", 0),
+                            data.get("position_index", 0),
+                            data.get("x_m", 0),
+                            data.get("y_m", 0),
+                            data.get("z_m", 0),
+                            data.get("rotation_deg", 0),
+                            data.get("width_mm", 600),
+                            data.get("depth_mm", 1000),
+                            data.get("height_u", 42),
+                            data.get("model"),
+                            json.dumps(data.get("metadata")) if data.get("metadata") else None,
+                            _utc_now(),
+                            existing["id"]
                         )
-                    else:
-                        conn.execute(
-                            """UPDATE racks SET 
-                               row_index = ?, position_index = ?,
-                               x_m = ?, y_m = ?, z_m = ?,
-                               rotation_deg = ?, width_mm = ?, depth_mm = ?, height_u = ?,
-                               model = ?, metadata_json = ?, updated_at = ?
-                               WHERE id = ?""",
-                            (
-                                data.get("row_index", 0),
-                                data.get("position_index", 0),
-                                data.get("x_m", 0),
-                                data.get("y_m", 0),
-                                data.get("z_m", 0),
-                                data.get("rotation_deg", 0),
-                                data.get("width_mm", 600),
-                                data.get("depth_mm", 1000),
-                                data.get("height_u", 42),
-                                data.get("model"),
-                                json.dumps(data.get("metadata")) if data.get("metadata") else None,
-                                _utc_now(),
-                                existing["id"]
-                            )
-                        )
+                    )
                     conn.commit()
                     return existing["id"]
                 else:

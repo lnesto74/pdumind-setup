@@ -1,3 +1,4 @@
+import Icon from './presentation/Icon';
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 
 const MIN_ZOOM = 1;
@@ -250,14 +251,14 @@ export default function IncidentHallMap({
       </div>
 
       <div className="absolute top-2 right-2 flex flex-col gap-1 z-10">
-        <button type="button" onClick={() => { markAdjusted(); setZoom((z) => Math.min(MAX_ZOOM, z + 0.5)); }} className="w-8 h-8 rounded-lg bg-[#161E2E]/95 border border-[#233544] text-slate-300 text-lg leading-none">+</button>
-        <button type="button" onClick={() => { markAdjusted(); setZoom((z) => Math.max(MIN_ZOOM, z - 0.5)); }} className="w-8 h-8 rounded-lg bg-[#161E2E]/95 border border-[#233544] text-slate-300 text-lg leading-none">−</button>
-        <button type="button" onClick={fitHall} className="w-8 h-8 rounded-lg bg-[#161E2E]/95 border border-[#233544] text-slate-300 flex items-center justify-center" title="Fit full cage">
-          <span className="material-icons-outlined text-sm">fit_screen</span>
+        <button type="button" onClick={() => { markAdjusted(); setZoom((z) => Math.min(MAX_ZOOM, z + 0.5)); }} className="w-8 h-8 rounded-lg bg-px-panel/95 border border-px-stroke text-slate-300 text-lg leading-none">+</button>
+        <button type="button" onClick={() => { markAdjusted(); setZoom((z) => Math.max(MIN_ZOOM, z - 0.5)); }} className="w-8 h-8 rounded-lg bg-px-panel/95 border border-px-stroke text-slate-300 text-lg leading-none">−</button>
+        <button type="button" onClick={fitHall} className="w-8 h-8 rounded-lg bg-px-panel/95 border border-px-stroke text-slate-300 flex items-center justify-center" title="Fit full cage">
+          <Icon className="material-icons-outlined text-sm">fit_screen</Icon>
         </button>
         {primaryShape && (
-          <button type="button" onClick={focusPrimary} className="w-8 h-8 rounded-lg bg-[#00E5FF]/15 border border-[#00E5FF]/40 text-[#00E5FF] flex items-center justify-center" title="Focus alert rack">
-            <span className="material-icons-outlined text-sm">my_location</span>
+          <button type="button" onClick={focusPrimary} className="w-8 h-8 rounded-lg bg-px-accent/15 border border-px-accent/40 text-px-accent flex items-center justify-center" title="Focus alert rack">
+            <Icon className="material-icons-outlined text-sm">my_location</Icon>
           </button>
         )}
       </div>

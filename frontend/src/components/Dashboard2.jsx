@@ -1,6 +1,7 @@
+import Icon from './presentation/Icon';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import api from '../api';
-import { mergeCommunicationEvidence } from '../utils/rackStatus';
+import { mergeCommunicationEvidence, mergeDeviceEvidence, retainHallEvidence } from '../utils/rackStatus';
 import DataHallDesigner from './DataHallDesigner/DataHallDesigner';
 import AssignPdusPanel from './AssignPdusPanel';
 import CommissioningWizard from './CommissioningWizard';
@@ -26,11 +27,11 @@ const DEMO_ALARMS_SECTION_KEY = 'pdumind_demo_alarms_section';
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
 // Outlet Card Component matching reference design
-const OutletCard = ({ number, data, pduIp, onToggleComplete, isWebAdmin }) => {
+export const OutletCard = ({ number, data, pduIp, onToggleComplete, isWebAdmin }) => {
   const statusItem = data?.results?.find(r => r.name === `OutletStatus${number}` || r.name === `Output${number}Status`);
   const currentItem = data?.results?.find(r => r.name === `OutletCurrent${number}` || r.name === `Output${number}Current`);
   const energyItem = data?.results?.find(r => r.name === `OutletEnergy${number}` || r.name === `Output${number}Energy`);
-  
+
   const status = statusItem?.value?.replace(/"/g, '').trim();
   const deviceCurrent = parseFloat(currentItem?.value?.replace(/"/g, '') || '0');
   const energy = parseFloat(energyItem?.value?.replace(/"/g, '') || '0') / 10;
@@ -91,65 +92,17 @@ const OutletCard = ({ number, data, pduIp, onToggleComplete, isWebAdmin }) => {
 
   if (isUninstalled) return null;
 
-  return (
-    <div className={`bg-[#161E2E] rounded-lg border ${isHighLoad ? 'border-red-500/50' : 'border-[#233544]'} p-4 ${!isOn ? 'opacity-60' : ''}`}>
-      <div className="flex items-center justify-between mb-3">
-        <span className="text-[10px] text-slate-500 uppercase tracking-wider">OUTLET</span>
-        <div className="flex items-center gap-2">
-          <span className={`text-[10px] ${statusInfo.color}`}>{statusInfo.text}</span>
-          <span className={`w-2 h-2 rounded-full ${statusInfo.dot}`}></span>
-        </div>
-      </div>
-      
-      <div className="text-2xl font-bold font-mono text-white mb-4">
-        {isWebAdmin ? `B${String(number).padStart(2, '0')}` : `A${String(number).padStart(2, '0')}`}
-      </div>
-      
-      {!isWebAdmin && (
-        <div className="space-y-2 mb-4">
-          <div className="flex justify-between items-baseline">
-            <span className="text-[10px] text-slate-500 uppercase">Current</span>
-            <span className={`text-lg font-mono font-bold ${isHighLoad ? 'text-red-400' : 'text-white'}`}>
-              {current.toFixed(2)}<span className="text-xs text-slate-500 ml-1">A</span>
-            </span>
-          </div>
-          <div className="flex justify-between items-baseline">
-            <span className="text-[10px] text-slate-500 uppercase">Energy</span>
-            <span className="text-sm font-mono text-slate-400">
-              {energy.toFixed(1)}<span className="text-xs text-slate-500 ml-1">kWh</span>
-            </span>
-          </div>
-        </div>
-      )}
+  return <tr data-outlet={number} className={isHighLoad?'px-outlet-alert':''}>
+    <th scope="row">{isWebAdmin ? `B${String(number).padStart(2, '0')}` : `A${String(number).padStart(2, '0')}`}</th>
+    <td><span className={`px-status-tag ${statusInfo.color}`}><span className={`w-2 h-2 rounded-full ${statusInfo.dot}`}/>{statusInfo.text}</span>{isWebAdmin&&<small className="ml-2">{status||'-'}</small>}</td>
+    {!isWebAdmin&&<><td className="px-number">{currentItem?.value != null && Number.isFinite(current) ? <>{current.toFixed(2)} <small>A</small></> : '—'}</td><td className="px-number">{energyItem?.value != null && Number.isFinite(energy) ? <>{energy.toFixed(1)} <small>kWh</small></> : '—'}</td><td><button type="button" onClick={event=>{event.stopPropagation();handleToggle();}} disabled={loading} aria-label={`${isOn?'Turn off':'Turn on'} outlet A${String(number).padStart(2,'0')}`} className="px-outlet-action"><Icon name="power"/>{loading?'…':isOn?'Turn off':'Turn on'}</button></td></>}
+  </tr>;
 
-      {isWebAdmin && (
-        <div className="mb-4">
-          <span className={`text-xs font-mono ${isOn ? 'text-emerald-400' : 'text-slate-500'}`}>
-            {status || '-'}
-          </span>
-        </div>
-      )}
-      
-      {!isWebAdmin && (
-        <button
-          onClick={handleToggle}
-          disabled={loading}
-          className={`w-full py-2.5 text-xs font-bold uppercase tracking-wider rounded transition-all ${
-            isOn 
-              ? 'bg-[#334155] text-slate-300 hover:bg-[#475569] border border-[#475569]' 
-              : 'bg-[#00E5FF]/20 text-[#00E5FF] hover:bg-[#00E5FF]/30 border border-[#00E5FF]/30'
-          } ${loading ? 'opacity-50' : ''}`}
-        >
-          {loading ? '...' : isOn ? 'TURN OFF' : 'TURN ON'}
-        </button>
-      )}
-    </div>
-  );
 };
 
 // Specs Table Row
 const SpecRow = ({ label, value }) => (
-  <div className="flex justify-between py-3 border-b border-[#233544]">
+  <div className="flex justify-between py-3 border-b border-px-stroke">
     <span className="text-xs text-slate-500">{label}</span>
     <span className="text-xs font-mono text-slate-300">{value}</span>
   </div>
@@ -157,15 +110,15 @@ const SpecRow = ({ label, value }) => (
 
 // Insight Card
 const InsightCard = ({ icon, iconBg, title, description, actionLabel, actionStyle, severity }) => (
-  <div className={`p-4 rounded-lg bg-[#161E2E] border ${severity === 'warning' ? 'border-red-500/30' : 'border-[#233544]'}`}>
+  <div className={`p-4 rounded-lg bg-px-panel border ${severity === 'warning' ? 'border-red-500/30' : 'border-px-stroke'}`}>
     <div className="flex items-start gap-4">
       <div className={`w-10 h-10 rounded-full ${iconBg} flex items-center justify-center flex-shrink-0`}>
-        <span className="material-icons-outlined text-sm">{icon}</span>
+        <Icon className="material-icons-outlined text-sm">{icon}</Icon>
       </div>
       <div className="flex-1">
         <h4 className={`text-sm font-semibold mb-1 ${severity === 'warning' ? 'text-red-400' : 'text-white'}`}>{title}</h4>
         <p className="text-xs text-slate-500 leading-relaxed mb-3">{description}</p>
-        <button className={`px-3 py-1.5 text-[10px] font-bold rounded uppercase tracking-tight transition-all ${actionStyle}`}>
+        <button className={`px-3 py-1.5 text-[11px] font-bold rounded uppercase tracking-tight transition-all ${actionStyle}`}>
           {actionLabel}
         </button>
       </div>
@@ -178,11 +131,11 @@ const Dashboard2 = () => {
   const [activeTab, setActiveTab] = useState('datahall');
   const [expandedPdu, setExpandedPdu] = useState(null);
   const [selectedPdu, setSelectedPdu] = useState(null);
-  
+
   // Real-time chart history (last 60 data points = 1 minute at 1s intervals)
   const [powerHistory, setPowerHistory] = useState([]);
   const [timeLabels, setTimeLabels] = useState([]);
-  
+
   // Chart mode: 'realtime' or 'historical'
   const [chartMode, setChartMode] = useState('realtime');
   const [chartPeriod, setChartPeriod] = useState('day'); // day, week, month
@@ -190,10 +143,10 @@ const Dashboard2 = () => {
   const [historicalLabels, setHistoricalLabels] = useState([]);
   const [historicalRawData, setHistoricalRawData] = useState([]); // Full data with voltage, current, energy
   const [loadingHistory, setLoadingHistory] = useState(false);
-  
+
   // Chart tooltip state
   const [chartTooltip, setChartTooltip] = useState({ visible: false, x: 0, y: 0, data: null });
-  
+
   // Use local selectedPdu only — never fall back to the legacy context PDU
   const activePdu = useMemo(() => selectedPdu, [selectedPdu?.ip, selectedPdu?.port, selectedPdu?.remote_host]);
 
@@ -232,11 +185,12 @@ const Dashboard2 = () => {
   });
   const [pduEnv, setPduEnv] = useState({}); // { ip: { temp, hum, door } }
   const [pduStatusEvidence, setPduStatusEvidence] = useState({});
+  const evidenceRef = useRef({});
   const [fleetPduResults, setFleetPduResults] = useState({}); // { ip: results[] } live telemetry per PDU
   const [demoReplayActive, setDemoReplayActive] = useState(false);
   const [neuralSidebarCollapsed, setNeuralSidebarCollapsed] = useState(true);
   const [hallRefreshTrigger, setHallRefreshTrigger] = useState(0);
-  
+
   // Commissioning wizard state
   const [showWizard, setShowWizard] = useState(false);
   const [showBulkReboot, setShowBulkReboot] = useState(false);
@@ -254,6 +208,7 @@ const Dashboard2 = () => {
   });
   const [integrationsConnected, setIntegrationsConnected] = useState(false);
   const [fleetSelectedPduId, setFleetSelectedPduId] = useState(null);
+  const [rackInspectorOpen,setRackInspectorOpen]=useState(false);
   const [switchboardPanelCollapsed, setSwitchboardPanelCollapsed] = useState(
     () => localStorage.getItem('pdumind_switchboard_panel') === '1', // default open; '1' = collapsed
   );
@@ -270,7 +225,7 @@ const Dashboard2 = () => {
   const [editingPduId, setEditingPduId] = useState(null);
   const [editingPduLabel, setEditingPduLabel] = useState('');
   const [deletingPduId, setDeletingPduId] = useState(null);
-  
+
   // Fetch all halls
   const fetchHalls = useCallback(async () => {
     try {
@@ -284,7 +239,7 @@ const Dashboard2 = () => {
     }
     return [];
   }, []);
-  
+
   // Initialize the Neural Ops shell preferences (shared by demo + production ops).
   // Landing always opens the Data Hall Designer + 3D canvas (overview), regardless
   // of the last-used section, so login lands on the designer by default.
@@ -422,7 +377,7 @@ const Dashboard2 = () => {
       })
       .catch(() => {});
   }, [neuralActive, opsApiPrefix]);
-  
+
   // Fetch hall state with PDUs (silent=true skips loading indicator to avoid blinking)
   const fetchHallState = useCallback(async (hallId, silent = false) => {
     try {
@@ -431,7 +386,7 @@ const Dashboard2 = () => {
       if (response.ok) {
         const data = await response.json();
         setSelectedHall(data.hall);
-        
+
         // Only show commissioned PDUs from DB — never generate phantom PDUs from layout
         if (data.pdus && data.pdus.length > 0) {
           const rackLabelById = Object.fromEntries(
@@ -480,7 +435,7 @@ const Dashboard2 = () => {
       if (!silent) setHallLoading(false);
     }
   }, []);
-  
+
   // Initialize halls on mount
   useEffect(() => {
     const init = async () => {
@@ -501,7 +456,7 @@ const Dashboard2 = () => {
     };
     init();
   }, [fetchHalls, fetchHallState]);
-  
+
   // Fetch hall state when selection changes
   useEffect(() => {
     if (selectedHallId) {
@@ -525,7 +480,7 @@ const Dashboard2 = () => {
     };
     run();
   }, [isDemoMode, selectedHallId, fetchHallState]);
-  
+
   // Fetch live status for all PDUs in the hall
   // Track demo replay — when active, telemetry is looped from a recording (not live cage SNMP)
   useEffect(() => {
@@ -595,27 +550,40 @@ const Dashboard2 = () => {
         rh: pdu.remote_host ? `?remote_host=${encodeURIComponent(pdu.remote_host)}` : '',
       }));
 
-    const applyLivePollResults = (liveResults) => {
-      setPduStatusEvidence(previous => {
-        const next = { ...previous };
-        for (const row of liveResults) {
-          if (!row) continue;
-          next[row.ip] = { ...previous[row.ip], ...(row.telemetry ? { telemetry: row.telemetry, alarms: row.alarm } : {}), telemetryUnavailable: !!row.failed };
-        }
-        return next;
-      });
+    let cancelled = false;
+    const hallIps = () => new Set(hallPDUs.map((pdu) => pdu.ip).filter(Boolean));
+    evidenceRef.current = retainHallEvidence(evidenceRef.current, hallIps());
+    setPduStatusEvidence(evidenceRef.current);
+
+    const publishEvidence = (next) => {
+      evidenceRef.current = next;
       const alarmMap = {};
       const envMap = {};
       const resultsMap = {};
-      for (const r of liveResults) {
-        if (!r) continue;
-        alarmMap[r.ip] = r.alarm;
-        envMap[r.ip] = r.env;
-        if (r.results?.length) resultsMap[r.ip] = r.results;
+      for (const [ip, item] of Object.entries(next)) {
+        if (item?.alarms) alarmMap[ip] = item.alarms;
+        if (item?.env) envMap[ip] = item.env;
+        const telemetry = item?.telemetry;
+        const freshSample = telemetry && telemetry.stale !== true && telemetry.authentication !== 'failed' && telemetry.reachability !== 'offline';
+        if (freshSample && telemetry.results?.length) resultsMap[ip] = telemetry.results;
       }
+      setPduStatusEvidence(next);
       setPduAlarms(alarmMap);
       setPduEnv(envMap);
       setFleetPduResults(resultsMap);
+    };
+
+    const applyLivePollResults = (liveResults) => {
+      if (cancelled) return;
+      const ips = hallIps();
+      const next = retainHallEvidence(evidenceRef.current, ips);
+      for (const row of liveResults) {
+        if (!row?.ip || !ips.has(row.ip)) continue;
+        const merged = mergeDeviceEvidence(next[row.ip], row);
+        if (row.env && merged?.telemetry === row.telemetry) merged.env = row.env;
+        next[row.ip] = merged;
+      }
+      publishEvidence(next);
     };
 
     const fetchPduLiveAlarms = async (targets = pduTargets()) => {
@@ -631,14 +599,15 @@ const Dashboard2 = () => {
             const count = parseInt(countEntry?.value || '0', 10);
             let flags = [];
             try { flags = JSON.parse(flagsEntry?.value || '[]'); } catch {}
+            const measured = liveData.measured_at || null;
             const alarmEntries = (liveData.results || [])
               .filter(r => r.name.startsWith('alarm_') && !r.name.endsWith('_color') && r.name !== 'alarm_status' && r.name !== 'alarm_color')
-              .map(r => ({ ...r, key: r.name, value: r.value?.replace?.(/"/g, '').trim() || r.value }));
+              .map(r => ({ ...r, key: r.name, timestamp: r.measured_at || r.timestamp || measured, value: r.value?.replace?.(/"/g, '').trim() || r.value }));
             return {
               ip,
               results: liveData.results,
               telemetry: liveData,
-              alarm: { count, flags, entries: alarmEntries, ts: new Date().toISOString() },
+              alarm: { count, flags, entries: alarmEntries, measured_at: measured },
               env: extractEnvFromLiveResults(liveData.results),
             };
           } catch {
@@ -646,7 +615,7 @@ const Dashboard2 = () => {
           }
         })
       );
-      applyLivePollResults(liveResults);
+      if (!cancelled) applyLivePollResults(liveResults);
     };
 
     const fetchLiveStatus = async () => {
@@ -662,21 +631,29 @@ const Dashboard2 = () => {
             const response = await fetch(`${API_BASE}/api/polling/device/${ip}${rh}`);
             if (response.ok) {
               const data = await response.json();
-              return { ip, rh, online: !!data.state?.includes('online'), communication: { state: data.state === 'alarm' || data.state?.includes('online') ? 'online' : data.state === 'offline' ? 'offline' : 'unknown', receivedAt: Date.now(), timestamp: data.last_seen_at || data.last_ok_at || data.timestamp } };
+              const state = data.state === 'alarm' || data.state === 'online' ? 'online' : data.state === 'offline' ? 'offline' : 'unknown';
+              const communication = data.probed_at ? { state, probedAt: data.probed_at, timestamp: data.probed_at, authentication: data.authentication } : null;
+              return { ip, rh, online: state === 'online', communication };
             }
-          } catch { /* treat as offline */ }
-          return { ip, rh, online: false };
+          } catch { /* keep the previous probe; a failed request is not a new sample */ }
+          return { ip, rh, online: false, communication: null };
         })
       );
+      if (cancelled) return;
 
-      setPduStatusEvidence(previous => {
-        const next = { ...previous };
-        for (const row of statusResults) next[row.ip] = { ...previous[row.ip], communication: mergeCommunicationEvidence(previous[row.ip]?.communication, row.communication) };
-        return next;
-      });
+      const ips = hallIps();
+      const next = retainHallEvidence(evidenceRef.current, ips);
+      for (const row of statusResults) {
+        if (!row?.ip || !ips.has(row.ip)) continue;
+        next[row.ip] = { ...next[row.ip], communication: mergeCommunicationEvidence(next[row.ip]?.communication, row.communication) };
+      }
+      publishEvidence(next);
       const statusMap = {};
-      for (const r of statusResults) statusMap[r.ip] = r.online ? 'online' : 'offline';
-      setPduLiveStatus(statusMap); // dots/sidebar update immediately
+      for (const row of statusResults) {
+        if (!ips.has(row.ip)) continue;
+        statusMap[row.ip] = row.online ? 'online' : row.communication?.state === 'offline' ? 'offline' : 'unknown';
+      }
+      setPduLiveStatus(statusMap);
 
       // Phase 2 — pull live telemetry/alarms for every commissioned PDU (cache
       // reads on the backend). Do not gate on the reachability probe — a PDU can
@@ -689,7 +666,7 @@ const Dashboard2 = () => {
     if (useReplayTelemetry) {
       fetchDemoFleet();
       const interval = setInterval(fetchDemoFleet, 10000);
-      return () => clearInterval(interval);
+      return () => { cancelled = true; clearInterval(interval); };
     }
 
     // Production ops, admin, or demo without replay → live SNMP from the cage
@@ -699,11 +676,12 @@ const Dashboard2 = () => {
     fetchPduLiveAlarms();
     const alarmInterval = setInterval(fetchPduLiveAlarms, 2000);
     return () => {
+      cancelled = true;
       clearInterval(reachabilityInterval);
       clearInterval(alarmInterval);
     };
   }, [hallPDUs, isDemoMode, demoReplayActive]);
-  
+
   // Filter PDUs based on selected filter
   const filteredPDUs = hallPDUs.filter(pdu => {
     if (pduFilter === 'all') return true;
@@ -712,13 +690,13 @@ const Dashboard2 = () => {
     if (pduFilter === 'offline') return status === 'offline';
     return true;
   });
-  
+
   // Use filtered PDUs for the PDU list
   const generatedPDUs = filteredPDUs;
 
   // Global alarm computation
   const globalAlarmCount = useMemo(() => {
-    return Object.values(pduAlarms).reduce((sum, a) => sum + (a.count || 0), 0);
+    return Object.values(pduAlarms).reduce((sum, a) => sum + (a?.count || 0), 0);
   }, [pduAlarms]);
 
   // Build alerts array for 3D canvas + Neural Ops panel
@@ -932,22 +910,22 @@ const Dashboard2 = () => {
       fetchHistory();
     }
   }, [chartMode, chartPeriod, activePdu?.ip]);
-  
+
   // Handle chart mouse move for tooltip
   const handleChartMouseMove = (e, chartData, rawData) => {
     const svg = e.currentTarget;
     const rect = svg.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    
+
     // Calculate which data point we're hovering over
     const chartWidth = rect.width;
     const dataLength = chartData.length;
     if (dataLength === 0) return;
-    
+
     const index = Math.min(Math.floor((x / chartWidth) * dataLength), dataLength - 1);
     const dataPoint = rawData ? rawData[index] : null;
-    
+
     if (dataPoint) {
       setChartTooltip({
         visible: true,
@@ -957,7 +935,7 @@ const Dashboard2 = () => {
       });
     }
   };
-  
+
   const handleChartMouseLeave = () => {
     setChartTooltip({ visible: false, x: 0, y: 0, data: null });
   };
@@ -976,7 +954,7 @@ const Dashboard2 = () => {
   const idleOutlets = activeOutlets - loadedOutlets;
 
   return (
-    <div className={`bg-[#0B1120] text-slate-100 flex flex-col flex-1 min-h-0 ${datahallCanvasLayout || showFleetSplit || (neuralActive && !sidebarHidden) ? 'h-full overflow-hidden' : 'min-h-0 overflow-y-auto'}`}>
+    <div className={`px-dashboard bg-app-bg text-slate-100 flex flex-col flex-1 min-h-0 ${datahallCanvasLayout || showFleetSplit || (neuralActive && !sidebarHidden) ? 'h-full overflow-hidden' : 'min-h-0 overflow-y-auto'}`}>
       <div className={`flex flex-1 min-h-0 overflow-hidden ${neuralLayoutActive ? '' : ''}`}>
         {/* Sidebar — collapsed in Neural Operations mode */}
         {!sidebarHidden && (
@@ -1005,7 +983,7 @@ const Dashboard2 = () => {
             pduAlarms={pduAlarms}
             pduEnv={pduEnv}
             hallLoading={hallLoading}
-            compact={showFleetSplit}
+            compact={showFleetSplit || activeTab === 'assign'}
             isDemoSession={isDemoMode}
             onReplayLoaded={async (newHallId) => {
               setDemoReplayActive(true);
@@ -1022,10 +1000,10 @@ const Dashboard2 = () => {
             }}
           />
         ) : (
-        <aside className="w-72 flex-shrink-0 border-r border-[#233544] bg-[#0B1120] min-h-0 h-full p-4 overflow-y-auto">
+        <aside className="w-72 flex-shrink-0 border-r border-px-stroke bg-app-bg min-h-0 h-full p-4 overflow-y-auto">
           {/* Infrastructure navigation — card tiles (no left-accent bars) */}
           <div className="mb-6">
-            <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest mb-3">
+            <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-3">
               Infrastructure
             </h3>
             <div className="space-y-2">
@@ -1034,22 +1012,22 @@ const Dashboard2 = () => {
                 onClick={() => { setActiveTab('datahall'); setExpandedPdu(null); }}
                 className={`group w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-all ${
                   activeTab === 'datahall'
-                    ? 'bg-[#161E2E] border-[#00E5FF]/45 shadow-[inset_0_0_0_1px_rgba(0,229,255,0.12)]'
-                    : 'bg-[#161E2E]/40 border-[#233544] hover:border-[#00E5FF]/30 hover:bg-[#161E2E]'
+                    ? 'bg-px-panel border-px-accent/45 shadow-[inset_0_0_0_1px_rgba(0,229,255,0.12)]'
+                    : 'bg-px-panel/40 border-px-stroke hover:border-px-accent/30 hover:bg-px-panel'
                 }`}
               >
                 <span className={`flex items-center justify-center w-9 h-9 rounded-lg flex-shrink-0 transition-colors ${
                   activeTab === 'datahall'
-                    ? 'bg-[#00E5FF]/20 text-[#00E5FF]'
-                    : 'bg-[#233544]/80 text-slate-400 group-hover:text-[#00E5FF] group-hover:bg-[#00E5FF]/10'
+                    ? 'bg-px-accent/20 text-px-accent'
+                    : 'bg-px-stroke/80 text-slate-400 group-hover:text-px-accent group-hover:bg-px-accent/10'
                 }`}>
-                  <span className="material-icons-outlined text-lg">view_in_ar</span>
+                  <Icon className="material-icons-outlined text-lg">view_in_ar</Icon>
                 </span>
                 <div className="min-w-0 flex-1">
-                  <span className={`block text-sm font-medium truncate ${activeTab === 'datahall' ? 'text-[#00E5FF]' : 'text-slate-200'}`}>
+                  <span className={`block text-sm font-medium truncate ${activeTab === 'datahall' ? 'text-px-accent' : 'text-slate-200'}`}>
                     Data Hall Designer
                   </span>
-                  <span className="block text-[10px] text-slate-500 truncate">3D layout &amp; racks</span>
+                  <span className="block text-[11px] text-slate-500 truncate">3D layout &amp; racks</span>
                 </div>
               </button>
 
@@ -1058,22 +1036,22 @@ const Dashboard2 = () => {
                 onClick={() => { setActiveTab('assign'); setExpandedPdu(null); }}
                 className={`group w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-all ${
                   activeTab === 'assign'
-                    ? 'bg-[#161E2E] border-[#00E5FF]/45 shadow-[inset_0_0_0_1px_rgba(0,229,255,0.12)]'
-                    : 'bg-[#161E2E]/40 border-[#233544] hover:border-[#00E5FF]/30 hover:bg-[#161E2E]'
+                    ? 'bg-px-panel border-px-accent/45 shadow-[inset_0_0_0_1px_rgba(0,229,255,0.12)]'
+                    : 'bg-px-panel/40 border-px-stroke hover:border-px-accent/30 hover:bg-px-panel'
                 }`}
               >
                 <span className={`flex items-center justify-center w-9 h-9 rounded-lg flex-shrink-0 transition-colors ${
                   activeTab === 'assign'
-                    ? 'bg-[#00E5FF]/20 text-[#00E5FF]'
-                    : 'bg-[#233544]/80 text-slate-400 group-hover:text-[#00E5FF] group-hover:bg-[#00E5FF]/10'
+                    ? 'bg-px-accent/20 text-px-accent'
+                    : 'bg-px-stroke/80 text-slate-400 group-hover:text-px-accent group-hover:bg-px-accent/10'
                 }`}>
-                  <span className="material-icons-outlined text-lg">drag_indicator</span>
+                  <Icon className="material-icons-outlined text-lg">drag_indicator</Icon>
                 </span>
                 <div className="min-w-0 flex-1">
-                  <span className={`block text-sm font-medium truncate ${activeTab === 'assign' ? 'text-[#00E5FF]' : 'text-slate-200'}`}>
+                  <span className={`block text-sm font-medium truncate ${activeTab === 'assign' ? 'text-px-accent' : 'text-slate-200'}`}>
                     Assign PDUs
                   </span>
-                  <span className="block text-[10px] text-slate-500 truncate">Place PDUs into racks</span>
+                  <span className="block text-[11px] text-slate-500 truncate">Place PDUs into racks</span>
                 </div>
               </button>
 
@@ -1082,35 +1060,35 @@ const Dashboard2 = () => {
                 onClick={() => { setActiveTab('ledger'); setExpandedPdu(null); }}
                 className={`group w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-all ${
                   activeTab === 'ledger'
-                    ? 'bg-[#161E2E] border-[#00E5FF]/45 shadow-[inset_0_0_0_1px_rgba(0,229,255,0.12)]'
+                    ? 'bg-px-panel border-px-accent/45 shadow-[inset_0_0_0_1px_rgba(0,229,255,0.12)]'
                     : globalAlarmCount > 0
                       ? 'bg-red-500/5 border-red-500/35 hover:border-red-500/50 hover:bg-red-500/10'
-                      : 'bg-[#161E2E]/40 border-[#233544] hover:border-[#00E5FF]/30 hover:bg-[#161E2E]'
+                      : 'bg-px-panel/40 border-px-stroke hover:border-px-accent/30 hover:bg-px-panel'
                 }`}
               >
                 <span className={`relative flex items-center justify-center w-9 h-9 rounded-lg flex-shrink-0 transition-colors ${
                   activeTab === 'ledger'
-                    ? 'bg-[#00E5FF]/20 text-[#00E5FF]'
+                    ? 'bg-px-accent/20 text-px-accent'
                     : globalAlarmCount > 0
                       ? 'bg-red-500/15 text-red-400'
-                      : 'bg-[#233544]/80 text-slate-400 group-hover:text-[#00E5FF] group-hover:bg-[#00E5FF]/10'
+                      : 'bg-px-stroke/80 text-slate-400 group-hover:text-px-accent group-hover:bg-px-accent/10'
                 }`}>
-                  <span className={`material-icons-outlined text-lg ${globalAlarmCount > 0 && activeTab !== 'ledger' ? 'animate-pulse' : ''}`}>
+                  <Icon className={`material-icons-outlined text-lg ${globalAlarmCount > 0 && activeTab !== 'ledger' ? 'animate-pulse' : ''}`}>
                     {globalAlarmCount > 0 ? 'warning_amber' : 'history_edu'}
-                  </span>
+                  </Icon>
                 </span>
                 <div className="min-w-0 flex-1">
                   <span className={`block text-sm font-medium truncate ${
-                    activeTab === 'ledger' ? 'text-[#00E5FF]' : globalAlarmCount > 0 ? 'text-red-300' : 'text-slate-200'
+                    activeTab === 'ledger' ? 'text-px-accent' : globalAlarmCount > 0 ? 'text-red-300' : 'text-slate-200'
                   }`}>
                     Alarm Ledger
                   </span>
-                  <span className="block text-[10px] text-slate-500 truncate">
+                  <span className="block text-[11px] text-slate-500 truncate">
                     {globalAlarmCount > 0 ? `${globalAlarmCount} active alarm${globalAlarmCount > 1 ? 's' : ''}` : 'Fleet alarm history'}
                   </span>
                 </div>
                 {globalAlarmCount > 0 && (
-                  <span className="flex-shrink-0 min-w-[1.25rem] h-5 px-1.5 rounded-md bg-red-500 text-white text-[10px] font-mono font-bold flex items-center justify-center">
+                  <span className="flex-shrink-0 min-w-[1.25rem] h-5 px-1.5 rounded-md bg-red-500 text-white text-[11px] font-mono font-bold flex items-center justify-center">
                     {globalAlarmCount}
                   </span>
                 )}
@@ -1120,20 +1098,20 @@ const Dashboard2 = () => {
 
           {/* Hall Selector */}
           <div className="mb-6">
-            <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest mb-3">
+            <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-3">
               Data Hall
             </h3>
             <select
               value={selectedHallId || ''}
               onChange={(e) => setSelectedHallId(parseInt(e.target.value))}
-              className="w-full bg-[#161E2E] border border-[#233544] rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-[#00E5FF]"
+              className="w-full bg-px-panel border border-px-stroke rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-px-accent"
             >
               {halls.map(hall => (
                 <option key={hall.id} value={hall.id}>{hall.name}</option>
               ))}
             </select>
             {selectedHall && (
-              <p className="text-[9px] text-slate-600 mt-1 px-1">
+              <p className="text-[10px] text-slate-600 mt-1 px-1">
                 ID: {selectedHall.id} • {new Date(selectedHall.created_at).toLocaleDateString()}
               </p>
             )}
@@ -1141,11 +1119,11 @@ const Dashboard2 = () => {
 
           {/* PDU Tree Navigation */}
           <div className="mb-6 flex flex-col" style={{ maxHeight: '40vh' }}>
-            <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest mb-2 flex items-center justify-between flex-shrink-0">
+            <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-2 flex items-center justify-between flex-shrink-0">
               <span>PDU Monitoring</span>
-              <span className="text-[#00E5FF]">{generatedPDUs.length}/{hallPDUs.length}</span>
+              <span className="text-px-accent">{generatedPDUs.length}/{hallPDUs.length}</span>
             </h3>
-            
+
             {/* Live/Offline Filter Toggle */}
             <div className="flex gap-1 mb-3 flex-shrink-0">
               {[
@@ -1156,21 +1134,21 @@ const Dashboard2 = () => {
                 <button
                   key={filter.id}
                   onClick={() => setPduFilter(filter.id)}
-                  className={`flex-1 py-1.5 px-2 text-[10px] rounded transition-all ${
+                  className={`flex-1 py-1.5 px-2 text-[11px] rounded transition-all ${
                     pduFilter === filter.id
-                      ? filter.color === 'emerald' 
+                      ? filter.color === 'emerald'
                         ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50'
                         : filter.color === 'slate'
                         ? 'bg-slate-500/20 text-slate-400 border border-slate-500/50'
-                        : 'bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/50'
-                      : 'bg-[#161E2E] text-slate-500 border border-transparent hover:border-[#233544]'
+                        : 'bg-px-accent/20 text-px-accent border border-px-accent/50'
+                      : 'bg-px-panel text-slate-500 border border-transparent hover:border-px-stroke'
                   }`}
                 >
                   {filter.label} ({filter.count})
                 </button>
               ))}
             </div>
-            
+
             {hallLoading ? (
               <div className="text-center py-4 text-slate-500 text-xs">Loading PDUs...</div>
             ) : generatedPDUs.length === 0 ? (
@@ -1194,16 +1172,16 @@ const Dashboard2 = () => {
                       }
                     }}
                     className={`w-full flex flex-col px-3 py-2 rounded-lg transition-colors text-left ${
-                      expandedPdu === pdu.id 
-                        ? 'bg-[#161E2E] text-white' 
-                        : 'text-slate-400 hover:bg-[#161E2E]'
+                      expandedPdu === pdu.id
+                        ? 'bg-px-panel text-white'
+                        : 'text-slate-400 hover:bg-px-panel'
                     }`}
                   >
                     {/* Row 1: Chevron + Label */}
                     <div className="flex items-center gap-2">
-                      <span className={`material-icons-outlined text-sm ${expandedPdu === pdu.id ? 'rotate-90' : ''} transition-transform`}>
+                      <Icon className={`material-icons-outlined text-sm ${expandedPdu === pdu.id ? 'rotate-90' : ''} transition-transform`}>
                         chevron_right
-                      </span>
+                      </Icon>
                       <span className="text-sm font-medium">{pdu.label || pdu.id}</span>
                     </div>
                     {/* Row 2: Status dot + LIVE + IP */}
@@ -1216,9 +1194,9 @@ const Dashboard2 = () => {
                       }`}>
                         {pduLiveStatus[pdu.ip] === 'online' ? 'LIVE' : 'OFF'}
                       </span>
-                      <span className="text-[10px] text-slate-500 font-mono">{pdu.ip}</span>
+                      <span className="text-[11px] text-slate-500 font-mono">{pdu.ip}</span>
                       {isDemoMode && pduEnv[pdu.ip] && (
-                        <span className="text-[9px] font-mono text-slate-600 ml-auto truncate">
+                        <span className="text-[10px] font-mono text-slate-600 ml-auto truncate">
                           {pduEnv[pdu.ip].temp}° · {pduEnv[pdu.ip].hum}%
                           {pduEnv[pdu.ip].door !== 'Closed' && (
                             <span className="text-red-400 ml-1">🚪{pduEnv[pdu.ip].door}</span>
@@ -1227,13 +1205,13 @@ const Dashboard2 = () => {
                       )}
                     </div>
                   </button>
-                  
+
                   {/* PDU Monitoring Options - Expanded */}
                   {expandedPdu === pdu.id && (
-                    <div className="ml-6 mt-1 space-y-0.5 border-l border-[#233544] pl-2">
-                      <p className="text-[9px] text-slate-600 px-2 py-1">{pdu.location}</p>
+                    <div className="ml-6 mt-1 space-y-0.5 border-l border-px-stroke pl-2">
+                      <p className="text-[10px] text-slate-600 px-2 py-1">{pdu.location}</p>
                       {pdu.mac_address && (
-                        <p className="text-[9px] text-slate-600 px-2 pb-1">MAC: <span className="font-mono">{pdu.mac_address}</span></p>
+                        <p className="text-[10px] text-slate-600 px-2 pb-1">MAC: <span className="font-mono">{pdu.mac_address}</span></p>
                       )}
                       {[
                         { id: 'telemetry', icon: 'analytics', label: 'Telemetry' },
@@ -1253,32 +1231,32 @@ const Dashboard2 = () => {
                               : item.alarmCount > 0
                                 ? 'bg-red-500/15 text-red-400 border border-red-500/30'
                               : activeTab === item.id && expandedPdu === pdu.id
-                                ? 'bg-[#00E5FF]/10 text-[#00E5FF]' 
-                                : 'text-slate-500 hover:bg-[#161E2E] hover:text-slate-300'
+                                ? 'bg-px-accent/10 text-px-accent'
+                                : 'text-slate-500 hover:bg-px-panel hover:text-slate-300'
                           }`}
                         >
-                          <span className={`material-icons-outlined text-sm ${item.alarmCount > 0 ? 'text-red-400' : ''}`}>{item.icon}</span>
+                          <Icon className={`material-icons-outlined text-sm ${item.alarmCount > 0 ? 'text-red-400' : ''}`}>{item.icon}</Icon>
                           <span>{item.label}</span>
                           {item.alarmCount > 0 && (
-                            <span className="ml-auto bg-red-500 text-white text-[9px] font-bold font-mono px-1.5 py-0.5 rounded-full animate-pulse">{item.alarmCount}</span>
+                            <span className="ml-auto bg-red-500 text-white text-[10px] font-bold font-mono px-1.5 py-0.5 rounded-full animate-pulse">{item.alarmCount}</span>
                           )}
                           {item.id === 'warnings' && !item.alarmCount && (
-                            <span className="ml-auto text-[9px] text-emerald-500">Normal</span>
+                            <span className="ml-auto text-[10px] text-emerald-500">Normal</span>
                           )}
                           {item.inactive && <span className="ml-auto text-[8px] uppercase tracking-wider text-slate-600">inactive</span>}
                         </button>
                       ))}
-                      
+
                       {/* Edit / Delete actions */}
                       {pdu.dbId && (
-                        <div className="mt-1 pt-1 border-t border-[#233544]/50">
+                        <div className="mt-1 pt-1 border-t border-px-stroke/50">
                           {/* Inline rename */}
                           {editingPduId === pdu.dbId ? (
                             <div className="px-2 py-1">
                               <input
                                 type="text" value={editingPduLabel}
                                 onChange={e => setEditingPduLabel(e.target.value)}
-                                className="w-full bg-[#0B1120] border border-amber-500/50 rounded px-2 py-1 text-xs text-white font-mono focus:outline-none"
+                                className="w-full bg-app-bg border border-amber-500/50 rounded px-2 py-1 text-xs text-white font-mono focus:outline-none"
                                 autoFocus
                                 onKeyDown={e => {
                                   if (e.key === 'Enter') renamePdu(pdu.dbId, editingPduLabel);
@@ -1287,35 +1265,35 @@ const Dashboard2 = () => {
                               />
                               <div className="flex gap-1 mt-1">
                                 <button onClick={() => renamePdu(pdu.dbId, editingPduLabel)}
-                                  className="flex-1 px-1.5 py-0.5 bg-amber-500/20 text-amber-400 text-[10px] rounded hover:bg-amber-500/30">Save</button>
+                                  className="flex-1 px-1.5 py-0.5 bg-amber-500/20 text-amber-400 text-[11px] rounded hover:bg-amber-500/30">Save</button>
                                 <button onClick={() => setEditingPduId(null)}
-                                  className="px-1.5 py-0.5 bg-slate-500/20 text-slate-400 text-[10px] rounded hover:bg-slate-500/30">Cancel</button>
+                                  className="px-1.5 py-0.5 bg-slate-500/20 text-slate-400 text-[11px] rounded hover:bg-slate-500/30">Cancel</button>
                               </div>
                             </div>
                           ) : deletingPduId === pdu.dbId ? (
                             <div className="px-2 py-1">
-                              <p className="text-[10px] text-red-400 mb-1">Delete this PDU permanently?</p>
+                              <p className="text-[11px] text-red-400 mb-1">Delete this PDU permanently?</p>
                               <div className="flex gap-1">
                                 <button onClick={() => deletePdu(pdu.dbId)}
-                                  className="flex-1 px-1.5 py-0.5 bg-red-500/20 text-red-400 text-[10px] rounded hover:bg-red-500/30 font-bold">Delete</button>
+                                  className="flex-1 px-1.5 py-0.5 bg-red-500/20 text-red-400 text-[11px] rounded hover:bg-red-500/30 font-bold">Delete</button>
                                 <button onClick={() => setDeletingPduId(null)}
-                                  className="px-1.5 py-0.5 bg-slate-500/20 text-slate-400 text-[10px] rounded hover:bg-slate-500/30">Cancel</button>
+                                  className="px-1.5 py-0.5 bg-slate-500/20 text-slate-400 text-[11px] rounded hover:bg-slate-500/30">Cancel</button>
                               </div>
                             </div>
                           ) : (
                             <div className="flex gap-1 px-2 py-1">
                               <button
                                 onClick={(e) => { e.stopPropagation(); setEditingPduId(pdu.dbId); setEditingPduLabel(pdu.label || ''); }}
-                                className="flex-1 flex items-center justify-center gap-1 px-1.5 py-1 bg-amber-500/10 text-amber-400 text-[10px] rounded hover:bg-amber-500/20 transition-colors"
+                                className="flex-1 flex items-center justify-center gap-1 px-1.5 py-1 bg-amber-500/10 text-amber-400 text-[11px] rounded hover:bg-amber-500/20 transition-colors"
                               >
-                                <span className="material-icons-outlined" style={{fontSize:'11px'}}>edit</span>
+                                <Icon className="material-icons-outlined" style={{fontSize:'11px'}}>edit</Icon>
                                 Rename
                               </button>
                               <button
                                 onClick={(e) => { e.stopPropagation(); setDeletingPduId(pdu.dbId); }}
-                                className="flex-1 flex items-center justify-center gap-1 px-1.5 py-1 bg-red-500/10 text-red-400 text-[10px] rounded hover:bg-red-500/20 transition-colors"
+                                className="flex-1 flex items-center justify-center gap-1 px-1.5 py-1 bg-red-500/10 text-red-400 text-[11px] rounded hover:bg-red-500/20 transition-colors"
                               >
-                                <span className="material-icons-outlined" style={{fontSize:'11px'}}>delete</span>
+                                <Icon className="material-icons-outlined" style={{fontSize:'11px'}}>delete</Icon>
                                 Delete
                               </button>
                             </div>
@@ -1328,12 +1306,12 @@ const Dashboard2 = () => {
               ))}
             </div>
             )}
-            
+
             {/* Add PDU Button */}
-            <button 
+            <button
               onClick={() => setShowWizard(true)}
-              className="w-full mt-3 py-2 bg-[#233544] hover:bg-[#2D4A5E] text-slate-400 hover:text-white font-medium text-xs uppercase tracking-wider rounded-lg flex items-center justify-center gap-2 transition-all">
-              <span className="material-icons-outlined text-sm">add</span>
+              className="w-full mt-3 py-2 bg-px-stroke hover:bg-[#2D4A5E] text-slate-400 hover:text-white font-medium text-xs uppercase tracking-wider rounded-lg flex items-center justify-center gap-2 transition-all">
+              <Icon className="material-icons-outlined text-sm">add</Icon>
               Commission PDU
             </button>
             {hallPDUs.length > 0 && (
@@ -1342,26 +1320,26 @@ const Dashboard2 = () => {
                 onClick={() => setShowBulkReboot(true)}
                 className="w-full mt-2 py-2.5 bg-amber-500/20 hover:bg-amber-500/30 border-2 border-amber-500/50 text-amber-200 font-bold text-xs uppercase tracking-wider rounded-lg flex items-center justify-center gap-2 transition-all shadow-lg shadow-amber-500/10"
               >
-                <span className="material-icons-outlined text-base">restart_alt</span>
+                <Icon className="material-icons-outlined text-base">restart_alt</Icon>
                 Reboot PDUs
               </button>
             )}
           </div>
 
           {/* Quick Stats */}
-          <div className="mt-auto pt-4 border-t border-[#233544]">
+          <div className="mt-auto pt-4 border-t border-px-stroke">
             <div className="grid grid-cols-3 gap-2 text-center">
-              <div className="bg-[#161E2E] rounded-lg p-2">
-                <p className="text-lg font-bold text-[#00E5FF] font-mono">{generatedPDUs.length}</p>
-                <p className="text-[9px] text-slate-500 uppercase">PDUs</p>
+              <div className="bg-px-panel rounded-lg p-2">
+                <p className="text-lg font-bold text-px-accent font-mono">{generatedPDUs.length}</p>
+                <p className="text-[10px] text-slate-500 uppercase">PDUs</p>
               </div>
-              <div className="bg-[#161E2E] rounded-lg p-2">
+              <div className="bg-px-panel rounded-lg p-2">
                 <p className="text-lg font-bold text-red-400 font-mono">{generatedPDUs.filter(p => p.status === 'critical').length}</p>
-                <p className="text-[9px] text-slate-500 uppercase">Critical</p>
+                <p className="text-[10px] text-slate-500 uppercase">Critical</p>
               </div>
-              <div className="bg-[#161E2E] rounded-lg p-2">
+              <div className="bg-px-panel rounded-lg p-2">
                 <p className="text-lg font-bold text-amber-400 font-mono">{generatedPDUs.filter(p => p.status === 'warning').length}</p>
-                <p className="text-[9px] text-slate-500 uppercase">Warning</p>
+                <p className="text-[10px] text-slate-500 uppercase">Warning</p>
               </div>
             </div>
           </div>
@@ -1375,7 +1353,7 @@ const Dashboard2 = () => {
             : showFleetSplit ? 'p-0 overflow-hidden'
             : (alarmsDispatchLayout || alarmsReportsLayout) ? 'p-8 overflow-hidden'
             : neuralActive && (activeTab === 'commission' || activeTab === 'integrations' || activeTab === 'teams' || activeTab === 'assign') ? 'p-0 overflow-hidden'
-            : 'p-8 overflow-y-auto dashboard2-scroll'
+            : 'p-4 overflow-y-auto dashboard2-scroll'
         }`}>
           {activeTab === 'teams' && neuralActive && (
             <DemoTeamsPanel apiPrefix={opsApiPrefix} />
@@ -1423,7 +1401,7 @@ const Dashboard2 = () => {
           {!showFleetSplit && !activePdu && activeTab === 'telemetry' && (
             <div className="flex items-center justify-center h-[60vh]">
               <div className="text-center">
-                <span className="material-icons-outlined text-5xl text-slate-700 mb-4 block">electrical_services</span>
+                <Icon className="material-icons-outlined text-5xl text-slate-700 mb-4 block">electrical_services</Icon>
                 <p className="text-slate-400 text-lg mb-2">No PDU selected</p>
                 <p className="text-slate-600 text-sm">Use the Data Hall Designer to commission PDUs,<br/>or select one from the sidebar.</p>
               </div>
@@ -1434,11 +1412,11 @@ const Dashboard2 = () => {
             <>
               {/* Active PDU Info Bar */}
               {!showFleetSplit && activePduFull && (
-                <div className="mb-4 p-3 rounded-xl bg-[#161E2E] border border-[#233544] flex items-center gap-4 flex-wrap">
+                <div className="mb-4 p-3 rounded-xl bg-px-panel border border-px-stroke flex items-center gap-4 flex-wrap">
                   {/* Label — only show if it differs from the IP */}
                   {activePduFull.label && activePduFull.label !== activePduFull.ip && (
                     <div className="flex items-center gap-2">
-                      <span className="material-icons-outlined text-[#00E5FF] text-sm">dns</span>
+                      <Icon className="material-icons-outlined text-px-accent text-sm">dns</Icon>
                       <span className="text-sm font-bold text-white">{activePduFull.label}</span>
                     </div>
                   )}
@@ -1446,29 +1424,29 @@ const Dashboard2 = () => {
                   <div className="flex items-center gap-1.5">
                     {activePduFull.remote_host ? (
                       <>
-                        <span className="material-icons-outlined text-amber-400 text-xs">cloud</span>
+                        <Icon className="material-icons-outlined text-amber-400 text-xs">cloud</Icon>
                         <span className="text-xs font-mono text-amber-300">Remote: {activePduFull.remote_host}:{activePduFull.web_admin_port || 80}</span>
                       </>
                     ) : (
                       <>
-                        <span className="material-icons-outlined text-slate-500 text-xs">lan</span>
+                        <Icon className="material-icons-outlined text-slate-500 text-xs">lan</Icon>
                         <span className="text-xs font-mono text-slate-400">{activePduFull.ip}</span>
                       </>
                     )}
                   </div>
                   {activePduFull.mac_address && (
                     <div className="flex items-center gap-1.5">
-                      <span className="material-icons-outlined text-slate-500 text-xs">fingerprint</span>
+                      <Icon className="material-icons-outlined text-slate-500 text-xs">fingerprint</Icon>
                       <span className="text-xs font-mono text-slate-400">{activePduFull.mac_address}</span>
                     </div>
                   )}
                   <div className="flex items-center gap-1.5">
-                    <span className="material-icons-outlined text-slate-500 text-xs">view_in_ar</span>
+                    <Icon className="material-icons-outlined text-slate-500 text-xs">view_in_ar</Icon>
                     <span className="text-xs text-slate-400">Rack: <span className="text-white font-mono">{activePduFull.location || 'Unassigned'}</span></span>
                   </div>
-                  <div className={`ml-auto flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                    pduLiveStatus[activePduFull.ip] === 'online' 
-                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
+                  <div className={`ml-auto flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                    pduLiveStatus[activePduFull.ip] === 'online'
+                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                       : 'bg-slate-500/20 text-slate-400 border border-slate-500/30'
                   }`}>
                     <span className={`w-1.5 h-1.5 rounded-full ${pduLiveStatus[activePduFull.ip] === 'online' ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
@@ -1481,7 +1459,7 @@ const Dashboard2 = () => {
               {!showFleetSplit && (
               <div className="flex justify-between items-start mb-8">
                 <div>
-                  <h1 className="text-2xl font-bold uppercase tracking-tight text-[#00E5FF]">
+                  <h1 className="text-2xl font-bold uppercase tracking-tight text-px-accent">
                     Telemetry & Predictive Analysis
                   </h1>
                   <p className="text-slate-500 text-sm mt-1">
@@ -1498,44 +1476,44 @@ const Dashboard2 = () => {
               )}
 
               {/* Metrics Row */}
-              <div className={`grid gap-4 mb-6 ${showFleetSplit ? 'grid-cols-2 lg:grid-cols-3 xl:grid-cols-5' : 'grid-cols-5'}`}>
-                <div className="bg-[#161E2E] p-5 rounded-xl border border-[#233544]">
-                  <p className="text-[10px] text-slate-500 uppercase font-bold mb-2">Voltage</p>
+              <div className="px-measurement-strip">
+                <div className="bg-px-panel p-5 rounded-xl border border-px-stroke">
+                  <p className="text-[11px] text-slate-500 uppercase font-bold mb-2">Voltage</p>
                   <div className="flex items-baseline gap-1">
                     <span className="text-3xl font-bold font-mono text-white">{voltage.toFixed(1)}</span>
                     <span className="text-slate-500 text-sm">V</span>
                   </div>
                 </div>
-                <div className="bg-[#161E2E] p-5 rounded-xl border border-[#233544]">
-                  <p className="text-[10px] text-slate-500 uppercase font-bold mb-2">Current</p>
+                <div className="bg-px-panel p-5 rounded-xl border border-px-stroke">
+                  <p className="text-[11px] text-slate-500 uppercase font-bold mb-2">Current</p>
                   <div className="flex items-baseline gap-1">
-                    <span className="text-3xl font-bold font-mono text-[#00E5FF]">{current.toFixed(2)}</span>
+                    <span className="text-3xl font-bold font-mono text-px-accent">{current.toFixed(2)}</span>
                     <span className="text-slate-500 text-sm">A</span>
                   </div>
                 </div>
-                <div className="bg-[#161E2E] p-5 rounded-xl border border-[#233544]">
-                  <p className="text-[10px] text-slate-500 uppercase font-bold mb-2">Active Power</p>
+                <div className="bg-px-panel p-5 rounded-xl border border-px-stroke">
+                  <p className="text-[11px] text-slate-500 uppercase font-bold mb-2">Active Power</p>
                   <div className="flex items-baseline gap-1">
                     <span className="text-3xl font-bold font-mono text-white">{power.toFixed(1)}</span>
                     <span className="text-slate-500 text-sm">W</span>
                   </div>
                 </div>
-                <div className="bg-[#161E2E] p-5 rounded-xl border border-[#233544]">
-                  <p className="text-[10px] text-slate-500 uppercase font-bold mb-2">Power Factor</p>
+                <div className="bg-px-panel p-5 rounded-xl border border-px-stroke">
+                  <p className="text-[11px] text-slate-500 uppercase font-bold mb-2">Power Factor</p>
                   <div className="flex items-baseline gap-1">
                     <span className="text-3xl font-bold font-mono text-white">{pf.toFixed(2)}</span>
                   </div>
                 </div>
-                <div className="bg-[#161E2E] p-5 rounded-xl border border-[#233544]">
-                  <p className="text-[10px] text-slate-500 uppercase font-bold mb-2">Total Energy</p>
+                <div className="bg-px-panel p-5 rounded-xl border border-px-stroke">
+                  <p className="text-[11px] text-slate-500 uppercase font-bold mb-2">Total Energy</p>
                   <div className="flex items-baseline gap-1">
                     <span className="text-3xl font-bold font-mono text-white">{energy.toFixed(1)}</span>
                     <span className="text-slate-500 text-sm">kWh</span>
                   </div>
                 </div>
-                <div className="bg-[#161E2E] p-5 rounded-xl border border-[#233544] flex items-center justify-between">
+                <div className="bg-px-panel p-5 rounded-xl border border-px-stroke flex items-center justify-between">
                   <div>
-                    <p className="text-[10px] text-slate-500 uppercase font-bold mb-2">Phase Status</p>
+                    <p className="text-[11px] text-slate-500 uppercase font-bold mb-2">Phase Status</p>
                     <div className="flex gap-2">
                       {[voltage, voltageL2, voltageL3].map((v, i) => (
                         <div
@@ -1552,37 +1530,37 @@ const Dashboard2 = () => {
                       ))}
                     </div>
                   </div>
-                  <span className="material-icons-outlined text-slate-700 text-4xl">view_in_ar</span>
+                  <Icon className="material-icons-outlined text-slate-700 text-4xl">view_in_ar</Icon>
                 </div>
               </div>
 
               {/* Charts Row */}
               <div className="grid grid-cols-1 gap-6 mb-6">
                 {/* Load Trends Chart */}
-                <div className="bg-[#161E2E] rounded-xl border border-[#233544] p-6">
-                  <div className="flex justify-between items-center mb-6">
-                    <h3 className="font-bold text-[#00E5FF] flex items-center gap-2 uppercase text-sm">
-                      <span className="material-icons-outlined text-lg">trending_up</span>
+                <div className="px-section">
+                  <div className="flex flex-wrap gap-3 justify-between items-center mb-6">
+                    <h3 className="font-bold text-px-accent flex items-center gap-2 uppercase text-sm">
+                      <Icon className="material-icons-outlined text-lg">trending_up</Icon>
                       Load Trends & Forecasting
                     </h3>
                     <div className="flex items-center gap-4 text-xs">
                       {/* Mode Toggle */}
-                      <div className="flex items-center bg-[#0d1929] rounded-lg p-0.5">
-                        <button 
+                      <div className="px-chart-tabs">
+                        <button
                           onClick={() => setChartMode('realtime')}
-                          className={`px-3 py-1 rounded-md text-[10px] uppercase transition-all ${
-                            chartMode === 'realtime' 
-                              ? 'bg-[#00E5FF] text-[#0B1120] font-bold' 
+                          className={`px-3 py-1 rounded-md text-[11px] uppercase transition-all ${
+                            chartMode === 'realtime'
+                              ? 'px-chart-active'
                               : 'text-slate-400 hover:text-white'
                           }`}
                         >
                           Real-time
                         </button>
-                        <button 
+                        <button
                           onClick={() => setChartMode('historical')}
-                          className={`px-3 py-1 rounded-md text-[10px] uppercase transition-all ${
-                            chartMode === 'historical' 
-                              ? 'bg-[#00E5FF] text-[#0B1120] font-bold' 
+                          className={`px-3 py-1 rounded-md text-[11px] uppercase transition-all ${
+                            chartMode === 'historical'
+                              ? 'px-chart-active'
                               : 'text-slate-400 hover:text-white'
                           }`}
                         >
@@ -1593,12 +1571,12 @@ const Dashboard2 = () => {
                       {chartMode === 'historical' && (
                         <div className="flex items-center gap-1 bg-[#0d1929] rounded-lg p-0.5">
                           {['day', 'week', 'month'].map(p => (
-                            <button 
+                            <button
                               key={p}
                               onClick={() => setChartPeriod(p)}
-                              className={`px-2 py-1 rounded text-[10px] uppercase transition-all ${
-                                chartPeriod === p 
-                                  ? 'bg-[#1e3a5f] text-[#00E5FF] font-bold' 
+                              className={`px-2 py-1 rounded text-[11px] uppercase transition-all ${
+                                chartPeriod === p
+                                  ? 'bg-[#1e3a5f] text-px-accent font-bold'
                                   : 'text-slate-500 hover:text-slate-300'
                               }`}
                             >
@@ -1609,40 +1587,40 @@ const Dashboard2 = () => {
                       )}
                       {/* Legend */}
                       <div className="flex items-center gap-2">
-                        <span className="w-3 h-3 rounded-full bg-[#00E5FF]"></span>
+                        <span className="w-3 h-3 rounded-full bg-px-accent"></span>
                         <span className="text-slate-400">Actual Power</span>
                       </div>
                     </div>
                   </div>
-                  
+
                   {/* Chart Area */}
-                  <div className="h-[200px] relative border-l border-b border-[#233544]">
+                  <div className="h-[200px] ml-12 relative border-l border-b border-px-stroke">
                     {/* Y-axis labels */}
                     {(() => {
                       const chartData = chartMode === 'realtime' ? powerHistory : historicalData;
                       const maxVal = chartData.length > 0 ? Math.max(...chartData) * 1.1 : power * 1.1;
                       return (
-                        <div className="absolute -left-12 top-0 h-full flex flex-col justify-between text-[9px] font-mono text-slate-500">
+                        <div className="absolute -left-12 top-0 h-full flex flex-col justify-between text-[10px] font-mono text-slate-500">
                           <span>{maxVal.toFixed(0)}W</span>
                           <span>{(maxVal * 0.5).toFixed(0)}W</span>
                           <span>0W</span>
                         </div>
                       );
                     })()}
-                    <svg 
-                      className="w-full h-full cursor-crosshair" 
-                      viewBox="0 0 800 200" 
+                    <svg
+                      className="w-full h-full cursor-crosshair"
+                      viewBox="0 0 800 200"
                       preserveAspectRatio="none"
                       onMouseMove={(e) => handleChartMouseMove(e, chartMode === 'realtime' ? powerHistory : historicalData, chartMode === 'historical' ? historicalRawData : null)}
                       onMouseLeave={handleChartMouseLeave}
                     >
                       <defs>
                         <linearGradient id="chartGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-                          <stop offset="0%" stopColor="#00E5FF" stopOpacity="0.3"/>
+                          <stop offset="0%" stopColor="#00E5FF" stopOpacity="0.06"/>
                           <stop offset="100%" stopColor="#00E5FF" stopOpacity="0"/>
                         </linearGradient>
                         <linearGradient id="histGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-                          <stop offset="0%" stopColor="#10B981" stopOpacity="0.3"/>
+                          <stop offset="0%" stopColor="#10B981" stopOpacity="0.06"/>
                           <stop offset="100%" stopColor="#10B981" stopOpacity="0"/>
                         </linearGradient>
                       </defs>
@@ -1650,7 +1628,7 @@ const Dashboard2 = () => {
                       <line x1="0" y1="50" x2="800" y2="50" stroke="#233544" strokeWidth="1"/>
                       <line x1="0" y1="100" x2="800" y2="100" stroke="#233544" strokeWidth="1"/>
                       <line x1="0" y1="150" x2="800" y2="150" stroke="#233544" strokeWidth="1"/>
-                      
+
                       {/* Real-time chart with scrolling effect */}
                       {chartMode === 'realtime' && powerHistory.length > 1 && (() => {
                         const maxPower = Math.max(...powerHistory) * 1.1 || 1000;
@@ -1658,28 +1636,23 @@ const Dashboard2 = () => {
                         const totalSlots = 60;
                         const slotWidth = 800 / (totalSlots - 1);
                         const startX = (totalSlots - powerHistory.length) * slotWidth;
-                        
+
                         const points = powerHistory.map((p, i) => {
                           const x = startX + (i * slotWidth);
                           const y = 190 - (p / maxPower) * 180;
                           return `${x} ${y}`;
                         }).join(' L');
-                        
+
                         const lastX = startX + ((powerHistory.length - 1) * slotWidth);
                         const lastY = 190 - (powerHistory[powerHistory.length - 1] / maxPower) * 180;
                         const firstX = startX;
                         const areaPath = `M${firstX} 190 L${points} L${lastX} 190 Z`;
                         const linePath = `M${points}`;
-                        
+
                         return (
                           <g style={{ transition: 'transform 0.3s ease-out' }}>
                             <path d={areaPath} fill="url(#chartGradient)" style={{ transition: 'd 0.3s ease-out' }}/>
-                            <path d={linePath} fill="none" stroke="#00E5FF" strokeWidth="2.5" style={{ transition: 'd 0.3s ease-out' }}/>
-                            {/* Animated glow trail */}
-                            <circle cx={lastX} cy={lastY} r="12" fill="#00E5FF" opacity="0.15">
-                              <animate attributeName="r" values="8;16;8" dur="1.5s" repeatCount="indefinite"/>
-                              <animate attributeName="opacity" values="0.2;0.05;0.2" dur="1.5s" repeatCount="indefinite"/>
-                            </circle>
+                            <path d={linePath} fill="none" stroke="#00E5FF" strokeWidth="1.5" style={{ transition: 'd 0.3s ease-out' }}/>
                             {/* Pulsing dot */}
                             <circle cx={lastX} cy={lastY} r="6" fill="#00E5FF" opacity="0.6">
                               <animate attributeName="r" values="6;10;6" dur="1s" repeatCount="indefinite"/>
@@ -1693,7 +1666,7 @@ const Dashboard2 = () => {
                           </g>
                         );
                       })()}
-                      
+
                       {/* Historical chart */}
                       {chartMode === 'historical' && !loadingHistory && historicalData.length > 1 && (() => {
                         const maxPower = Math.max(...historicalData) * 1.1 || 1000;
@@ -1711,7 +1684,7 @@ const Dashboard2 = () => {
                           </>
                         );
                       })()}
-                      
+
                       {/* Loading/empty states */}
                       {chartMode === 'realtime' && powerHistory.length <= 1 && (
                         <text x="400" y="100" textAnchor="middle" fill="#475569" fontSize="14">Collecting data...</text>
@@ -1723,17 +1696,17 @@ const Dashboard2 = () => {
                         <text x="400" y="100" textAnchor="middle" fill="#475569" fontSize="14">No historical data for this period</text>
                       )}
                     </svg>
-                    
+
                     {/* Chart Tooltip */}
                     {chartTooltip.visible && chartTooltip.data && (
-                      <div 
+                      <div
                         className="absolute pointer-events-none z-50 bg-slate-900/95 border border-cyan-500/30 rounded-lg px-3 py-2 shadow-lg shadow-cyan-500/10"
                         style={{
                           left: Math.min(chartTooltip.x + 10, 280),
                           top: Math.max(chartTooltip.y - 80, 10),
                         }}
                       >
-                        <div className="text-[10px] text-slate-400 mb-1">
+                        <div className="text-[11px] text-slate-400 mb-1">
                           {new Date(chartTooltip.data.ts).toLocaleString()}
                         </div>
                         <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
@@ -1761,17 +1734,17 @@ const Dashboard2 = () => {
                       </div>
                     )}
                   </div>
-                  
+
                   {/* Dynamic time labels - show relative time window */}
-                  <div className="flex justify-between mt-4 text-[9px] font-mono text-slate-500">
+                  <div className="flex justify-between mt-4 text-[10px] font-mono text-slate-500">
                     {chartMode === 'realtime' ? (
                       <>
                         <span className="opacity-50">-60s</span>
                         <span className="opacity-60">-45s</span>
                         <span className="opacity-70">-30s</span>
                         <span className="opacity-80">-15s</span>
-                        <span className="text-[#00E5FF] font-bold flex items-center gap-1">
-                          <span className="w-2 h-2 rounded-full bg-[#00E5FF] animate-pulse"></span>
+                        <span className="text-px-accent font-bold flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-px-accent animate-pulse"></span>
                           {timeLabels.length > 0 ? timeLabels[timeLabels.length - 1] : 'Now'}
                         </span>
                       </>
@@ -1787,35 +1760,35 @@ const Dashboard2 = () => {
                       <span className="text-slate-600">Waiting for data...</span>
                     )}
                   </div>
-                  
-                  <div className="mt-4 flex justify-between items-center text-sm border-t border-[#233544] pt-4">
+
+                  <div className="mt-4 flex justify-between items-center text-sm border-t border-px-stroke pt-4">
                     <div className="text-slate-500">
                       Peak Demand Today: <span className="font-bold text-white font-mono ml-2">{Math.round(power * 1.03)} W</span>
                     </div>
-                    <button className="text-[#00E5FF] hover:underline flex items-center gap-1 text-xs uppercase">
-                      Download Report <span className="material-icons-outlined text-sm">download</span>
+                    <button className="text-px-accent hover:underline flex items-center gap-1 text-xs uppercase">
+                      Download Report <Icon className="material-icons-outlined text-sm">download</Icon>
                     </button>
                   </div>
                 </div>
 
                 {/* Environmental sensors — shown in Neural Ops (demo + production) */}
                 {neuralActive && (
-                <div className="bg-[#161E2E] rounded-xl border border-[#233544] p-6">
-                  <h3 className="font-bold text-[#00E5FF] flex items-center gap-2 uppercase text-sm mb-4">
-                    <span className="material-icons-outlined text-lg">thermostat</span>
+                <div className="px-section">
+                  <h3 className="font-bold text-px-accent flex items-center gap-2 uppercase text-sm mb-4">
+                    <Icon className="material-icons-outlined text-lg">thermostat</Icon>
                     Environmental Sensors
                   </h3>
-                  <div className="grid grid-cols-4 gap-4">
+                  <div className="px-environment-rows">
                     {[
                       { label: 'Inlet Temp 1', value: getValue('Temperature1'), unit: '°C', icon: 'thermostat', color: 'text-orange-400' },
                       { label: 'Inlet Temp 2', value: getValue('Temperature2'), unit: '°C', icon: 'device_thermostat', color: 'text-orange-300' },
                       { label: 'Humidity', value: getValue('Humidity1'), unit: '%', icon: 'water_drop', color: 'text-blue-400' },
                       { label: 'Rack Door', value: getValue('DoorStatus') || 'Closed', unit: '', icon: (getValue('DoorStatus') || 'Closed') === 'Closed' ? 'lock' : 'door_front', color: (getValue('DoorStatus') || 'Closed') === 'Closed' ? 'text-emerald-400' : 'text-red-400' },
                     ].map((item) => (
-                      <div key={item.label} className="bg-[#0B1120] rounded-lg p-4 border border-[#233544]">
+                      <div key={item.label} className="bg-app-bg rounded-lg p-4 border border-px-stroke">
                         <div className="flex items-center gap-2 mb-2">
-                          <span className={`material-icons-outlined text-sm ${item.color}`}>{item.icon}</span>
-                          <p className="text-[10px] text-slate-500 uppercase font-bold">{item.label}</p>
+                          <Icon className={`material-icons-outlined text-sm ${item.color}`}>{item.icon}</Icon>
+                          <p className="text-[11px] text-slate-500 uppercase font-bold">{item.label}</p>
                         </div>
                         <p className={`text-2xl font-mono font-bold ${item.color}`}>
                           {item.value != null ? `${parseFloat(item.value) || item.value}${item.unit}` : '—'}
@@ -1830,17 +1803,17 @@ const Dashboard2 = () => {
               {/* Bottom Row */}
               <div className="grid grid-cols-1 gap-6">
                 {/* AI Analysis — greyed out until connected to a live analysis engine */}
-                <div className="bg-[#161E2E] rounded-xl border border-[#233544] p-6 opacity-40 pointer-events-none select-none">
+                <div className="bg-px-panel rounded-xl border border-px-stroke p-6 opacity-40 pointer-events-none select-none">
                   <div className="flex items-center gap-2 mb-6">
                     <h3 className="font-bold text-slate-500 flex items-center gap-2 uppercase text-sm">
-                      <span className="material-icons-outlined text-lg">insights</span>
+                      <Icon className="material-icons-outlined text-lg">insights</Icon>
                       AI Operational Analysis
                     </h3>
-                    <span className="px-2 py-0.5 rounded bg-slate-600 text-slate-300 text-[10px] font-bold uppercase tracking-wider">Inactive</span>
+                    <span className="px-2 py-0.5 rounded bg-slate-600 text-slate-300 text-[11px] font-bold uppercase tracking-wider">Inactive</span>
                   </div>
                   <div className="space-y-3">
-                    <div className="p-4 rounded-lg bg-[#0B1120] border border-[#233544] flex gap-4 items-start">
-                      <span className="material-icons-outlined text-slate-600 mt-0.5">lightbulb</span>
+                    <div className="p-4 rounded-lg bg-app-bg border border-px-stroke flex gap-4 items-start">
+                      <Icon className="material-icons-outlined text-slate-600 mt-0.5">lightbulb</Icon>
                       <div>
                         <p className="text-sm font-medium text-slate-500">Efficiency Opportunity</p>
                         <p className="text-xs text-slate-600 mt-1">
@@ -1848,8 +1821,8 @@ const Dashboard2 = () => {
                         </p>
                       </div>
                     </div>
-                    <div className="p-4 rounded-lg bg-[#0B1120] border border-[#233544] flex gap-4 items-start">
-                      <span className="material-icons-outlined text-slate-600 mt-0.5">warning</span>
+                    <div className="p-4 rounded-lg bg-app-bg border border-px-stroke flex gap-4 items-start">
+                      <Icon className="material-icons-outlined text-slate-600 mt-0.5">warning</Icon>
                       <div>
                         <p className="text-sm font-medium text-slate-500">Thermal Warning</p>
                         <p className="text-xs text-slate-600 mt-1">
@@ -1870,7 +1843,7 @@ const Dashboard2 = () => {
               <div className="flex justify-between items-start mb-8">
                 <div>
                   <h2 className="text-2xl font-bold uppercase tracking-tight text-white">
-                    <span className="material-icons-outlined align-middle mr-2 text-amber-400">warning_amber</span>
+                    <Icon className="material-icons-outlined align-middle mr-2 text-amber-400">warning_amber</Icon>
                     Alarm Status
                   </h2>
                   <p className="text-xs text-slate-500 mt-1">
@@ -1928,12 +1901,12 @@ const Dashboard2 = () => {
                   <div className="space-y-4">
                     {/* Live environmental readings (demo + production when available) */}
                     {(isDemoMode || env.temp) && (
-                      <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+                      <div className="p-5 rounded-xl bg-app-bg border border-px-stroke">
                         <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
-                          <span className="material-icons-outlined text-orange-400 text-sm">thermostat</span>
+                          <Icon className="material-icons-outlined text-orange-400 text-sm">thermostat</Icon>
                           Environmental Sensors
                           {isOffline && isDemoMode && (
-                            <span className="ml-auto text-[9px] font-mono text-slate-500 uppercase">Last known</span>
+                            <span className="ml-auto text-[10px] font-mono text-slate-500 uppercase">Last known</span>
                           )}
                         </h3>
                         <div className="grid grid-cols-4 gap-3">
@@ -1943,10 +1916,10 @@ const Dashboard2 = () => {
                             { label: 'Humidity', value: env.hum || getValue('Humidity1'), unit: '%', icon: 'water_drop', warn: parseFloat(env.hum || getValue('Humidity1') || 0) > 65 },
                             { label: 'Door', value: env.door || getValue('DoorStatus') || 'Closed', unit: '', icon: (env.door || getValue('DoorStatus') || 'Closed') === 'Closed' ? 'lock' : 'door_front', warn: (env.door || getValue('DoorStatus') || 'Closed') !== 'Closed' },
                           ].map((item) => (
-                            <div key={item.label} className={`rounded-lg p-3 border ${item.warn ? 'bg-red-500/10 border-red-500/30' : 'bg-[#161E2E] border-[#233544]'}`}>
+                            <div key={item.label} className={`rounded-lg p-3 border ${item.warn ? 'bg-red-500/10 border-red-500/30' : 'bg-px-panel border-px-stroke'}`}>
                               <div className="flex items-center gap-1 mb-1">
-                                <span className={`material-icons-outlined text-xs ${item.warn ? 'text-red-400' : 'text-slate-500'}`}>{item.icon}</span>
-                                <span className="text-[9px] text-slate-500 uppercase">{item.label}</span>
+                                <Icon className={`material-icons-outlined text-xs ${item.warn ? 'text-red-400' : 'text-slate-500'}`}>{item.icon}</Icon>
+                                <span className="text-[10px] text-slate-500 uppercase">{item.label}</span>
                               </div>
                               <p className={`text-lg font-mono font-bold ${item.warn ? 'text-red-300' : 'text-white'}`}>
                                 {item.value != null && item.value !== '' ? `${item.value}${item.unit}` : '—'}
@@ -1960,9 +1933,9 @@ const Dashboard2 = () => {
                     {/* Summary */}
                     <div className={`p-4 rounded-xl border ${flags.length > 0 ? 'bg-red-500/10 border-red-500/30' : 'bg-emerald-500/10 border-emerald-500/30'}`}>
                       <div className="flex items-center gap-3">
-                        <span className={`material-icons-outlined text-3xl ${flags.length > 0 ? 'text-red-400 animate-pulse' : 'text-emerald-400'}`}>
+                        <Icon className={`material-icons-outlined text-3xl ${flags.length > 0 ? 'text-red-400 animate-pulse' : 'text-emerald-400'}`}>
                           {flags.length > 0 ? 'error' : 'check_circle'}
-                        </span>
+                        </Icon>
                         <div>
                           <p className={`text-lg font-bold font-mono ${flags.length > 0 ? 'text-red-300' : 'text-emerald-300'}`}>
                             {flags.length > 0 ? `${flags.length} ACTIVE ALARM${flags.length > 1 ? 'S' : ''}` : 'ALL NORMAL'}
@@ -1975,9 +1948,9 @@ const Dashboard2 = () => {
                     </div>
 
                     {/* Device Alarms */}
-                    <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+                    <div className="p-5 rounded-xl bg-app-bg border border-px-stroke">
                       <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
-                        <span className="material-icons-outlined text-[#00E5FF] text-sm">electric_bolt</span>
+                        <Icon className="material-icons-outlined text-px-accent text-sm">electric_bolt</Icon>
                         Device Alarms
                       </h3>
                       <div className="grid grid-cols-2 gap-2">
@@ -1988,7 +1961,7 @@ const Dashboard2 = () => {
                           const isNormal = !val || val === '-' || val.toLowerCase() === 'normal';
                           return (
                             <div key={key} className={`flex items-center justify-between px-3 py-2 rounded-lg border ${
-                              isNormal ? 'bg-[#161E2E] border-[#233544]' : 'bg-red-500/15 border-red-500/40'
+                              isNormal ? 'bg-px-panel border-px-stroke' : 'bg-red-500/15 border-red-500/40'
                             }`}>
                               <span className="text-xs text-slate-400">{PARAM_LABELS[key] || key}</span>
                               <span className={`text-xs font-mono font-bold ${isNormal ? 'text-emerald-400' : 'text-red-400'}`}>
@@ -2001,9 +1974,9 @@ const Dashboard2 = () => {
                     </div>
 
                     {/* Sensor Alarms */}
-                    <div className="p-5 rounded-xl bg-[#0B1120] border border-[#233544]">
+                    <div className="p-5 rounded-xl bg-app-bg border border-px-stroke">
                       <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
-                        <span className="material-icons-outlined text-emerald-400 text-sm">thermostat</span>
+                        <Icon className="material-icons-outlined text-emerald-400 text-sm">thermostat</Icon>
                         Sensor Alarms
                       </h3>
                       <div className="grid grid-cols-2 gap-2">
@@ -2015,7 +1988,7 @@ const Dashboard2 = () => {
                           const isNormal = !val || val === '-' || val.toLowerCase() === 'normal';
                           return (
                             <div key={key} className={`flex items-center justify-between px-3 py-2 rounded-lg border ${
-                              isNormal ? 'bg-[#161E2E] border-[#233544]' : 'bg-red-500/15 border-red-500/40'
+                              isNormal ? 'bg-px-panel border-px-stroke' : 'bg-red-500/15 border-red-500/40'
                             }`}>
                               <span className="text-xs text-slate-400">{PARAM_LABELS[key] || key}</span>
                               <span className={`text-xs font-mono font-bold ${isNormal ? 'text-emerald-400' : 'text-red-400'}`}>
@@ -2029,9 +2002,9 @@ const Dashboard2 = () => {
 
                     {/* Outlet load-lost (cable unplugged while outlet energized) */}
                     {outletLoadAlarms.length > 0 && (
-                      <div className="p-5 rounded-xl bg-[#0B1120] border border-amber-500/40">
+                      <div className="p-5 rounded-xl bg-app-bg border border-amber-500/40">
                         <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
-                          <span className="material-icons-outlined text-amber-400 text-sm">power_off</span>
+                          <Icon className="material-icons-outlined text-amber-400 text-sm">power_off</Icon>
                           Outlet Load Warnings
                         </h3>
                         <div className="grid grid-cols-1 gap-2">
@@ -2066,33 +2039,31 @@ const Dashboard2 = () => {
                   </p>
                 </div>
                 <div className="flex gap-2">
-                  <button className="px-3 py-1.5 rounded bg-[#00E5FF] text-[#0B1120] text-xs font-bold">All</button>
-                  <button className="px-3 py-1.5 rounded bg-[#233544] text-emerald-400 text-xs font-medium">Normal ({activeOutlets})</button>
-                  {!isWebAdminPdu && <button className="px-3 py-1.5 rounded bg-[#233544] text-amber-400 text-xs font-medium">Idle ({idleOutlets})</button>}
-                  <button className="px-3 py-1.5 rounded bg-[#233544] text-slate-400 text-xs font-medium">Off ({24 - activeOutlets})</button>
+                  <button className="px-3 py-1.5 rounded bg-px-accent text-app-bg text-xs font-bold">All</button>
+                  <button className="px-3 py-1.5 rounded bg-px-stroke text-emerald-400 text-xs font-medium">Normal ({activeOutlets})</button>
+                  {!isWebAdminPdu && <button className="px-3 py-1.5 rounded bg-px-stroke text-amber-400 text-xs font-medium">Idle ({idleOutlets})</button>}
+                  <button className="px-3 py-1.5 rounded bg-px-stroke text-slate-400 text-xs font-medium">Off ({24 - activeOutlets})</button>
                 </div>
               </div>
               ) : (
               <div className="flex flex-wrap gap-2 mb-4">
-                <button className="px-3 py-1.5 rounded bg-[#00E5FF] text-[#0B1120] text-xs font-bold">All</button>
-                <button className="px-3 py-1.5 rounded bg-[#233544] text-emerald-400 text-xs font-medium">Normal ({activeOutlets})</button>
-                {!isWebAdminPdu && <button className="px-3 py-1.5 rounded bg-[#233544] text-amber-400 text-xs font-medium">Idle ({idleOutlets})</button>}
-                <button className="px-3 py-1.5 rounded bg-[#233544] text-slate-400 text-xs font-medium">Off ({24 - activeOutlets})</button>
+                <button className="px-3 py-1.5 rounded bg-px-accent text-app-bg text-xs font-bold">All</button>
+                <button className="px-3 py-1.5 rounded bg-px-stroke text-emerald-400 text-xs font-medium">Normal ({activeOutlets})</button>
+                {!isWebAdminPdu && <button className="px-3 py-1.5 rounded bg-px-stroke text-amber-400 text-xs font-medium">Idle ({idleOutlets})</button>}
+                <button className="px-3 py-1.5 rounded bg-px-stroke text-slate-400 text-xs font-medium">Off ({24 - activeOutlets})</button>
               </div>
               )}
-              
-              <div className={`grid gap-3 ${showFleetSplit ? 'grid-cols-3 lg:grid-cols-4 xl:grid-cols-6' : 'grid-cols-6 gap-4'}`}>
-                {outlets.map(number => (
-                  <OutletCard key={number} number={number} data={data} pduIp={activePdu?.ip} onToggleComplete={refreshData} isWebAdmin={isWebAdminPdu} />
-                ))}
-              </div>
+
+              <div className="px-table-scroll"><table className="px-outlet-table" aria-label={isWebAdminPdu?'Breakers':'PDU outlets'}><thead><tr><th>{isWebAdminPdu?'Breaker':'Outlet'}</th><th>State</th>{!isWebAdminPdu&&<><th className="px-number">Current</th><th className="px-number">Energy</th><th>Action</th></>}</tr></thead><tbody>
+                {outlets.map(number => <OutletCard key={number} number={number} data={data} pduIp={activePdu?.ip} onToggleComplete={refreshData} isWebAdmin={isWebAdminPdu}/>)}
+              </tbody></table></div>
 
               <div className="mt-6 flex items-center gap-4">
-                <span className="text-[10px] text-slate-500 uppercase">Total Power</span>
-                <div className="flex-1 bg-[#233544] h-2 rounded-full overflow-hidden">
-                  <div className="bg-[#00E5FF] h-full rounded-full transition-all" style={{ width: `${Math.min((power / 2400) * 100, 100)}%` }}></div>
+                <span className="text-[11px] text-slate-500 uppercase">Total Power</span>
+                <div className="flex-1 bg-px-stroke h-2 rounded-full overflow-hidden">
+                  <div className="bg-px-accent h-full rounded-full transition-all" style={{ width: `${Math.min((power / 2400) * 100, 100)}%` }}></div>
                 </div>
-                <span className="text-sm font-mono font-bold text-[#00E5FF]">{(power / 1000).toFixed(1)} kW</span>
+                <span className="text-sm font-mono font-bold text-px-accent">{(power / 1000).toFixed(1)} kW</span>
               </div>
             </>
           )}
@@ -2117,7 +2088,7 @@ const Dashboard2 = () => {
           {activeTab === 'datahall' && (
             <div className={datahallCanvasLayout ? 'relative flex flex-1 min-h-0 min-w-0 w-full overflow-hidden' : 'flex-1 min-h-0 flex flex-col overflow-hidden'}>
               <div className="flex-1 min-w-0 min-h-0 h-full flex flex-col overflow-hidden">
-                <DataHallDesigner 
+                <DataHallDesigner onRackInspectorChange={setRackInspectorOpen}
                   selectedHallId={selectedHallId}
                   hallRefreshTrigger={hallRefreshTrigger}
                   alerts={rackAlerts}
@@ -2167,19 +2138,19 @@ const Dashboard2 = () => {
                   }}
                 />
               </div>
-              {neuralLayoutActive && (
+              {neuralLayoutActive && !rackInspectorOpen && (
                 <>
                   <button
                     type="button"
                     onClick={toggleSwitchboardPanel}
-                    className="relative z-40 flex-shrink-0 w-9 self-stretch bg-[#0a1520] border-l-2 border-[#00E5FF]/35 hover:bg-[#161E2E] hover:border-[#00E5FF]/60 flex flex-col items-center justify-center gap-1 transition-colors shadow-[-4px_0_12px_rgba(0,0,0,0.4)]"
+                    className="relative z-40 flex-shrink-0 w-9 self-stretch bg-[#0a1520] border-l-2 border-px-accent/35 hover:bg-px-panel hover:border-px-accent/60 flex flex-col items-center justify-center gap-1 transition-colors shadow-[-4px_0_12px_rgba(0,0,0,0.4)]"
                     title={switchboardPanelCollapsed ? 'Show alerts & Switchboard panel' : 'Hide Switchboard panel'}
                   >
-                    <span className={`material-icons-outlined text-[#00E5FF] text-base transition-transform ${switchboardPanelCollapsed ? 'rotate-180' : ''}`}>
+                    <Icon className={`material-icons-outlined text-px-accent text-base transition-transform ${switchboardPanelCollapsed ? 'rotate-180' : ''}`}>
                       chevron_left
-                    </span>
+                    </Icon>
                     <span
-                      className="text-[7px] font-bold uppercase tracking-widest text-slate-500"
+                      className="text-[7px] font-bold uppercase tracking-wide text-slate-500"
                       style={{ writingMode: 'vertical-rl', textOrientation: 'mixed' }}
                     >
                       Ops
@@ -2203,8 +2174,11 @@ const Dashboard2 = () => {
 
           {/* Assign PDUs View — 2D drag-and-drop placement into racks */}
           {activeTab === 'assign' && (
-            <div className={`relative overflow-hidden ${neuralActive ? 'flex-1 min-h-0' : 'h-[calc(100vh-8rem)] rounded-xl border border-[#233544]'}`}>
+            <div className={`relative overflow-hidden ${neuralActive ? 'flex-1 min-h-0' : 'h-[calc(100vh-8rem)] rounded-xl border border-px-stroke'}`}>
               <AssignPdusPanel
+                halls={halls}
+                onHallChange={setSelectedHallId}
+                onOpenDevices={() => { toggleNeuralOps(true); handleDemoSwitchboardSectionChange('fleet'); }}
                 selectedHallId={selectedHallId}
                 pduLiveStatus={pduLiveStatus}
                 refreshKey={hallRefreshTrigger}
@@ -2309,7 +2283,7 @@ const Dashboard2 = () => {
                     <div className="flex justify-between items-start mb-6">
                       <div>
                         <h2 className="text-2xl font-bold uppercase tracking-tight text-white">
-                          <span className="material-icons-outlined align-middle mr-2 text-amber-400">history_edu</span>
+                          <Icon className="material-icons-outlined align-middle mr-2 text-amber-400">history_edu</Icon>
                           Global Alarm Ledger
                         </h2>
                         <p className="text-xs text-slate-500 mt-1">
@@ -2327,19 +2301,19 @@ const Dashboard2 = () => {
                     {/* Summary Cards */}
                     <div className="grid grid-cols-4 gap-3 mb-6">
                       <div className={`p-4 rounded-xl border ${activeAlarms.length > 0 ? 'bg-red-500/10 border-red-500/30' : 'bg-emerald-500/10 border-emerald-500/30'}`}>
-                        <p className="text-[10px] text-slate-500 uppercase mb-1">Active Alarms</p>
+                        <p className="text-[11px] text-slate-500 uppercase mb-1">Active Alarms</p>
                         <p className={`text-2xl font-mono font-bold ${activeAlarms.length > 0 ? 'text-red-400' : 'text-emerald-400'}`}>{activeAlarms.length}</p>
                       </div>
-                      <div className="p-4 rounded-xl bg-[#161E2E] border border-[#233544]">
-                        <p className="text-[10px] text-slate-500 uppercase mb-1">PDUs Monitored</p>
-                        <p className="text-2xl font-mono font-bold text-[#00E5FF]">{hallPDUs.length}</p>
+                      <div className="p-4 rounded-xl bg-px-panel border border-px-stroke">
+                        <p className="text-[11px] text-slate-500 uppercase mb-1">PDUs Monitored</p>
+                        <p className="text-2xl font-mono font-bold text-px-accent">{hallPDUs.length}</p>
                       </div>
-                      <div className="p-4 rounded-xl bg-[#161E2E] border border-[#233544]">
-                        <p className="text-[10px] text-slate-500 uppercase mb-1">Parameters Checked</p>
+                      <div className="p-4 rounded-xl bg-px-panel border border-px-stroke">
+                        <p className="text-[11px] text-slate-500 uppercase mb-1">Parameters Checked</p>
                         <p className="text-2xl font-mono font-bold text-slate-300">{allEntries.length}</p>
                       </div>
-                      <div className="p-4 rounded-xl bg-[#161E2E] border border-[#233544]">
-                        <p className="text-[10px] text-slate-500 uppercase mb-1">All Normal</p>
+                      <div className="p-4 rounded-xl bg-px-panel border border-px-stroke">
+                        <p className="text-[11px] text-slate-500 uppercase mb-1">All Normal</p>
                         <p className="text-2xl font-mono font-bold text-emerald-400">{normalEntries.length}</p>
                       </div>
                     </div>
@@ -2349,7 +2323,7 @@ const Dashboard2 = () => {
                       <div className="flex flex-wrap gap-2 mb-6">
                         {Object.entries(categoryCounts).map(([cat, count]) => (
                           <span key={cat} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/30 text-xs">
-                            <span className={`material-icons-outlined text-sm ${CATEGORY_COLORS[cat] || 'text-red-400'}`}>{CATEGORY_ICONS[cat] || 'error'}</span>
+                            <Icon className={`material-icons-outlined text-sm ${CATEGORY_COLORS[cat] || 'text-red-400'}`}>{CATEGORY_ICONS[cat] || 'error'}</Icon>
                             <span className="text-slate-300">{cat}</span>
                             <span className="font-mono font-bold text-red-400">{count}</span>
                           </span>
@@ -2361,13 +2335,13 @@ const Dashboard2 = () => {
                     {activeAlarms.length > 0 ? (
                       <div className="mb-8">
                         <h3 className="text-sm font-bold text-red-400 uppercase tracking-wider mb-3 flex items-center gap-2">
-                          <span className="material-icons-outlined text-sm">error</span>
+                          <Icon className="material-icons-outlined text-sm">error</Icon>
                           Active Alarms
                         </h3>
-                        <div className="bg-[#161E2E] rounded-xl border border-red-500/30 overflow-hidden">
+                        <div className="bg-px-panel rounded-xl border border-red-500/30 overflow-hidden">
                           <table className="w-full text-xs">
                             <thead>
-                              <tr className="border-b border-[#233544] text-[10px] text-slate-500 uppercase">
+                              <tr className="border-b border-px-stroke text-[11px] text-slate-500 uppercase">
                                 <th className="text-left px-4 py-3">Category</th>
                                 <th className="text-left px-4 py-3">Parameter</th>
                                 <th className="text-left px-4 py-3">Status</th>
@@ -2379,22 +2353,22 @@ const Dashboard2 = () => {
                             </thead>
                             <tbody>
                               {activeAlarms.map((alarm, idx) => (
-                                <tr key={`${alarm.pduIp}-${alarm.key}-${idx}`} className="border-b border-[#233544]/50 hover:bg-red-500/5 transition-colors">
+                                <tr key={`${alarm.pduIp}-${alarm.key}-${idx}`} className="border-b border-px-stroke/50 hover:bg-red-500/5 transition-colors">
                                   <td className="px-4 py-3">
                                     <span className="flex items-center gap-1.5">
-                                      <span className={`material-icons-outlined text-sm ${CATEGORY_COLORS[alarm.category] || 'text-red-400'}`}>{CATEGORY_ICONS[alarm.category] || 'error'}</span>
+                                      <Icon className={`material-icons-outlined text-sm ${CATEGORY_COLORS[alarm.category] || 'text-red-400'}`}>{CATEGORY_ICONS[alarm.category] || 'error'}</Icon>
                                       <span className="text-slate-400">{alarm.category}</span>
                                     </span>
                                   </td>
                                   <td className="px-4 py-3 text-white font-medium">{alarm.label}</td>
                                   <td className="px-4 py-3">
-                                    <span className="px-2 py-0.5 rounded bg-red-500/20 text-red-400 font-mono font-bold text-[10px]">{alarm.value}</span>
+                                    <span className="px-2 py-0.5 rounded bg-red-500/20 text-red-400 font-mono font-bold text-[11px]">{alarm.value}</span>
                                   </td>
                                   <td className="px-4 py-3 text-slate-300">{alarm.pduLabel}</td>
                                   <td className="px-4 py-3">
                                     <span className="font-mono text-slate-400">{alarm.pduIp}</span>
                                     <br/>
-                                    <span className="font-mono text-slate-600 text-[10px]">{alarm.pduMac}</span>
+                                    <span className="font-mono text-slate-600 text-[11px]">{alarm.pduMac}</span>
                                   </td>
                                   <td className="px-4 py-3 font-mono text-slate-400">{alarm.rack}</td>
                                   <td className="px-4 py-3 font-mono text-slate-500">{alarm.ts ? new Date(alarm.ts).toLocaleString() : '-'}</td>
@@ -2406,7 +2380,7 @@ const Dashboard2 = () => {
                       </div>
                     ) : (
                       <div className="mb-8 p-8 rounded-xl bg-emerald-500/5 border border-emerald-500/20 text-center">
-                        <span className="material-icons-outlined text-5xl text-emerald-400 mb-3 block">verified</span>
+                        <Icon className="material-icons-outlined text-5xl text-emerald-400 mb-3 block">verified</Icon>
                         <p className="text-lg font-bold text-emerald-300">All Systems Normal</p>
                         <p className="text-xs text-slate-500 mt-2">
                           No active alarms across {hallPDUs.length} monitored PDU{hallPDUs.length !== 1 ? 's' : ''} in {selectedHall?.name || 'this data hall'}.
@@ -2426,40 +2400,40 @@ const Dashboard2 = () => {
                       return (
                         <div>
                           <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-2">
-                            <span className="material-icons-outlined text-sm text-slate-500">checklist</span>
+                            <Icon className="material-icons-outlined text-sm text-slate-500">checklist</Icon>
                             Full Parameter Status ({allEntries.length})
                           </h3>
                           <div className="space-y-2">
                             {Object.entries(grouped).map(([ip, group]) => {
                               const pduAlarmCount = group.entries.filter(e => !e.isNormal).length;
                               return (
-                                <div key={ip} className="rounded-xl border border-[#233544] overflow-hidden">
+                                <div key={ip} className="rounded-xl border border-px-stroke overflow-hidden">
                                   <button
                                     onClick={() => setLedgerExpandedPdu(prev => prev === ip ? null : ip)}
-                                    className="w-full flex items-center justify-between px-4 py-3 bg-[#161E2E] hover:bg-[#1a2535] transition-colors cursor-pointer"
+                                    className="w-full flex items-center justify-between px-4 py-3 bg-px-panel hover:bg-[#1a2535] transition-colors cursor-pointer"
                                   >
                                     <div className="flex items-center gap-3">
                                       <span className={`w-2 h-2 rounded-full ${pduAlarmCount > 0 ? 'bg-red-500 animate-pulse' : 'bg-emerald-500'}`}></span>
                                       <span className="text-sm font-medium text-white">{group.pdu.pduLabel}</span>
-                                      <span className="text-[10px] font-mono text-slate-500">{ip}</span>
+                                      <span className="text-[11px] font-mono text-slate-500">{ip}</span>
                                       {group.pdu.pduMac && group.pdu.pduMac !== '-' && (
-                                        <span className="text-[10px] font-mono text-slate-600">{group.pdu.pduMac}</span>
+                                        <span className="text-[11px] font-mono text-slate-600">{group.pdu.pduMac}</span>
                                       )}
-                                      <span className="text-[10px] text-slate-600">Rack: <span className="font-mono">{group.pdu.rack}</span></span>
+                                      <span className="text-[11px] text-slate-600">Rack: <span className="font-mono">{group.pdu.rack}</span></span>
                                     </div>
                                     <div className="flex items-center gap-3">
                                       {pduAlarmCount > 0 && (
-                                        <span className="px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 text-[10px] font-mono font-bold">{pduAlarmCount} alarm{pduAlarmCount > 1 ? 's' : ''}</span>
+                                        <span className="px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 text-[11px] font-mono font-bold">{pduAlarmCount} alarm{pduAlarmCount > 1 ? 's' : ''}</span>
                                       )}
-                                      <span className="text-[10px] text-slate-500">{group.entries.length} params</span>
-                                      <span className={`material-icons-outlined text-sm text-slate-500 transition-transform duration-200 ${ledgerExpandedPdu === ip ? 'rotate-180' : ''}`}>expand_more</span>
+                                      <span className="text-[11px] text-slate-500">{group.entries.length} params</span>
+                                      <Icon className={`material-icons-outlined text-sm text-slate-500 transition-transform duration-200 ${ledgerExpandedPdu === ip ? 'rotate-180' : ''}`}>expand_more</Icon>
                                     </div>
                                   </button>
                                   {ledgerExpandedPdu === ip && (
-                                    <div className="bg-[#0B1120]">
+                                    <div className="bg-app-bg">
                                       <table className="w-full text-xs">
                                         <thead>
-                                          <tr className="border-b border-[#233544] text-[10px] text-slate-500 uppercase">
+                                          <tr className="border-b border-px-stroke text-[11px] text-slate-500 uppercase">
                                             <th className="text-left px-4 py-2">Category</th>
                                             <th className="text-left px-4 py-2">Parameter</th>
                                             <th className="text-left px-4 py-2">Status</th>
@@ -2467,16 +2441,16 @@ const Dashboard2 = () => {
                                         </thead>
                                         <tbody>
                                           {group.entries.map((entry, idx) => (
-                                            <tr key={`${entry.key}-${idx}`} className={`border-b border-[#233544]/30 ${!entry.isNormal ? 'bg-red-500/5' : ''}`}>
+                                            <tr key={`${entry.key}-${idx}`} className={`border-b border-px-stroke/30 ${!entry.isNormal ? 'bg-red-500/5' : ''}`}>
                                               <td className="px-4 py-2">
                                                 <span className="flex items-center gap-1.5">
-                                                  <span className={`material-icons-outlined text-sm ${!entry.isNormal ? (CATEGORY_COLORS[entry.category] || 'text-red-400') : 'text-slate-600'}`}>{CATEGORY_ICONS[entry.category] || 'check'}</span>
+                                                  <Icon className={`material-icons-outlined text-sm ${!entry.isNormal ? (CATEGORY_COLORS[entry.category] || 'text-red-400') : 'text-slate-600'}`}>{CATEGORY_ICONS[entry.category] || 'check'}</Icon>
                                                   <span className="text-slate-500">{entry.category}</span>
                                                 </span>
                                               </td>
                                               <td className="px-4 py-2 text-slate-300">{entry.label}</td>
                                               <td className="px-4 py-2">
-                                                <span className={`px-2 py-0.5 rounded font-mono font-bold text-[10px] ${entry.isNormal ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
+                                                <span className={`px-2 py-0.5 rounded font-mono font-bold text-[11px] ${entry.isNormal ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
                                                   {entry.value || '-'}
                                                 </span>
                                               </td>
@@ -2495,16 +2469,16 @@ const Dashboard2 = () => {
                     })()}
 
                     {allEntries.length === 0 && hallPDUs.length === 0 && (
-                      <div className="p-8 rounded-xl bg-[#161E2E] border border-[#233544] text-center">
-                        <span className="material-icons-outlined text-5xl text-slate-600 mb-3 block">playlist_remove</span>
+                      <div className="p-8 rounded-xl bg-px-panel border border-px-stroke text-center">
+                        <Icon className="material-icons-outlined text-5xl text-slate-600 mb-3 block">playlist_remove</Icon>
                         <p className="text-lg font-bold text-slate-400">No PDUs Configured</p>
                         <p className="text-xs text-slate-600 mt-2">Commission PDUs to see alarm data in this ledger.</p>
                       </div>
                     )}
 
                     {allEntries.length === 0 && hallPDUs.length > 0 && (
-                      <div className="p-8 rounded-xl bg-[#161E2E] border border-[#233544] text-center">
-                        <span className="material-icons-outlined text-5xl text-slate-600 mb-3 block animate-spin" style={{animationDuration: '3s'}}>sync</span>
+                      <div className="p-8 rounded-xl bg-px-panel border border-px-stroke text-center">
+                        <Icon className="material-icons-outlined text-5xl text-slate-600 mb-3 block animate-spin" style={{animationDuration: '3s'}}>sync</Icon>
                         <p className="text-lg font-bold text-slate-400">Collecting Data...</p>
                         <p className="text-xs text-slate-600 mt-2">Waiting for alarm data from {hallPDUs.length} PDU{hallPDUs.length !== 1 ? 's' : ''}. This updates every 10 seconds.</p>
                       </div>
@@ -2520,26 +2494,26 @@ const Dashboard2 = () => {
             <>
               <div className="flex justify-between items-start mb-8">
                 <div>
-                  <h1 className="text-2xl font-bold uppercase tracking-tight text-[#00E5FF]">
-                    <span className="material-icons-outlined align-middle mr-2">info</span>
+                  <h1 className="text-2xl font-bold uppercase tracking-tight text-px-accent">
+                    <Icon className="material-icons-outlined align-middle mr-2">info</Icon>
                     PDU Design Specs
                   </h1>
                 </div>
-                <button className="px-4 py-2 bg-[#233544] text-slate-300 text-xs font-bold rounded uppercase hover:bg-[#2D3748]">
+                <button className="px-4 py-2 bg-px-stroke text-slate-300 text-xs font-bold rounded uppercase hover:bg-[#2D3748]">
                   Show JSON
                 </button>
               </div>
 
               <div className="grid grid-cols-2 gap-6">
-                <div className="bg-[#161E2E] rounded-xl border border-[#233544] p-6">
+                <div className="px-section">
                   <table className="w-full text-sm font-mono">
                     <thead>
-                      <tr className="text-[#00E5FF]/70 border-b border-[#233544]">
+                      <tr className="text-px-accent/70 border-b border-px-stroke">
                         <th className="py-3 text-left font-medium">Parameter</th>
                         <th className="py-3 text-left font-medium">Value / Description</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-[#233544]">
+                    <tbody className="divide-y divide-px-stroke">
                       <tr><td className="py-3 text-slate-500">Model Number</td><td className="py-3 text-slate-300">DPDU-V3-C1308-10A</td></tr>
                       <tr><td className="py-3 text-slate-500">Shell Material</td><td className="py-3 text-slate-300">1.2mm SGCC, black powder</td></tr>
                       <tr><td className="py-3 text-slate-500">Input Voltage</td><td className="py-3 text-slate-300">220V – 250V, 50/60 Hz</td></tr>
@@ -2554,14 +2528,14 @@ const Dashboard2 = () => {
 
                 <div className="space-y-6">
                   {/* Load Trends Mini */}
-                  <div className="bg-[#161E2E] rounded-xl border border-[#233544] p-6">
+                  <div className="px-section">
                     <div className="flex items-center justify-between mb-4">
-                      <h3 className="font-bold text-[#00E5FF] flex items-center gap-2 uppercase text-sm">
-                        <span className="material-icons-outlined">trending_up</span>
+                      <h3 className="font-bold text-px-accent flex items-center gap-2 uppercase text-sm">
+                        <Icon className="material-icons-outlined">trending_up</Icon>
                         Load Trends
                       </h3>
-                      <div className="flex gap-4 text-[10px]">
-                        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-[#00E5FF]"></span> Actual</div>
+                      <div className="flex gap-4 text-[11px]">
+                        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-px-accent"></span> Actual</div>
                         <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-blue-400/50"></span> Forecast</div>
                       </div>
                     </div>
@@ -2577,32 +2551,32 @@ const Dashboard2 = () => {
                   </div>
 
                   {/* Environmental Mini */}
-                  <div className="bg-[#161E2E] rounded-xl border border-[#233544] p-6">
-                    <h3 className="font-bold text-[#00E5FF] flex items-center gap-2 uppercase text-sm mb-6">
-                      <span className="material-icons-outlined">thermostat</span>
+                  <div className="px-section">
+                    <h3 className="font-bold text-px-accent flex items-center gap-2 uppercase text-sm mb-6">
+                      <Icon className="material-icons-outlined">thermostat</Icon>
                       Environmental
                     </h3>
                     <div className="grid grid-cols-2 gap-8">
                       <div>
-                        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Temperature 1</p>
+                        <p className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">Temperature 1</p>
                         <p className="text-2xl font-mono font-semibold">{getValue('Temperature1') || '—'}{getValue('Temperature1') ? '°C' : ''}</p>
                       </div>
                       <div>
-                        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Temperature 2</p>
+                        <p className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">Temperature 2</p>
                         <p className="text-2xl font-mono font-semibold">{getValue('Temperature2') || '—'}{getValue('Temperature2') ? '°C' : ''}</p>
                       </div>
                       <div>
-                        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Humidity</p>
+                        <p className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">Humidity</p>
                         <p className="text-2xl font-mono font-semibold">{getValue('Humidity1') || '—'}{getValue('Humidity1') ? '%' : ''}</p>
                       </div>
                       <div>
-                        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Rack Door</p>
+                        <p className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">Rack Door</p>
                         {(() => {
                           const door = getValue('DoorStatus') || 'Closed';
                           const isClosed = door === 'Closed';
                           return (
                             <p className={`text-lg font-mono font-semibold flex items-center gap-1 ${isClosed ? 'text-emerald-400' : 'text-red-400'}`}>
-                              <span className="material-icons-outlined text-sm">{isClosed ? 'lock' : 'door_front'}</span>
+                              <Icon className="material-icons-outlined text-sm">{isClosed ? 'lock' : 'door_front'}</Icon>
                               {door.toUpperCase()}
                             </p>
                           );
@@ -2621,11 +2595,11 @@ const Dashboard2 = () => {
               <div className="flex justify-between items-start mb-8">
                 <div>
                   <div className="flex items-center gap-2 mb-1">
-                    <h1 className="text-2xl font-bold uppercase tracking-tight text-[#00E5FF]">
-                      <span className="material-icons-outlined align-middle mr-2">psychology</span>
+                    <h1 className="text-2xl font-bold uppercase tracking-tight text-px-accent">
+                      <Icon className="material-icons-outlined align-middle mr-2">psychology</Icon>
                       Analysis & Insights
                     </h1>
-                    <span className="text-[10px] bg-[#00E5FF]/20 text-[#00E5FF] px-2 py-0.5 rounded-full font-bold uppercase">AI Powered</span>
+                    <span className="text-[11px] bg-px-accent/20 text-px-accent px-2 py-0.5 rounded-full font-bold uppercase">AI Powered</span>
                   </div>
                 </div>
               </div>
@@ -2637,7 +2611,7 @@ const Dashboard2 = () => {
                   title="Power Optimization"
                   description={`Optimize power distribution by disabling ${idleOutlets} idle outputs detected in section B.`}
                   actionLabel="Apply Change"
-                  actionStyle="bg-[#233544] text-slate-300 hover:bg-[#00E5FF] hover:text-[#0B1120]"
+                  actionStyle="bg-px-stroke text-slate-300 hover:bg-px-accent hover:text-app-bg"
                 />
                 <InsightCard
                   icon="ac_unit"
@@ -2654,7 +2628,7 @@ const Dashboard2 = () => {
                   title="Consumption Drift"
                   description="Unusual idle consumption detected in output 3. Possible device phantom load."
                   actionLabel="Investigate"
-                  actionStyle="bg-[#233544] text-slate-300 hover:bg-[#00E5FF] hover:text-[#0B1120]"
+                  actionStyle="bg-px-stroke text-slate-300 hover:bg-px-accent hover:text-app-bg"
                 />
               </div>
             </>

@@ -1,3 +1,5 @@
+import {FieldControlSlot,useWorkspace} from '../presentation/Workspace';
+import Icon from '../presentation/Icon';
 import React, { useState, useMemo, useCallback, Suspense, useEffect, useLayoutEffect, useRef } from 'react';
 import { Canvas, useLoader, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid, Html, Environment, useGLTF, TransformControls } from '@react-three/drei';
@@ -9,7 +11,10 @@ import { RackFleet, RackFeedback, PduFleet, InspectionCamera, ViewportMetrics, S
 import CageMetricsOverlay from './CageMetricsOverlay';
 import { RackStatusPlaques, RackStatusLegend, RackStatusDetails } from './RackStatusVisuals';
 import { aggregateRackStatus, matchesRackFilter } from '../../utils/rackStatus';
+import { aggregateRackPower } from '../../utils/rackPower';
 import HudSparkChart from './HudSparkChart';
+import {AgodaEnvironment, useAgodaAssets} from './AgodaEnvironment';
+import {savedAppearanceLayout} from '../../utils/agodaPreset.js';
 import {
   cableUnplugAlertKey,
   collectOutletCableWarnings,
@@ -495,14 +500,14 @@ const Walls = ({ hall }) => {
 };
 
 // Main 3D Scene
-export const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showLabels, onSelectRack, onHoverRack, customRackModelUrl, customRackModelAssets, lighting, heatmapByRack, pduLiveStatus = {}, sceneObjects = [], selectedObjectId = null, onSelectObject, onCommitObject, transformMode = 'translate', objectsEditable = false, cameraApiRef, viewOffset = { x: 0, z: 0 }, viewPanMode = false, cameraPreset, hideDoors, openDoors, onPduClick, showPerformance, outletInventory, rackStatuses = {}, statusFilter = 'all' }) => {
+export const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showLabels, onSelectRack, onHoverRack, customRackModelUrl, customRackModelAssets, lighting, heatmapByRack, pduLiveStatus = {}, sceneObjects = [], selectedObjectId = null, onSelectObject, onCommitObject, transformMode = 'translate', objectsEditable = false, cameraApiRef, viewOffset = { x: 0, z: 0 }, viewPanMode = false, cameraPreset, hideDoors, openDoors, onPduClick, showPerformance, outletInventory, rackStatuses = {}, rackPowerReadings = {}, showRackStatuses = true, statusFilter = 'all', agodaAssets, environmentVisibility }) => {
   const [customReady, setCustomReady] = useState(false);
   useEffect(() => { setCustomReady(false); }, [customRackModelUrl]);
   
   if (!layout) return null;
   
   const { hall, floor, racks, rows } = layout;
-  const { ambient, main, fill, top, mainPos, fillPos, topPos } = lighting || {
+  const { ambient, main, fill, top, mainPos, fillPos, topPos } = (agodaAssets ? {...lighting, ambient:.85,main:2.1,fill:1.2,top:1.0} : lighting) || {
     ambient: 0.8, main: 1.0, fill: 0.6, top: 0.4,
     mainPos: { x: -6, y: 10, z: -8 },
     fillPos: { x: 8, y: 6, z: 4 },
@@ -525,7 +530,7 @@ export const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showL
   return (
     <>
       <StudioEnvironment />
-      <color attach="background" args={['#13191f']} />
+      <color attach="background" args={[agodaAssets ? '#c4c9c8' : '#13191f']} />
       <hemisphereLight args={['#dde5ef', '#44413c', .65]} />
       <ambientLight intensity={ambient} />
       <primitive object={lightTarget} />
@@ -535,7 +540,7 @@ export const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showL
       <directionalLight position={[hall.length / 2 + fillPos.x, fillPos.y, hall.width / 2 + fillPos.z]} intensity={fill} />
       <directionalLight position={[hall.length / 2 + topPos.x, topPos.y, hall.width / 2 + topPos.z]} intensity={top} />
       {/* Floor */}
-      <FloorGrid hall={hall} tileSize={floor.tileSize} />
+      {agodaAssets ? <AgodaEnvironment assets={agodaAssets} layout={layout} visibility={environmentVisibility} inspection={inspection}/> : <FloorGrid hall={hall} tileSize={floor.tileSize} />}
       
       {/* Walls */}
       {/* Open studio boundary avoids translucent walls obscuring inspection. */}
@@ -545,11 +550,11 @@ export const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showL
         <RowLabel key={row.id} row={row} hallLength={hall.length} />
       ))}
       
-      {(!customRackModelUrl || !customReady) && <RackFleet racks={visibleRacks} selectedRack={selectedRack} hideDoors={hideDoors} openDoors={openDoors} serviceSide={cameraPreset.mode} onSelect={onSelectRack} onHover={onHoverRack} dimmedIds={dimmedIds} />}
+      {(agodaAssets || !customRackModelUrl || !customReady) && <RackFleet appearanceScene={agodaAssets?.rack.scene} exposed={!!agodaAssets} racks={visibleRacks} selectedRack={selectedRack} hideDoors={hideDoors} openDoors={openDoors} serviceSide={cameraPreset.mode} onSelect={onSelectRack} onHover={onHoverRack} dimmedIds={dimmedIds} />}
       {visibleRacks.map(rack => {
         const alertInfo = getRackAlertInfo(rack);
         return <React.Fragment key={rack.id}>
-          {customRackModelUrl && <group position={[rack.position.x, rack.position.y + rack.dimensions.height / 2, rack.position.z]}>
+          {!agodaAssets && customRackModelUrl && <group position={[rack.position.x, rack.position.y + rack.dimensions.height / 2, rack.position.z]}>
             <CustomRackModel dimmed={dimmedIds.has(rack.id)} url={customRackModelUrl} dimensions={rack.dimensions} assets={customRackModelAssets}
               colors={{ emissive: '#000000', intensity: 0 }} onLoadSuccess={() => setCustomReady(true)} onLoadError={() => setCustomReady(false)}
               onClick={e => { e.stopPropagation(); onSelectRack(rack); }}
@@ -557,10 +562,11 @@ export const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showL
           </group>}
           <RackFeedback rack={rack} selected={selectedRack?.id === rack.id} hovered={hoveredRack?.id === rack.id}
             showLabel={showLabels} live={rack.pdus.some(p => pduLiveStatus[p.ip] === 'online')}
+            devices={statuses[rack.id]?.devices || []}
             alertLevel={alertInfo?.level} hideDoors={hideDoors || openDoors} heatmapLevel={heatmapByRack?.[rack.id] ?? null} />
         </React.Fragment>;
       })}
-      <RackStatusPlaques serviceSide={cameraPreset.mode} openDoors={openDoors} racks={visibleRacks} statuses={statuses} dimmedIds={dimmedIds} selectedRack={selectedRack} hoveredRack={hoveredRack} onSelectRack={onSelectRack} onHoverRack={onHoverRack}/>
+      {showRackStatuses && <RackStatusPlaques rackPowerReadings={rackPowerReadings} serviceSide={cameraPreset.mode} openDoors={openDoors} racks={visibleRacks} statuses={statuses} dimmedIds={dimmedIds} selectedRack={selectedRack} hoveredRack={hoveredRack} onSelectRack={onSelectRack} onHoverRack={onHoverRack}/>}
       <PduFleet dimmedIds={dimmedIds} racks={visibleRacks} selectedRack={selectedRack} onSelectRack={onSelectRack} onPduClick={onPduClick} showPduLabels={hideDoors || openDoors || cameraPreset.mode === 'rear'} outletInventory={outletInventory} />
       {showPerformance && <ViewportMetrics racks={visibleRacks} />}
       {/* Free-placed scene props (cage entrances, etc.) */}
@@ -588,19 +594,19 @@ export const DataHallScene = ({ layout, selectedRack, hoveredRack, alerts, showL
 const AccordionSection = ({ id, title, icon, children, defaultOpen = false }) => {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="mb-1 border border-[#233544] rounded-lg overflow-hidden">
+    <section className="px-accordion">
       <button
-        onClick={() => setOpen(o => !o)}
-        className="sticky top-0 z-10 w-full flex items-center justify-between px-3 py-2.5 bg-[#161E2E] hover:bg-[#1a2535] transition-colors cursor-pointer"
+        aria-expanded={open} aria-controls={`field-${id}`} onClick={() => setOpen(o => !o)}
+        className="sticky top-0 z-10 w-full flex items-center justify-between px-3 py-2.5 bg-px-panel hover:bg-[#1a2535] transition-colors cursor-pointer"
       >
         <span className="flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-          {icon && <span className="material-icons-outlined text-sm text-slate-500">{icon}</span>}
+          {icon && <Icon className="material-icons-outlined text-sm text-slate-500">{icon}</Icon>}
           {title}
         </span>
-        <span className={`material-icons-outlined text-sm text-slate-500 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}>expand_more</span>
+        <Icon className={`material-icons-outlined text-sm text-slate-500 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}>expand_more</Icon>
       </button>
-      {open && <div className="px-3 pb-3 pt-1 bg-[#0B1120]">{children}</div>}
-    </div>
+      {open && <div id={`field-${id}`} className="px-accordion-content">{children}</div>}
+    </section>
   );
 };
 
@@ -616,12 +622,12 @@ const ParamInput = ({ label, value, onChange, min, max, step = 1, unit, disabled
   };
   
   return (
-    <div className="flex items-center justify-between py-2 border-b border-[#233544]">
+    <div className="px-field-row">
       <label className="text-xs text-slate-400">{label}</label>
       <div className="flex items-center gap-2">
-        <div className="flex items-center bg-[#0B1120] border border-[#233544] rounded overflow-hidden focus-within:border-[#00E5FF]">
+        <div className="flex items-center bg-app-bg border border-px-stroke rounded overflow-hidden focus-within:border-px-accent">
           <input
-            type="number"
+            type="number" aria-label={label}
             value={value}
             onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
             min={min}
@@ -630,22 +636,22 @@ const ParamInput = ({ label, value, onChange, min, max, step = 1, unit, disabled
             disabled={disabled}
             className="w-14 bg-transparent px-2 py-1 text-sm font-mono text-white text-right focus:outline-none disabled:opacity-50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
           />
-          <div className="flex flex-col border-l border-[#233544]">
+          <div className="flex flex-col border-l border-px-stroke">
             <button
               type="button"
-              onClick={increment}
+              aria-label={`Increase ${label}`} onClick={increment}
               disabled={disabled}
-              className="px-1.5 py-0.5 text-[#00E5FF] hover:bg-[#233544] transition-colors disabled:opacity-50"
+              className="px-1.5 py-0.5 text-px-accent hover:bg-px-stroke transition-colors disabled:opacity-50"
             >
-              <span className="material-icons-outlined text-[10px]">expand_less</span>
+              <Icon className="material-icons-outlined text-[10px]">expand_less</Icon>
             </button>
             <button
               type="button"
-              onClick={decrement}
+              aria-label={`Decrease ${label}`} onClick={decrement}
               disabled={disabled}
-              className="px-1.5 py-0.5 text-[#00E5FF] hover:bg-[#233544] transition-colors border-t border-[#233544] disabled:opacity-50"
+              className="px-1.5 py-0.5 text-px-accent hover:bg-px-stroke transition-colors border-t border-px-stroke disabled:opacity-50"
             >
-              <span className="material-icons-outlined text-[10px]">expand_more</span>
+              <Icon className="material-icons-outlined text-[10px]">expand_more</Icon>
             </button>
           </div>
         </div>
@@ -657,12 +663,12 @@ const ParamInput = ({ label, value, onChange, min, max, step = 1, unit, disabled
 
 // Parameter Select Component
 const ParamSelect = ({ label, value, onChange, options }) => (
-  <div className="flex items-center justify-between py-2 border-b border-[#233544]">
+  <div className="flex items-center justify-between py-2 border-b border-px-stroke">
     <label className="text-xs text-slate-400">{label}</label>
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="bg-[#0B1120] border border-[#233544] rounded px-2 py-1 text-sm font-mono text-white focus:border-[#00E5FF] focus:outline-none"
+      className="bg-app-bg border border-px-stroke rounded px-2 py-1 text-sm font-mono text-white focus:border-px-accent focus:outline-none"
     >
       {options.map(opt => (
         <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -672,9 +678,10 @@ const ParamSelect = ({ label, value, onChange, options }) => (
 );
 
 // Rack Details Panel
-const RackDetailsPanel = ({ rack, status, alerts = [], onClose, onPduClick, onSaveLabel, readOnly = false }) => {
+const RackDetailsPanel = ({ rack, status, power, alerts = [], onClose, onPduClick, onSaveLabel, readOnly = false }) => {
   const [labelDraft, setLabelDraft] = useState('');
   const [savingLabel, setSavingLabel] = useState(false);
+  const [labelError, setLabelError] = useState('');
 
   useEffect(() => {
     setLabelDraft((rack?.label || '').trim());
@@ -694,15 +701,19 @@ const RackDetailsPanel = ({ rack, status, alerts = [], onClose, onPduClick, onSa
   const handleSaveLabel = async () => {
     if (!onSaveLabel || readOnly) return;
     setSavingLabel(true);
+    setLabelError('');
     try {
-      await onSaveLabel(rack, labelDraft.trim());
+      const saved = await onSaveLabel(rack, labelDraft.trim());
+      if (saved === false) setLabelError('Label was not saved');
+    } catch (e) {
+      setLabelError(e.message || 'Label was not saved');
     } finally {
       setSavingLabel(false);
     }
   };
 
   return (
-    <div className={`absolute bottom-4 right-4 w-72 max-w-[calc(45%-2rem)] max-h-[calc(100vh-8rem)] flex flex-col overflow-hidden bg-[#161E2E] border ${hasCritical ? 'border-red-500' : hasAlerts ? 'border-amber-500' : 'border-[#233544]'} rounded-xl p-4 shadow-2xl z-30`}>
+    <div className={`absolute bottom-4 right-4 w-72 max-w-[calc(45%-2rem)] max-h-[calc(100vh-8rem)] flex flex-col overflow-hidden bg-px-panel border ${hasCritical ? 'border-red-500' : hasAlerts ? 'border-amber-500' : 'border-px-stroke'} rounded-xl p-4 shadow-2xl z-30`}>
       <div className="flex items-center justify-between mb-3 flex-shrink-0">
         <div className="flex items-center gap-2 min-w-0">
           {hasCritical && <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse flex-shrink-0"></span>}
@@ -717,12 +728,12 @@ const RackDetailsPanel = ({ rack, status, alerts = [], onClose, onPduClick, onSa
           </div>
         </div>
         <button onClick={onClose} className="text-slate-400 hover:text-white flex-shrink-0">
-          <span className="material-icons-outlined text-sm">close</span>
+          <Icon className="material-icons-outlined text-sm">close</Icon>
         </button>
       </div>
 
       {!readOnly && onSaveLabel && (
-        <div className="mb-4 flex-shrink-0 bg-[#0B1120] border border-[#233544] rounded-lg p-2.5">
+        <div className="mb-4 flex-shrink-0 bg-app-bg border border-px-stroke rounded-lg p-2.5">
           <p className="text-[9px] text-slate-500 uppercase tracking-wider mb-1.5">Rack Label</p>
           <div className="flex gap-1.5">
             <input
@@ -730,25 +741,26 @@ const RackDetailsPanel = ({ rack, status, alerts = [], onClose, onPduClick, onSa
               value={labelDraft}
               onChange={(e) => setLabelDraft(e.target.value)}
               placeholder={rack.id}
-              className="flex-1 min-w-0 bg-[#161E2E] border border-[#233544] rounded px-2 py-1 text-xs text-white font-mono focus:outline-none focus:border-[#00E5FF]"
+              className="flex-1 min-w-0 bg-px-panel border border-px-stroke rounded px-2 py-1 text-xs text-white font-mono focus:outline-none focus:border-px-accent"
               onKeyDown={(e) => { if (e.key === 'Enter') handleSaveLabel(); }}
             />
             <button
               type="button"
               onClick={handleSaveLabel}
               disabled={savingLabel || labelDraft.trim() === (rack.label || '').trim()}
-              className="px-2 py-1 rounded bg-[#00E5FF]/15 border border-[#00E5FF]/40 text-[#00E5FF] text-[10px] font-bold uppercase disabled:opacity-40"
+              className="px-2 py-1 rounded bg-px-accent/15 border border-px-accent/40 text-px-accent text-[10px] font-bold uppercase disabled:opacity-40"
             >
               {savingLabel ? '…' : 'Save'}
             </button>
           </div>
           <p className="text-[8px] text-slate-600 mt-1">Shown on 3D hover and telemetry overlay</p>
+          {labelError && <p className="text-[10px] text-red-400 mt-1">{labelError}</p>}
         </div>
       )}
 
       {/* Scrollable body so the panel never overflows the screen */}
       <div className="overflow-y-auto flex-1 min-h-0 -mr-2 pr-2">
-      <div className="mb-4 rounded-lg bg-[#0b1120] p-3"><RackStatusDetails rack={rack} status={status}/></div>
+      <div className="mb-4 rounded-lg bg-[#0b1120] p-3"><RackStatusDetails rack={rack} status={status} power={power}/></div>
       {/* Alerts Section */}
       {hasAlerts && !status && (
         <div className="mb-4 space-y-2">
@@ -771,24 +783,24 @@ const RackDetailsPanel = ({ rack, status, alerts = [], onClose, onPduClick, onSa
       
       <div className="space-y-3 text-xs font-mono">
         <div className="grid grid-cols-2 gap-2">
-          <div className="bg-[#0B1120] p-2 rounded">
+          <div className="bg-app-bg p-2 rounded">
             <p className="text-slate-500 text-[10px]">Model</p>
             <p className="text-white">{rack.model}</p>
           </div>
-          <div className="bg-[#0B1120] p-2 rounded">
+          <div className="bg-app-bg p-2 rounded">
             <p className="text-slate-500 text-[10px]">Height</p>
             <p className="text-white">{rack.heightU}U</p>
           </div>
         </div>
         
-        <div className="bg-[#0B1120] p-2 rounded">
+        <div className="bg-app-bg p-2 rounded">
           <p className="text-slate-500 text-[10px] mb-1">Dimensions</p>
           <p className="text-white">
             {(rack.dimensions.width * 1000).toFixed(0)}mm × {(rack.dimensions.depth * 1000).toFixed(0)}mm × {(rack.dimensions.height * 1000).toFixed(0)}mm
           </p>
         </div>
         
-        <div className="bg-[#0B1120] p-2 rounded">
+        <div className="bg-app-bg p-2 rounded">
           <p className="text-slate-500 text-[10px] mb-1">Position</p>
           <p className="text-white">
             X: {rack.position.x.toFixed(2)}m, Z: {rack.position.z.toFixed(2)}m
@@ -806,7 +818,7 @@ const RackDetailsPanel = ({ rack, status, alerts = [], onClose, onPduClick, onSa
                 <button
                   key={pdu.id}
                   onClick={() => onPduClick && onPduClick(pdu)}
-                  className={`w-full flex items-center justify-between p-2 rounded cursor-pointer hover:ring-1 hover:ring-[#00E5FF]/50 transition-all ${pduAlert ? (pduAlert.severity === 'critical' ? 'bg-red-500/10 hover:bg-red-500/20' : 'bg-amber-500/10 hover:bg-amber-500/20') : 'bg-[#0B1120] hover:bg-[#1a2535]'}`}
+                  className={`w-full flex items-center justify-between p-2 rounded cursor-pointer hover:ring-1 hover:ring-px-accent/50 transition-all ${pduAlert ? (pduAlert.severity === 'critical' ? 'bg-red-500/10 hover:bg-red-500/20' : 'bg-amber-500/10 hover:bg-amber-500/20') : 'bg-app-bg hover:bg-[#1a2535]'}`}
                 >
                   <div className="flex items-center min-w-0">
                     <span className="w-4 flex-shrink-0">
@@ -831,7 +843,7 @@ const RackDetailsPanel = ({ rack, status, alerts = [], onClose, onPduClick, onSa
                     ) : (
                       <span className="text-slate-600 font-mono text-xs italic">{pdu.ip || 'planned'}</span>
                     )}
-                    {isCommissioned && <span className="material-icons-outlined text-[#00E5FF] text-xs">open_in_new</span>}
+                    {isCommissioned && <Icon className="material-icons-outlined text-px-accent text-xs">open_in_new</Icon>}
                   </div>
                 </button>
               );
@@ -925,7 +937,7 @@ const RackTelemetryTooltip = ({ rack, onClose }) => {
       <div className="px-3 py-2.5 border-b border-white/[0.06] flex-shrink-0">
         <div className="flex items-center gap-2 mb-1.5">
           <span className="w-5 h-5 rounded-md border border-white/10 flex items-center justify-center">
-            <span className="material-icons-outlined text-[11px] text-[#8A929B]">sensors</span>
+            <Icon className="material-icons-outlined text-[11px] text-[#8A929B]">sensors</Icon>
           </span>
           <span className={HUD_LABEL}>Telemetry Overlay</span>
         </div>
@@ -1089,8 +1101,8 @@ const MibDropZone = ({ hallId }) => {
       {mibs.length > 0 && (
         <div className="space-y-1">
           {mibs.map(mib => (
-            <div key={mib.id} className="flex items-center gap-2 p-2 bg-[#0B1120] border border-[#233544] rounded-lg group">
-              <span className="material-icons-outlined text-emerald-400 text-xs">description</span>
+            <div key={mib.id} className="flex items-center gap-2 p-2 bg-app-bg border border-px-stroke rounded-lg group">
+              <Icon className="material-icons-outlined text-emerald-400 text-xs">description</Icon>
               <div className="flex-1 min-w-0">
                 <p className="text-[10px] text-white font-mono truncate">{mib.original_name}</p>
                 <p className="text-[9px] text-slate-600">{mib.oid_count} OIDs • {new Date(mib.created_at).toLocaleDateString()}</p>
@@ -1100,7 +1112,7 @@ const MibDropZone = ({ hallId }) => {
                 className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-300 transition-all"
                 title="Remove MIB"
               >
-                <span className="material-icons-outlined" style={{fontSize:'14px'}}>close</span>
+                <Icon className="material-icons-outlined" style={{fontSize:'14px'}}>close</Icon>
               </button>
             </div>
           ))}
@@ -1114,8 +1126,8 @@ const MibDropZone = ({ hallId }) => {
         onDrop={handleDrop}
         className={`relative flex flex-col items-center justify-center gap-1 w-full py-4 rounded-lg cursor-pointer transition-all border-2 border-dashed ${
           dragOver
-            ? 'border-[#00E5FF] bg-[#00E5FF]/10 scale-[1.02]'
-            : 'border-[#233544] bg-[#0B1120] hover:border-[#00E5FF]/50 hover:bg-[#00E5FF]/5'
+            ? 'border-px-accent bg-px-accent/10 scale-[1.02]'
+            : 'border-px-stroke bg-app-bg hover:border-px-accent/50 hover:bg-px-accent/5'
         }`}
       >
         <input
@@ -1125,14 +1137,14 @@ const MibDropZone = ({ hallId }) => {
           onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadFile(f); e.target.value = ''; }}
         />
         {uploading ? (
-          <span className="material-icons-outlined text-[#00E5FF] text-lg animate-spin">sync</span>
+          <Icon className="material-icons-outlined text-px-accent text-lg animate-spin">sync</Icon>
         ) : (
-          <span className="material-icons-outlined text-[#00E5FF] text-lg">
+          <Icon className="material-icons-outlined text-px-accent text-lg">
             {dragOver ? 'file_download' : 'upload_file'}
-          </span>
+          </Icon>
         )}
         <span className="text-[10px] text-slate-400">
-          {dragOver ? 'Drop file here' : uploading ? 'Uploading...' : <>Drag & drop or <span className="text-[#00E5FF] font-bold">browse</span></>}
+          {dragOver ? 'Drop file here' : uploading ? 'Uploading...' : <>Drag & drop or <span className="text-px-accent font-bold">browse</span></>}
         </span>
         <span className="text-[9px] text-slate-600">.mib .my .txt .asn1 .smi</span>
       </div>
@@ -1142,10 +1154,10 @@ const MibDropZone = ({ hallId }) => {
         <div className={`p-2 rounded-lg text-[10px] flex items-center gap-1.5 ${
           result.ok ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400' : 'bg-red-500/10 border border-red-500/30 text-red-400'
         }`}>
-          <span className="material-icons-outlined text-xs">{result.ok ? 'check_circle' : 'error'}</span>
+          <Icon className="material-icons-outlined text-xs">{result.ok ? 'check_circle' : 'error'}</Icon>
           <span className="flex-1 truncate">{result.msg}</span>
           <button onClick={() => setResult(null)} className="text-slate-500 hover:text-slate-300">
-            <span className="material-icons-outlined" style={{fontSize:'12px'}}>close</span>
+            <Icon className="material-icons-outlined" style={{fontSize:'12px'}}>close</Icon>
           </button>
         </div>
       )}
@@ -1156,6 +1168,7 @@ const MibDropZone = ({ hallId }) => {
 // Main Component
 const DataHallDesigner = ({
   onNavigateToPdu,
+  onRackInspectorChange,
   selectedHallId: externalHallId,
   onHallChange,
   onConfigSaved,
@@ -1179,6 +1192,7 @@ const DataHallDesigner = ({
   pduEnv = {},
   fleetPduResults = {},
 }) => {
+  const workspace = useWorkspace();
   const readCagePulsePref = useCallback((isNeural) => {
     const key = isNeural ? 'pdumind_cage_pulse_switchboard' : 'pdumind_cage_pulse';
     const stored = localStorage.getItem(key);
@@ -1193,8 +1207,11 @@ const DataHallDesigner = ({
   const cageShiftApplied = useRef(false);
   const [config, setConfig] = useState(defaultDataHallConfig);
   const [selectedRack, setSelectedRack] = useState(null);
+  useEffect(()=>{onRackInspectorChange?.(!!selectedRack);return ()=>onRackInspectorChange?.(false);},[!!selectedRack,onRackInspectorChange]);
   const [cameraPreset, setCameraPreset] = useState({ mode: 'overview', seq: 0 });
   const [doorMode, setDoorMode] = useState('closed');
+  const [agodaHall, setAgodaHall] = useState(null);
+  const [environmentVisibility, setEnvironmentVisibility] = useState({cage:'faded',ceiling:'faded',trays:'visible'});
   const hideDoors = doorMode === 'hidden', openDoors = doorMode === 'open';
   const [showPerformance, setShowPerformance] = useState(false);
   const [statusFilter,setStatusFilter] = useState('all');
@@ -1237,6 +1254,9 @@ const DataHallDesigner = ({
   const [halls, setHalls] = useState([]);
   const [currentHall, setCurrentHall] = useState(null);
   const [hallId, setHallId] = useState(null);
+  const agodaEnabled = !!hallId && agodaHall === hallId && (!externalHallId || externalHallId === hallId);
+  const agodaLoad = useAgodaAssets(agodaEnabled, hallId);
+  useEffect(() => {setAgodaHall(null);}, [hallId, externalHallId]);
   useEffect(() => {
     setSelectedRack(null);
     setDoorMode('closed');
@@ -1300,6 +1320,8 @@ const DataHallDesigner = ({
   
   // Ref to reliably guard auto-save during loads (avoids React batching issues)
   const isLoadingRef = useRef(true);
+  const hallLoadGeneration = useRef(0);
+  const requestedHall = useRef(null);
   // Ref to track the save timer so we can flush it before switching halls
   const saveTimerRef = useRef(null);
   // Ref to always have current hallId + config for the flush-save
@@ -1325,7 +1347,6 @@ const DataHallDesigner = ({
         height_u: rack.heightU,
         model: rack.model,
       };
-      if (dbRack?.label) payload.label = dbRack.label;
       return payload;
     });
   }, [storedRacks]);
@@ -1334,7 +1355,7 @@ const DataHallDesigner = ({
     const dbRack = storedRacks.find(
       (r) => r.row_index === rack.rowIndex && r.position_index === rack.positionInRow,
     ) || (rack.dbRackId ? storedRacks.find((r) => r.id === rack.dbRackId) : null);
-    if (!dbRack?.id) return;
+    if (!dbRack?.id) return false;
     const trimmed = label.trim();
     try {
       const res = await fetch(`${API_BASE}/api/racks/${dbRack.id}`, {
@@ -1342,7 +1363,7 @@ const DataHallDesigner = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ label: trimmed || null }),
       });
-      if (!res.ok) return;
+      if (!res.ok) return false;
       const normalized = trimmed || null;
       setStoredRacks((prev) => prev.map((r) => (
         r.id === dbRack.id ? { ...r, label: normalized } : r
@@ -1354,8 +1375,10 @@ const DataHallDesigner = ({
       );
       setSelectedRack(patch);
       setHoveredRack(patch);
+      return true;
     } catch (e) {
       console.error('[DataHallDesigner] Failed to save rack label:', e);
+      return false;
     }
   }, [storedRacks]);
 
@@ -1384,12 +1407,15 @@ const DataHallDesigner = ({
 
   // Load specific hall state
   const loadHallState = useCallback(async (id) => {
+    const generation = ++hallLoadGeneration.current;
+    requestedHall.current = id;
     try {
       isLoadingRef.current = true;
       setIsLoading(true);
       const response = await fetch(`${API_BASE}/api/halls/${id}/state`);
       if (response.ok) {
         const data = await response.json();
+        if (generation !== hallLoadGeneration.current) return;
         setCurrentHall(data.hall);
         setHallId(data.hall.id);
         if (data.config) {
@@ -1415,9 +1441,11 @@ const DataHallDesigner = ({
     } catch (error) {
       console.log('[DataHallDesigner] Failed to load hall state:', error);
     } finally {
-      setIsLoading(false);
-      // Small delay so the auto-save effect doesn't fire on the loaded config
-      setTimeout(() => { isLoadingRef.current = false; }, 500);
+      if (generation === hallLoadGeneration.current) {
+        setIsLoading(false);
+        // Only the current request may release the autosave guard.
+        setTimeout(() => { if (generation === hallLoadGeneration.current) isLoadingRef.current = false; }, 500);
+      }
     }
   }, []);
 
@@ -1426,10 +1454,12 @@ const DataHallDesigner = ({
   // PDU assignment) so the designer's parametric config + placed scene objects
   // are never clobbered by an unrelated reload.
   const reloadPdusAndRacks = useCallback(async (id) => {
+    const generation = hallLoadGeneration.current;
     try {
       const response = await fetch(`${API_BASE}/api/halls/${id}/state`);
       if (response.ok) {
         const data = await response.json();
+        if (generation !== hallLoadGeneration.current || id !== requestedHall.current) return;
         if (data.hall) setCurrentHall(data.hall);
         setStoredPdus(data.pdus || []);
         setStoredRacks(data.racks || []);
@@ -1727,10 +1757,14 @@ const DataHallDesigner = ({
     });
   }, []);
   
-  const layout = mergedLayoutResult.success ? mergedLayoutResult.layout : null;
+  const layout = useMemo(() => {
+    const base = mergedLayoutResult.success ? mergedLayoutResult.layout : null;
+    return agodaLoad.assets ? savedAppearanceLayout(base, storedRacks) : base;
+  }, [mergedLayoutResult, storedRacks, agodaLoad.assets]);
   useEffect(() => {
     setSelectedRack(prev => prev ? layout?.racks.find(r => r.id === prev.id) || null : null);
   }, [layout]);
+  const assignmentsLoading = isLoading || (!!externalHallId && externalHallId !== hallId);
   const assignedDeviceIds = new Set((layout?.racks || []).flatMap(r => r.pdus.map(p => p.dbId)));
   const unassignedDeviceCount = storedPdus.filter(p => !assignedDeviceIds.has(p.id)).length;
 
@@ -1856,6 +1890,7 @@ const DataHallDesigner = ({
   }, [layout, alerts, effectiveHallPDUs, pduAlarms, rackMetaByCode, findRackForCableEvent, storedPdus]);
 
   const rackStatuses = useMemo(()=>Object.fromEntries((layout?.racks || []).map(rack=>[rack.id,aggregateRackStatus(rack,pduStatusEvidence,statusNow)])),[layout,pduStatusEvidence,statusNow]);
+  const rackPowerReadings = useMemo(()=>Object.fromEntries((layout?.racks || []).map(rack=>[rack.id,aggregateRackPower(rack,pduStatusEvidence,statusNow)])),[layout,pduStatusEvidence,statusNow]);
   const showCageMetrics = cagePulseOn && effectiveHallPDUs.length > 0;
 
   const toggleCagePulse = useCallback(() => {
@@ -1955,28 +1990,28 @@ const DataHallDesigner = ({
   }, [objectsEditable, screenToFloor, addSceneObject]);
   
   return (
-    <div className="flex flex-1 min-h-0 h-full bg-[#0B1120] relative">
+    <div className="flex flex-1 min-h-0 h-full bg-app-bg relative">
       {/* Left Panel - Parameters (Collapsible) — hidden in read-only / neural mode */}
       {!readOnly && !neuralMode && (
-      <div className={`${panelCollapsed ? 'w-0' : 'w-80'} border-r ${panelCollapsed ? 'border-transparent' : 'border-[#233544]'} bg-[#0B1120] transition-all duration-300 flex-shrink-0 relative overflow-hidden flex flex-col`}>
-        <div className={`${panelCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100'} transition-opacity duration-200 w-80 flex flex-col h-full`}>
-          <div className="sticky top-0 z-20 bg-[#0B1120] px-4 pt-4 pb-2 border-b border-[#233544]">
-            <h2 className="text-lg font-bold text-[#00E5FF] flex items-center gap-2">
-              <span className="material-icons-outlined">tune</span>
-              Parameters
+      <FieldControlSlot><div className={`px-field-controls ${workspace?.fieldHost ? 'w-full' : panelCollapsed ? 'w-0' : 'w-80'} border-r ${panelCollapsed ? 'border-transparent' : 'border-px-stroke'} bg-app-bg transition-all duration-300 flex-shrink-0 relative overflow-hidden flex flex-col`}>
+        <div className={`${!workspace?.fieldHost && panelCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100'} transition-opacity duration-200 w-full flex flex-col h-full`}>
+          <div className="sticky top-0 z-20 bg-app-bg px-4 pt-4 pb-2 border-b border-px-stroke">
+            <h2 className="text-lg font-bold text-px-accent flex items-center gap-2">
+              <Icon className="material-icons-outlined">tune</Icon>
+              Field Control
             </h2>
           </div>
           <div className="flex-1 overflow-y-auto px-4 pb-4 pt-3">
         
         {/* Hall Manager */}
-        <div className="mb-6 p-3 bg-[#161E2E] border border-[#233544] rounded-lg">
+        <div className="mb-6 p-3 bg-px-panel border border-px-stroke rounded-lg">
           <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-3">
             Data Hall
           </h3>
           
           {/* Hall Selector */}
           <div className="flex gap-1 mb-3">
-            <select
+            <select hidden={!!workspace?.fieldHost}
               value={hallId || ''}
               onChange={async (e) => {
                 const newHallId = parseInt(e.target.value);
@@ -1986,7 +2021,7 @@ const DataHallDesigner = ({
                   if (onHallChange) onHallChange(newHallId);
                 }
               }}
-              className="flex-1 bg-[#0B1120] border border-[#233544] rounded px-2 py-1.5 text-xs text-slate-300 font-mono focus:outline-none focus:border-[#00E5FF] min-w-0"
+              className="flex-1 bg-app-bg border border-px-stroke rounded px-2 py-1.5 text-xs text-slate-300 font-mono focus:outline-none focus:border-px-accent min-w-0"
             >
               {halls.map(hall => (
                 <option key={hall.id} value={hall.id}>{hall.name}</option>
@@ -1994,10 +2029,10 @@ const DataHallDesigner = ({
             </select>
             <button
               onClick={() => setShowNewHallDialog(true)}
-              className="px-1.5 py-1.5 bg-[#00E5FF]/10 border border-[#00E5FF]/30 rounded text-[#00E5FF] hover:bg-[#00E5FF]/20 transition-colors"
+              className="px-1.5 py-1.5 bg-px-accent/10 border border-px-accent/30 rounded text-px-accent hover:bg-px-accent/20 transition-colors"
               title="Create New Hall"
             >
-              <span className="material-icons-outlined text-sm">add</span>
+              <Icon className="material-icons-outlined text-sm">add</Icon>
             </button>
             <button
               onClick={() => { setRenameValue(currentHall?.name || ''); setShowRenameDialog(true); }}
@@ -2005,7 +2040,7 @@ const DataHallDesigner = ({
               title="Rename Hall"
               disabled={!hallId}
             >
-              <span className="material-icons-outlined text-sm">edit</span>
+              <Icon className="material-icons-outlined text-sm">edit</Icon>
             </button>
             <button
               onClick={() => setShowDeleteConfirm(true)}
@@ -2013,7 +2048,7 @@ const DataHallDesigner = ({
               title="Delete Hall"
               disabled={!hallId}
             >
-              <span className="material-icons-outlined text-sm">delete</span>
+              <Icon className="material-icons-outlined text-sm">delete</Icon>
             </button>
           </div>
           
@@ -2033,7 +2068,7 @@ const DataHallDesigner = ({
                 type="text"
                 value={renameValue}
                 onChange={(e) => setRenameValue(e.target.value)}
-                className="w-full bg-[#0B1120] border border-[#233544] rounded px-2 py-1.5 text-xs text-slate-300 font-mono mb-2 focus:outline-none focus:border-amber-500"
+                className="w-full bg-app-bg border border-px-stroke rounded px-2 py-1.5 text-xs text-slate-300 font-mono mb-2 focus:outline-none focus:border-amber-500"
                 autoFocus
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && renameValue.trim()) {
@@ -2089,14 +2124,14 @@ const DataHallDesigner = ({
         
         {/* New Hall Dialog */}
         {showNewHallDialog && (
-          <div className="mb-4 p-3 bg-[#00E5FF]/5 border border-[#00E5FF]/30 rounded-lg">
-            <p className="text-xs font-bold text-[#00E5FF] mb-2">Create New Data Hall</p>
+          <div className="mb-4 p-3 bg-px-accent/5 border border-px-accent/30 rounded-lg">
+            <p className="text-xs font-bold text-px-accent mb-2">Create New Data Hall</p>
             <input
               type="text"
               value={newHallName}
               onChange={(e) => setNewHallName(e.target.value)}
               placeholder="Enter hall name..."
-              className="w-full bg-[#0B1120] border border-[#233544] rounded px-2 py-1.5 text-xs text-slate-300 font-mono mb-2 focus:outline-none focus:border-[#00E5FF]"
+              className="w-full bg-app-bg border border-px-stroke rounded px-2 py-1.5 text-xs text-slate-300 font-mono mb-2 focus:outline-none focus:border-px-accent"
               autoFocus
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && newHallName.trim()) {
@@ -2119,7 +2154,7 @@ const DataHallDesigner = ({
                   }
                 }}
                 disabled={!newHallName.trim()}
-                className="flex-1 px-2 py-1 bg-[#00E5FF]/20 border border-[#00E5FF]/50 rounded text-xs text-[#00E5FF] hover:bg-[#00E5FF]/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex-1 px-2 py-1 bg-px-accent/20 border border-px-accent/50 rounded text-xs text-px-accent hover:bg-px-accent/30 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Create
               </button>
@@ -2190,17 +2225,17 @@ const DataHallDesigner = ({
           )},
           { id: 'ip', title: 'IP Planning', icon: 'lan', content: (
             <>
-              <div className="flex items-center justify-between py-2 border-b border-[#233544]">
+              <div className="flex items-center justify-between py-2 border-b border-px-stroke">
                 <label className="text-xs text-slate-400">Subnet</label>
-                <input type="text" value={config.ipPlanning.subnet} onChange={(e) => updateConfig('ipPlanning.subnet', e.target.value)} className="w-32 bg-[#0B1120] border border-[#233544] rounded px-2 py-1 text-sm font-mono text-white text-right focus:border-[#00E5FF] focus:outline-none" />
+                <input type="text" value={config.ipPlanning.subnet} onChange={(e) => updateConfig('ipPlanning.subnet', e.target.value)} className="w-32 bg-app-bg border border-px-stroke rounded px-2 py-1 text-sm font-mono text-white text-right focus:border-px-accent focus:outline-none" />
               </div>
               <ParamSelect label="Assignment" value={config.ipPlanning.assignmentStrategy} onChange={(v) => updateConfig('ipPlanning.assignmentStrategy', v)} options={[{ value: 'sequential', label: 'Sequential' }, { value: 'perRowBlock', label: 'Per Row Block' }]} />
             </>
           )},
           { id: 'view', title: 'View Options', icon: 'visibility', panel: 'view', content: (
-            <div className="flex items-center justify-between py-2 border-b border-[#233544]">
+            <div className="flex items-center justify-between py-2 border-b border-px-stroke">
               <label className="text-xs text-slate-400">Show Rack Labels</label>
-              <button onClick={() => setShowLabels(!showLabels)} className={`w-12 h-6 rounded-full transition-all ${showLabels ? 'bg-[#00E5FF]' : 'bg-[#233544]'} relative`}>
+              <button onClick={() => setShowLabels(!showLabels)} className={`w-12 h-6 rounded-full transition-all ${showLabels ? 'bg-px-accent' : 'bg-px-stroke'} relative`}>
                 <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${showLabels ? 'right-1' : 'left-1'}`}></span>
               </button>
             </div>
@@ -2217,18 +2252,18 @@ const DataHallDesigner = ({
                       e.dataTransfer.effectAllowed = 'copy';
                     }}
                     onDoubleClick={() => addSceneObject(item.type)}
-                    className="group flex items-center gap-2 px-2 py-2 bg-[#0B1120] border border-[#233544] rounded-lg cursor-grab active:cursor-grabbing hover:border-[#00E5FF]/60 hover:bg-[#00E5FF]/5 transition-all"
+                    className="group flex items-center gap-2 px-2 py-2 bg-app-bg border border-px-stroke rounded-lg cursor-grab active:cursor-grabbing hover:border-px-accent/60 hover:bg-px-accent/5 transition-all"
                     title="Drag onto the 3D floor (or double-click to add at center)"
                   >
-                    <span className="material-icons-outlined text-[#00E5FF] text-lg">{item.icon}</span>
+                    <Icon className="material-icons-outlined text-px-accent text-lg">{item.icon}</Icon>
                     <span className="text-xs text-slate-300 flex-1">{item.label}</span>
                     <button
                       type="button"
                       onClick={(e) => { e.stopPropagation(); addSceneObject(item.type); }}
-                      className="opacity-0 group-hover:opacity-100 text-[#00E5FF] hover:text-white transition-all"
+                      className="opacity-0 group-hover:opacity-100 text-px-accent hover:text-white transition-all"
                       title="Add to center"
                     >
-                      <span className="material-icons-outlined text-sm">add_circle</span>
+                      <Icon className="material-icons-outlined text-sm">add_circle</Icon>
                     </button>
                   </div>
                 ))}
@@ -2237,18 +2272,18 @@ const DataHallDesigner = ({
                 </p>
               </div>
               {sceneObjects.length > 0 && (
-                <div className="mt-2 pt-2 border-t border-[#233544] max-h-40 overflow-y-auto space-y-1">
+                <div className="mt-2 pt-2 border-t border-px-stroke max-h-40 overflow-y-auto space-y-1">
                   {sceneObjects.map(obj => (
                     <div
                       key={obj.id}
                       onClick={() => setSelectedObjectId(obj.id)}
                       className={`flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-all ${
                         selectedObjectId === obj.id
-                          ? 'bg-[#00E5FF]/15 border border-[#00E5FF]/50'
-                          : 'bg-[#0B1120] border border-transparent hover:border-[#233544]'
+                          ? 'bg-px-accent/15 border border-px-accent/50'
+                          : 'bg-app-bg border border-transparent hover:border-px-stroke'
                       }`}
                     >
-                      <span className="material-icons-outlined text-slate-400 text-sm">meeting_room</span>
+                      <Icon className="material-icons-outlined text-slate-400 text-sm">meeting_room</Icon>
                       <span className="text-[11px] text-slate-300 flex-1 truncate">{obj.label}</span>
                       <button
                         type="button"
@@ -2256,7 +2291,7 @@ const DataHallDesigner = ({
                         className="text-red-400 hover:text-red-300"
                         title="Remove object"
                       >
-                        <span className="material-icons-outlined text-sm">delete</span>
+                        <Icon className="material-icons-outlined text-sm">delete</Icon>
                       </button>
                     </div>
                   ))}
@@ -2272,18 +2307,18 @@ const DataHallDesigner = ({
         
         {/* Stats */}
         {layout && (
-          <div className="mt-6 p-4 bg-[#161E2E] rounded-lg border border-[#233544]">
+          <div className="px-field-extra">
             <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-3">
               Layout Statistics
             </h3>
             <div className="grid grid-cols-2 gap-3 text-xs font-mono">
               <div>
                 <p className="text-slate-500">Total Racks</p>
-                <p className="text-xl font-bold text-[#00E5FF]">{layout.stats.totalRacks}</p>
+                <p className="text-xl font-bold text-px-accent">{layout.stats.totalRacks}</p>
               </div>
               <div>
                 <p className="text-slate-500">Planned PDU slots</p>
-                <p className="text-xl font-bold text-[#00E5FF]">{layout.stats.totalPDUs}</p>
+                <p className="text-xl font-bold text-px-accent">{layout.stats.totalPDUs}</p>
               </div>
               <div>
                 <p className="text-slate-500">Rows</p>
@@ -2298,17 +2333,17 @@ const DataHallDesigner = ({
         )}
         
         {/* Media Section - Custom Rack Model */}
-        <div className="mt-6 p-4 bg-[#161E2E] rounded-lg border border-[#233544]">
+        <div className="px-field-extra">
           <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2">
-            <span className="material-icons-outlined text-sm">view_in_ar</span>
+            <Icon className="material-icons-outlined text-sm">view_in_ar</Icon>
             Custom Rack Model
           </h3>
           
           {config.rackModel?.name ? (
             <div className="space-y-3">
-              <div className="flex items-center justify-between p-2 bg-[#0B1120] rounded border border-[#233544]">
+              <div className="flex items-center justify-between p-2 bg-app-bg rounded border border-px-stroke">
                 <div className="flex items-center gap-2">
-                  <span className="material-icons-outlined text-[#00E5FF] text-sm">check_circle</span>
+                  <Icon className="material-icons-outlined text-px-accent text-sm">check_circle</Icon>
                   <span className="text-xs text-slate-300 font-mono">{config.rackModel.name}</span>
                 </div>
                 <button
@@ -2316,7 +2351,7 @@ const DataHallDesigner = ({
                   className="text-red-400 hover:text-red-300 transition-colors"
                   title="Remove model"
                 >
-                  <span className="material-icons-outlined text-sm">delete</span>
+                  <Icon className="material-icons-outlined text-sm">delete</Icon>
                 </button>
               </div>
               <p className="text-[9px] text-slate-500">Custom 3D model will be used for all racks</p>
@@ -2327,10 +2362,10 @@ const DataHallDesigner = ({
                 type="text"
                 placeholder="Model name..."
                 id="rackModelName"
-                className="w-full bg-[#0B1120] border border-[#233544] rounded px-3 py-2 text-xs text-slate-300 font-mono focus:outline-none focus:border-[#00E5FF]"
+                className="w-full bg-app-bg border border-px-stroke rounded px-3 py-2 text-xs text-slate-300 font-mono focus:outline-none focus:border-px-accent"
               />
               {/* GLB Upload (single file - recommended) */}
-              <label className="flex items-center justify-center gap-2 w-full py-3 bg-[#0B1120] border border-dashed border-[#233544] rounded-lg cursor-pointer hover:border-[#00E5FF] hover:bg-[#00E5FF]/5 transition-all">
+              <label className="flex items-center justify-center gap-2 w-full py-3 bg-app-bg border border-dashed border-px-stroke rounded-lg cursor-pointer hover:border-px-accent hover:bg-px-accent/5 transition-all">
                 <input
                   type="file"
                   accept=".glb"
@@ -2367,12 +2402,12 @@ const DataHallDesigner = ({
                     }
                   }}
                 />
-                <span className="material-icons-outlined text-[#00E5FF] text-lg">upload_file</span>
-                <span className="text-xs text-slate-400">Upload <span className="text-[#00E5FF] font-bold">.GLB</span> file (recommended)</span>
+                <Icon className="material-icons-outlined text-px-accent text-lg">upload_file</Icon>
+                <span className="text-xs text-slate-400">Upload <span className="text-px-accent font-bold">.GLB</span> file (recommended)</span>
               </label>
               
               {/* Folder Upload (gltf + bin + textures) */}
-              <label className="flex items-center justify-center gap-2 w-full py-2 bg-[#0B1120] border border-dashed border-[#233544] rounded-lg cursor-pointer hover:border-slate-500 transition-all">
+              <label className="flex items-center justify-center gap-2 w-full py-2 bg-app-bg border border-dashed border-px-stroke rounded-lg cursor-pointer hover:border-slate-500 transition-all">
                 <input
                   type="file"
                   webkitdirectory=""
@@ -2411,20 +2446,20 @@ const DataHallDesigner = ({
                     });
                   }}
                 />
-                <span className="material-icons-outlined text-slate-600 text-sm">folder_open</span>
+                <Icon className="material-icons-outlined text-slate-600 text-sm">folder_open</Icon>
                 <span className="text-[10px] text-slate-600">Or select entire model folder</span>
               </label>
               <p className="text-[9px] text-slate-600 text-center mt-1">
-                <span className="text-[#00E5FF]">GLB recommended</span> - single file with textures bundled
+                <span className="text-px-accent">GLB recommended</span> - single file with textures bundled
               </p>
             </div>
           )}
         </div>
 
         {/* MIB File Upload Section */}
-        <div className="border-t border-[#233544] pt-4">
-          <h3 className="text-xs font-semibold text-[#00E5FF] uppercase tracking-wider mb-3 flex items-center gap-2">
-            <span className="material-icons-outlined text-sm">description</span>
+        <div className="border-t border-px-stroke pt-4">
+          <h3 className="text-xs font-semibold text-px-accent uppercase tracking-wider mb-3 flex items-center gap-2">
+            <Icon className="material-icons-outlined text-sm">description</Icon>
             MIB Configuration
           </h3>
           
@@ -2432,23 +2467,35 @@ const DataHallDesigner = ({
         </div>
         </div>
         </div>
-      </div>
+      </div></FieldControlSlot>
       )}
 
       {/* Collapse Toggle Button */}
-      {!readOnly && !neuralMode && (
+      {!readOnly && !neuralMode && !workspace?.fieldHost && (
       <button
         onClick={() => setPanelCollapsed(!panelCollapsed)}
-        className={`flex-shrink-0 w-5 h-10 bg-[#161E2E] border-y border-r border-[#00E5FF]/30 rounded-r flex items-center justify-center hover:bg-[#233544] transition-colors self-center -ml-px`}
+        className={`flex-shrink-0 w-5 h-10 bg-px-panel border-y border-r border-px-accent/30 rounded-r flex items-center justify-center hover:bg-px-stroke transition-colors self-center -ml-px`}
       >
-        <span className={`material-icons-outlined text-[#00E5FF] text-sm transition-transform duration-300 ${panelCollapsed ? '' : 'rotate-180'}`}>
+        <Icon className={`material-icons-outlined text-px-accent text-sm transition-transform duration-300 ${panelCollapsed ? '' : 'rotate-180'}`}>
           chevron_right
-        </span>
+        </Icon>
       </button>
       )}
       
       {/* Right Panel - 3D View + footer controls */}
       <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden" style={{ isolation: 'isolate' }}>
+        {!showLanding && <div className="relative z-30 flex min-h-9 flex-wrap items-center gap-x-4 gap-y-1 border-b border-white/10 bg-[#161c23] px-3 py-2 text-[10px] text-slate-300" aria-label="Environment appearance">
+          <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" role="switch" aria-label="Agoda preset" checked={agodaEnabled} onChange={e=>setAgodaHall(e.target.checked ? hallId : null)}/>Agoda preset</label>
+          {agodaEnabled && <><span className="text-slate-400">White racks / black cage</span>
+            <details className="relative"><summary className="cursor-pointer">Environment controls</summary><div className="absolute top-6 right-0 w-64 rounded border border-white/10 bg-[#161c23] p-3 shadow-xl">
+              <div className="flex gap-2">{['cage','ceiling','trays'].map(part=><label key={part} className="capitalize flex-1">{part}<select aria-label={`${part} visibility`} value={environmentVisibility[part]} onChange={e=>setEnvironmentVisibility(v=>({...v,[part]:e.target.value}))} className="block w-full bg-[#242c34] rounded mt-1 p-1"><option value="visible">Visible</option><option value="faded">Faded</option><option value="hidden">Hidden</option></select></label>)}</div>
+              <p className="text-[9px] text-slate-400 mt-2">Infrastructure placement · provisional. Inspection hides infrastructure.</p>
+            </div></details>
+            {!storedRacks.length && <span role="status">Editable starter layout · no saved racks</span>}
+            {agodaLoad.loading && <span role="status">Loading Agoda appearance…</span>}
+            {agodaLoad.error && <span role="alert">{agodaLoad.error}</span>}
+          </>}
+        </div>}
         <div className="relative flex-1 min-h-0 min-w-0 w-full">
         <div
           data-testid="viewport-shell"
@@ -2514,6 +2561,8 @@ const DataHallDesigner = ({
           <FitCanvas wrapRef={canvasWrapRef} layoutEpoch={`${neuralMode ? 1 : 0}-${fullBleed ? 1 : 0}-${glEpoch}`} />
           <Suspense fallback={null}>
             <DataHallScene
+              agodaAssets={agodaLoad.assets}
+              environmentVisibility={environmentVisibility}
               layout={layout}
               selectedRack={selectedRack}
               hoveredRack={hoveredRack}
@@ -2526,7 +2575,9 @@ const DataHallDesigner = ({
               onPduClick={onNavigateToPdu}
               showPerformance={showPerformance}
               outletInventory={outletInventory}
+              showRackStatuses={!assignmentsLoading}
               rackStatuses={rackStatuses}
+              rackPowerReadings={rackPowerReadings}
               statusFilter={statusFilter}
               onHoverRack={setHoveredRack}
               customRackModelUrl={config.rackModel?.url}
@@ -2551,7 +2602,7 @@ const DataHallDesigner = ({
           {[['overview','Overview'], ['front','Front'], ['rear','Rear / service'], ['selected','Selected rack']].map(([mode,label]) => <button key={mode} type="button" disabled={mode === 'selected' && !selectedRack}
             onClick={() => setCameraPreset(p => ({ mode, seq: p.seq + 1 }))}
             aria-pressed={cameraPreset.mode === mode} className={`px-2.5 py-1.5 rounded text-[10px] whitespace-nowrap disabled:opacity-30 ${cameraPreset.mode === mode ? 'text-cyan-200 bg-white/10' : 'text-slate-300 hover:bg-white/5'}`}>{label}</button>)}
-          <button type="button" disabled={!selectedRack || !!config.rackModel?.url} onClick={() => setDoorMode(v => v === 'closed' ? 'open' : v === 'open' ? 'hidden' : 'closed')} aria-pressed={doorMode !== 'closed'} className="px-2.5 py-1.5 text-[10px] text-slate-300 disabled:opacity-30">{`Doors: ${doorMode}`}</button>
+          <button type="button" disabled={!selectedRack || (!agodaLoad.assets && !!config.rackModel?.url)} onClick={() => setDoorMode(v => v === 'closed' ? 'open' : v === 'open' ? 'hidden' : 'closed')} aria-pressed={doorMode !== 'closed'} className="px-2.5 py-1.5 text-[10px] text-slate-300 disabled:opacity-30">{`Doors: ${agodaLoad.assets && doorMode === 'closed' ? 'exposed' : doorMode}`}</button>
           <button type="button" onClick={() => setShowPerformance(v => !v)} aria-pressed={showPerformance} className="px-2 py-1.5 text-[10px] text-slate-400">Performance</button>
         </div>}
         </div>
@@ -2621,24 +2672,24 @@ const DataHallDesigner = ({
                         onClick={() => selectHall(hall.id)}
                         className={`group text-left rounded-xl border px-4 py-3.5 transition-all backdrop-blur-sm ${
                           active
-                            ? 'border-[#00E5FF]/70 bg-[#00E5FF]/10 shadow-[0_0_24px_rgba(0,229,255,0.18)]'
-                            : 'border-[#233544] bg-[#161E2E]/70 hover:border-[#00E5FF]/50 hover:bg-[#00E5FF]/5'
+                            ? 'border-px-accent/70 bg-px-accent/10 shadow-[0_0_24px_rgba(0,229,255,0.18)]'
+                            : 'border-px-stroke bg-px-panel/70 hover:border-px-accent/50 hover:bg-px-accent/5'
                         }`}
                       >
                         <div className="flex items-center gap-3">
-                          <span className={`material-icons-outlined text-xl ${active ? 'text-[#00E5FF]' : 'text-slate-400 group-hover:text-[#00E5FF]'}`}>
+                          <Icon className={`material-icons-outlined text-xl ${active ? 'text-px-accent' : 'text-slate-400 group-hover:text-px-accent'}`}>
                             dns
-                          </span>
+                          </Icon>
                           <div className="flex-1 min-w-0">
                             <div className="text-sm font-bold text-white truncate flex items-center gap-2">
                               {hall.name}
-                              {active && <span className="text-[9px] font-medium px-1.5 py-0.5 rounded bg-[#00E5FF]/15 text-[#00E5FF]">SELECTED</span>}
+                              {active && <span className="text-[9px] font-medium px-1.5 py-0.5 rounded bg-px-accent/15 text-px-accent">SELECTED</span>}
                             </div>
                             <div className="text-[10px] text-slate-500 font-mono mt-0.5">
                               ID {hall.id}{hall.created_at ? ` • ${new Date(hall.created_at).toLocaleDateString()}` : ''}
                             </div>
                           </div>
-                          <span className="material-icons-outlined text-slate-600 group-hover:text-[#00E5FF] transition-colors">chevron_right</span>
+                          <Icon className="material-icons-outlined text-slate-600 group-hover:text-px-accent transition-colors">chevron_right</Icon>
                         </div>
                       </button>
                     );
@@ -2654,9 +2705,9 @@ const DataHallDesigner = ({
                 <div className="mt-5 flex justify-center">
                   <button
                     onClick={() => { setPanelCollapsed(false); setShowNewHallDialog(true); }}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#00E5FF]/10 border border-[#00E5FF]/40 text-[#00E5FF] text-sm font-medium hover:bg-[#00E5FF]/20 transition-all"
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-px-accent/10 border border-px-accent/40 text-px-accent text-sm font-medium hover:bg-px-accent/20 transition-all"
                   >
-                    <span className="material-icons-outlined text-base">add</span>
+                    <Icon className="material-icons-outlined text-base">add</Icon>
                     New Data Hall
                   </button>
                 </div>
@@ -2668,6 +2719,7 @@ const DataHallDesigner = ({
         {/* Cage-level metrics dashboard (consolidated PDU telemetry) */}
         {showCageMetrics && !showLanding && (
           <CageMetricsOverlay
+            hidden={!!selectedRack}
             hallPDUs={effectiveHallPDUs}
             pduLiveStatus={pduLiveStatus}
             pduAlarms={pduAlarms}
@@ -2683,6 +2735,7 @@ const DataHallDesigner = ({
         <RackDetailsPanel 
           rack={selectedRack}
           status={selectedRack ? rackStatuses[selectedRack.id] : null}
+          power={selectedRack ? rackPowerReadings[selectedRack.id] : null}
           alerts={alerts} 
           onClose={handleCloseRackPanel}
           onPduClick={(pdu) => onNavigateToPdu && onNavigateToPdu(pdu)}
@@ -2690,9 +2743,9 @@ const DataHallDesigner = ({
           readOnly={readOnly}
         />
         
-        <RackStatusLegend statuses={rackStatuses} filter={statusFilter} onFilter={setStatusFilter}/>
+        <RackStatusLegend loading={assignmentsLoading} statuses={rackStatuses} filter={statusFilter} onFilter={setStatusFilter}/>
         <div className="absolute z-10 top-4 right-4 max-w-[50%] text-right text-[9px] text-slate-400 bg-[#161c23]/90 rounded px-2 py-1 pointer-events-none">{selectedRack && cameraPreset.mode !== 'overview' ? 'Isolated inspection · Overview restores hall. ' : ''}PDU geometry schematic · A/B mounting slots · feeds unverified</div>
-        {unassignedDeviceCount > 0 && !showLanding && <div className="absolute top-12 right-4 z-10 text-[10px] bg-[#161c23]/95 border border-slate-600 rounded px-3 py-2 text-slate-300">{unassignedDeviceCount} PDUs awaiting rack assignment · use Assign</div>}
+        {!assignmentsLoading && unassignedDeviceCount > 0 && !showLanding && <div className="absolute top-12 right-4 z-10 text-[10px] bg-[#161c23]/95 border border-slate-600 rounded px-3 py-2 text-slate-300">{unassignedDeviceCount} PDUs awaiting rack assignment · use Assign</div>}
         {/* Save status — only while loading/saving (avoids Cage Pulse overlap) */}
         {!readOnly && (isLoading || isSaving) && (
           <div className="absolute bottom-12 left-4 z-20 bg-[#0c1018]/90 border border-white/[0.08] rounded-lg px-3 py-2 text-[10px] font-mono">
@@ -2715,13 +2768,13 @@ const DataHallDesigner = ({
         {/* Mode toggle — centered over canvas, original pill style (no fascia) */}
         {showNeuralToggle && (
           <div className="absolute bottom-12 left-1/2 -translate-x-1/2 z-30 pointer-events-auto">
-            <div className="flex items-center bg-[#161E2E]/95 border border-[#233544] rounded-full p-1 shadow-xl backdrop-blur-sm">
+            <div className="flex items-center bg-px-panel/95 border border-px-stroke rounded-full p-1 shadow-xl backdrop-blur-sm">
               <button
                 type="button"
                 onClick={() => onNeuralOpsChange?.(false)}
                 className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all whitespace-nowrap ${
                   !neuralOpsEnabled
-                    ? 'bg-[#233544] text-white'
+                    ? 'bg-px-stroke text-white'
                     : 'text-slate-500 hover:text-slate-300'
                 }`}
               >
@@ -2732,11 +2785,11 @@ const DataHallDesigner = ({
                 onClick={() => onNeuralOpsChange?.(true)}
                 className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 whitespace-nowrap ${
                   neuralOpsEnabled
-                    ? 'bg-gradient-to-r from-[#00E5FF]/30 to-purple-500/30 text-[#00E5FF] border border-[#00E5FF]/40'
+                    ? 'bg-gradient-to-r from-px-accent/30 to-purple-500/30 text-px-accent border border-px-accent/40'
                     : 'text-slate-500 hover:text-slate-300'
                 }`}
               >
-                <span className="material-icons-outlined text-sm">dashboard</span>
+                <Icon className="material-icons-outlined text-sm">dashboard</Icon>
                 Switchboard
               </button>
             </div>
@@ -2750,41 +2803,41 @@ const DataHallDesigner = ({
 
         {/* Selected-object transform toolbar (move / rotate / delete) */}
         {objectsEditable && selectedObjectId && (
-          <div className="absolute top-1/2 left-4 -translate-y-1/2 z-30 flex flex-col gap-1 bg-[#161E2E]/95 border border-[#233544] rounded-xl p-1.5 shadow-2xl backdrop-blur-sm">
+          <div className="absolute top-1/2 left-4 -translate-y-1/2 z-30 flex flex-col gap-1 bg-px-panel/95 border border-px-stroke rounded-xl p-1.5 shadow-2xl backdrop-blur-sm">
             <button
               onClick={() => setTransformMode('translate')}
               className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all ${
-                transformMode === 'translate' ? 'bg-[#00E5FF]/20 text-[#00E5FF]' : 'text-slate-400 hover:bg-[#233544]'
+                transformMode === 'translate' ? 'bg-px-accent/20 text-px-accent' : 'text-slate-400 hover:bg-px-stroke'
               }`}
               title="Move (drag on floor)"
             >
-              <span className="material-icons-outlined text-lg">open_with</span>
+              <Icon className="material-icons-outlined text-lg">open_with</Icon>
             </button>
             <button
               onClick={() => setTransformMode('rotate')}
               className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all ${
-                transformMode === 'rotate' ? 'bg-[#00E5FF]/20 text-[#00E5FF]' : 'text-slate-400 hover:bg-[#233544]'
+                transformMode === 'rotate' ? 'bg-px-accent/20 text-px-accent' : 'text-slate-400 hover:bg-px-stroke'
               }`}
               title="Rotate"
             >
-              <span className="material-icons-outlined text-lg">rotate_right</span>
+              <Icon className="material-icons-outlined text-lg">rotate_right</Icon>
             </button>
             <button
               onClick={() => setTransformMode('scale')}
               className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all ${
-                transformMode === 'scale' ? 'bg-[#00E5FF]/20 text-[#00E5FF]' : 'text-slate-400 hover:bg-[#233544]'
+                transformMode === 'scale' ? 'bg-px-accent/20 text-px-accent' : 'text-slate-400 hover:bg-px-stroke'
               }`}
               title="Resize"
             >
-              <span className="material-icons-outlined text-lg">aspect_ratio</span>
+              <Icon className="material-icons-outlined text-lg">aspect_ratio</Icon>
             </button>
-            <div className="h-px bg-[#233544] mx-1" />
+            <div className="h-px bg-px-stroke mx-1" />
             <button
               onClick={() => deleteSceneObject(selectedObjectId)}
               className="w-9 h-9 rounded-lg flex items-center justify-center text-red-400 hover:bg-red-500/20 transition-all"
               title="Delete object"
             >
-              <span className="material-icons-outlined text-lg">delete</span>
+              <Icon className="material-icons-outlined text-lg">delete</Icon>
             </button>
           </div>
         )}
@@ -2792,20 +2845,20 @@ const DataHallDesigner = ({
         </div>
 
         {/* Dedicated footer bar — controls only, not overlaid on toggle */}
-        <div className="relative flex-shrink-0 h-10 border-t border-[#233544]/70 bg-[#0a1520] flex items-center justify-between px-4 z-20">
+        <div className="px-canvas-footer relative flex-shrink-0 h-10 border-t border-px-stroke/70 bg-[#0a1520] flex items-center justify-between px-4 z-20">
           <div className="flex items-center gap-4 text-[10px] font-mono text-slate-500">
             {viewPanMode ? (
               <>
-                <span>↔️ Pan: Drag</span>
-                <span className="hidden sm:inline">🔄 Rotate: Right-drag</span>
+                <span>Pan: Drag</span>
+                <span className="hidden sm:inline">Rotate: Right-drag</span>
               </>
             ) : (
               <>
-                <span>🖱️ Orbit: Drag</span>
-                <span className="hidden sm:inline">⚙️ Pan: Right-drag</span>
+                <span>Orbit: Drag</span>
+                <span className="hidden sm:inline">Pan: Right-drag</span>
               </>
             )}
-            <span>🔍 Zoom: Scroll</span>
+            <span>Zoom: Scroll</span>
             {(viewOffset.x !== 0 || viewOffset.z !== 0) && (
               <button
                 type="button"
@@ -2818,19 +2871,19 @@ const DataHallDesigner = ({
           </div>
 
           {/* Footer pill toggles — Hyperspace style (Cage Pulse, Lighting, Integrations) */}
-          <div className="absolute left-1/2 -translate-x-1/2 flex items-center bg-[#161E2E]/95 border border-[#233544] rounded-full p-1 shadow-xl backdrop-blur-sm">
+          <div className="px-canvas-actions">
             <button
               type="button"
               onClick={toggleCagePulse}
               disabled={effectiveHallPDUs.length === 0}
               className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 whitespace-nowrap disabled:opacity-40 ${
                 showCageMetrics
-                  ? 'bg-[#233544] text-white'
+                  ? 'bg-px-stroke text-white'
                   : 'text-slate-500 hover:text-slate-300'
               }`}
               title={effectiveHallPDUs.length === 0 ? 'Commission PDUs to enable cage metrics' : 'Cage-level PDU metrics'}
             >
-              <span className="material-icons-outlined text-sm">monitoring</span>
+              <Icon className="material-icons-outlined text-sm">monitoring</Icon>
               Cage Pulse
             </button>
             <button
@@ -2857,7 +2910,7 @@ const DataHallDesigner = ({
               className="px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 whitespace-nowrap text-slate-500 hover:text-slate-300 disabled:opacity-40"
               title={effectiveHallPDUs.length === 0 ? 'Commission PDUs to download a hall report' : 'Download customer hall report'}
             >
-              <span className="material-icons-outlined text-sm">download</span>
+              <Icon className="material-icons-outlined text-sm">download</Icon>
               Report
             </button>
             <button
@@ -2865,12 +2918,12 @@ const DataHallDesigner = ({
               onClick={toggleViewPan}
               className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 whitespace-nowrap ${
                 viewPanMode
-                  ? 'bg-[#233544] text-white'
+                  ? 'bg-px-stroke text-white'
                   : 'text-slate-500 hover:text-slate-300'
               }`}
               title="Drag to pan the 3D view — useful when Cage Pulse covers racks"
             >
-              <span className="material-icons-outlined text-sm">open_with</span>
+              <Icon className="material-icons-outlined text-sm">open_with</Icon>
               Shift View
             </button>
             {neuralMode && onToggleOpsPanel && (
@@ -2879,12 +2932,12 @@ const DataHallDesigner = ({
                 onClick={onToggleOpsPanel}
                 className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 whitespace-nowrap ${
                   opsPanelOpen
-                    ? 'bg-[#233544] text-white'
+                    ? 'bg-px-stroke text-white'
                     : 'text-slate-500 hover:text-slate-300'
                 }`}
                 title="Alerts, environment & attention queue"
               >
-                <span className="material-icons-outlined text-sm">dashboard</span>
+                <Icon className="material-icons-outlined text-sm">dashboard</Icon>
                 Ops Panel
               </button>
             )}
@@ -2894,11 +2947,11 @@ const DataHallDesigner = ({
                 onClick={() => setShowLabels(!showLabels)}
                 className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 whitespace-nowrap ${
                   showLabels
-                    ? 'bg-[#233544] text-white'
+                    ? 'bg-px-stroke text-white'
                     : 'text-slate-500 hover:text-slate-300'
                 }`}
               >
-                <span className="material-icons-outlined text-sm">label</span>
+                <Icon className="material-icons-outlined text-sm">label</Icon>
                 Labels
               </button>
             )}
@@ -2908,11 +2961,11 @@ const DataHallDesigner = ({
                 onClick={() => setShowLightingPanel(!showLightingPanel)}
                 className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 whitespace-nowrap ${
                   showLightingPanel
-                    ? 'bg-[#233544] text-white'
+                    ? 'bg-px-stroke text-white'
                     : 'text-slate-500 hover:text-slate-300'
                 }`}
               >
-                <span className="material-icons-outlined text-sm">light_mode</span>
+                <Icon className="material-icons-outlined text-sm">light_mode</Icon>
                 Lighting
               </button>
             )}
@@ -2923,10 +2976,10 @@ const DataHallDesigner = ({
               <button
                 type="button"
                 onClick={() => onOpenIntegrations?.()}
-                className="flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-mono transition-all text-slate-500 hover:text-[#00E5FF]"
+                className="flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-mono transition-all text-slate-500 hover:text-px-accent"
                 title="Stencil integrations"
               >
-                <span className="material-icons-outlined text-sm">settings</span>
+                <Icon className="material-icons-outlined text-sm">settings</Icon>
                 Integrations
               </button>
             </div>
@@ -2934,117 +2987,117 @@ const DataHallDesigner = ({
 
           {/* Lighting panel — pops up from footer */}
           {!readOnly && !neuralMode && showLightingPanel && (
-            <div className="absolute bottom-full right-3 mb-1 z-40 bg-[#161E2E] border border-[#00E5FF]/50 rounded-lg p-4 w-80 shadow-xl max-h-[55vh] overflow-y-auto">
+            <div className="absolute bottom-full right-3 mb-1 z-40 bg-px-panel border border-px-accent/50 rounded-lg p-4 w-80 shadow-xl max-h-[55vh] overflow-y-auto">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-xs font-bold text-[#00E5FF] uppercase tracking-wider">Lighting Tuner</h3>
+                <h3 className="text-xs font-bold text-px-accent uppercase tracking-wider">Lighting Tuner</h3>
                 <button type="button" onClick={() => setShowLightingPanel(false)} className="text-slate-500 hover:text-white text-lg leading-none">×</button>
               </div>
             {/* Ambient Light */}
             <div className="mb-3">
               <div className="flex justify-between text-[10px] mb-1">
                 <span className="text-slate-400">Ambient</span>
-                <span className="text-[#00E5FF] font-mono">{lighting.ambient.toFixed(1)}</span>
+                <span className="text-px-accent font-mono">{lighting.ambient.toFixed(1)}</span>
               </div>
               <input type="range" min="0" max="3" step="0.1" value={lighting.ambient}
                 onChange={(e) => setLighting(l => ({ ...l, ambient: parseFloat(e.target.value) }))}
-                className="w-full h-1 bg-[#233544] rounded-lg appearance-none cursor-pointer accent-[#00E5FF]" />
+                className="w-full h-1 bg-px-stroke rounded-lg appearance-none cursor-pointer accent-px-accent" />
             </div>
             
             {/* Main Light - Intensity + Position */}
-            <div className="mb-4 p-2 bg-[#1a2535] rounded border border-[#233544]">
+            <div className="mb-4 p-2 bg-[#1a2535] rounded border border-px-stroke">
               <div className="flex justify-between text-[10px] mb-2">
                 <span className="text-amber-400 font-bold">Main Light</span>
-                <span className="text-[#00E5FF] font-mono">{lighting.main.toFixed(1)}</span>
+                <span className="text-px-accent font-mono">{lighting.main.toFixed(1)}</span>
               </div>
               <input type="range" min="0" max="4" step="0.1" value={lighting.main}
                 onChange={(e) => setLighting(l => ({ ...l, main: parseFloat(e.target.value) }))}
-                className="w-full h-1 bg-[#233544] rounded-lg appearance-none cursor-pointer accent-amber-400 mb-2" />
+                className="w-full h-1 bg-px-stroke rounded-lg appearance-none cursor-pointer accent-amber-400 mb-2" />
               <div className="grid grid-cols-3 gap-2 text-[9px]">
                 <div>
                   <span className="text-slate-500">X: {lighting.mainPos.x}</span>
                   <input type="range" min="-30" max="30" step="1" value={lighting.mainPos.x}
                     onChange={(e) => setLighting(l => ({ ...l, mainPos: { ...l.mainPos, x: parseFloat(e.target.value) } }))}
-                    className="w-full h-1 bg-[#233544] rounded-lg appearance-none cursor-pointer accent-red-400" />
+                    className="w-full h-1 bg-px-stroke rounded-lg appearance-none cursor-pointer accent-red-400" />
                 </div>
                 <div>
                   <span className="text-slate-500">Y: {lighting.mainPos.y}</span>
                   <input type="range" min="0" max="50" step="1" value={lighting.mainPos.y}
                     onChange={(e) => setLighting(l => ({ ...l, mainPos: { ...l.mainPos, y: parseFloat(e.target.value) } }))}
-                    className="w-full h-1 bg-[#233544] rounded-lg appearance-none cursor-pointer accent-green-400" />
+                    className="w-full h-1 bg-px-stroke rounded-lg appearance-none cursor-pointer accent-green-400" />
                 </div>
                 <div>
                   <span className="text-slate-500">Z: {lighting.mainPos.z}</span>
                   <input type="range" min="-30" max="30" step="1" value={lighting.mainPos.z}
                     onChange={(e) => setLighting(l => ({ ...l, mainPos: { ...l.mainPos, z: parseFloat(e.target.value) } }))}
-                    className="w-full h-1 bg-[#233544] rounded-lg appearance-none cursor-pointer accent-blue-400" />
+                    className="w-full h-1 bg-px-stroke rounded-lg appearance-none cursor-pointer accent-blue-400" />
                 </div>
               </div>
             </div>
             
             {/* Fill Light - Intensity + Position */}
-            <div className="mb-4 p-2 bg-[#1a2535] rounded border border-[#233544]">
+            <div className="mb-4 p-2 bg-[#1a2535] rounded border border-px-stroke">
               <div className="flex justify-between text-[10px] mb-2">
                 <span className="text-purple-400 font-bold">Fill Light</span>
-                <span className="text-[#00E5FF] font-mono">{lighting.fill.toFixed(1)}</span>
+                <span className="text-px-accent font-mono">{lighting.fill.toFixed(1)}</span>
               </div>
               <input type="range" min="0" max="3" step="0.1" value={lighting.fill}
                 onChange={(e) => setLighting(l => ({ ...l, fill: parseFloat(e.target.value) }))}
-                className="w-full h-1 bg-[#233544] rounded-lg appearance-none cursor-pointer accent-purple-400 mb-2" />
+                className="w-full h-1 bg-px-stroke rounded-lg appearance-none cursor-pointer accent-purple-400 mb-2" />
               <div className="grid grid-cols-3 gap-2 text-[9px]">
                 <div>
                   <span className="text-slate-500">X: {lighting.fillPos.x}</span>
                   <input type="range" min="-30" max="30" step="1" value={lighting.fillPos.x}
                     onChange={(e) => setLighting(l => ({ ...l, fillPos: { ...l.fillPos, x: parseFloat(e.target.value) } }))}
-                    className="w-full h-1 bg-[#233544] rounded-lg appearance-none cursor-pointer accent-red-400" />
+                    className="w-full h-1 bg-px-stroke rounded-lg appearance-none cursor-pointer accent-red-400" />
                 </div>
                 <div>
                   <span className="text-slate-500">Y: {lighting.fillPos.y}</span>
                   <input type="range" min="0" max="50" step="1" value={lighting.fillPos.y}
                     onChange={(e) => setLighting(l => ({ ...l, fillPos: { ...l.fillPos, y: parseFloat(e.target.value) } }))}
-                    className="w-full h-1 bg-[#233544] rounded-lg appearance-none cursor-pointer accent-green-400" />
+                    className="w-full h-1 bg-px-stroke rounded-lg appearance-none cursor-pointer accent-green-400" />
                 </div>
                 <div>
                   <span className="text-slate-500">Z: {lighting.fillPos.z}</span>
                   <input type="range" min="-30" max="30" step="1" value={lighting.fillPos.z}
                     onChange={(e) => setLighting(l => ({ ...l, fillPos: { ...l.fillPos, z: parseFloat(e.target.value) } }))}
-                    className="w-full h-1 bg-[#233544] rounded-lg appearance-none cursor-pointer accent-blue-400" />
+                    className="w-full h-1 bg-px-stroke rounded-lg appearance-none cursor-pointer accent-blue-400" />
                 </div>
               </div>
             </div>
             
             {/* Top Light - Intensity + Position */}
-            <div className="mb-3 p-2 bg-[#1a2535] rounded border border-[#233544]">
+            <div className="mb-3 p-2 bg-[#1a2535] rounded border border-px-stroke">
               <div className="flex justify-between text-[10px] mb-2">
                 <span className="text-cyan-400 font-bold">Top Light</span>
-                <span className="text-[#00E5FF] font-mono">{lighting.top.toFixed(1)}</span>
+                <span className="text-px-accent font-mono">{lighting.top.toFixed(1)}</span>
               </div>
               <input type="range" min="0" max="2" step="0.1" value={lighting.top}
                 onChange={(e) => setLighting(l => ({ ...l, top: parseFloat(e.target.value) }))}
-                className="w-full h-1 bg-[#233544] rounded-lg appearance-none cursor-pointer accent-cyan-400 mb-2" />
+                className="w-full h-1 bg-px-stroke rounded-lg appearance-none cursor-pointer accent-cyan-400 mb-2" />
               <div className="grid grid-cols-3 gap-2 text-[9px]">
                 <div>
                   <span className="text-slate-500">X: {lighting.topPos.x}</span>
                   <input type="range" min="-30" max="30" step="1" value={lighting.topPos.x}
                     onChange={(e) => setLighting(l => ({ ...l, topPos: { ...l.topPos, x: parseFloat(e.target.value) } }))}
-                    className="w-full h-1 bg-[#233544] rounded-lg appearance-none cursor-pointer accent-red-400" />
+                    className="w-full h-1 bg-px-stroke rounded-lg appearance-none cursor-pointer accent-red-400" />
                 </div>
                 <div>
                   <span className="text-slate-500">Y: {lighting.topPos.y}</span>
                   <input type="range" min="0" max="50" step="1" value={lighting.topPos.y}
                     onChange={(e) => setLighting(l => ({ ...l, topPos: { ...l.topPos, y: parseFloat(e.target.value) } }))}
-                    className="w-full h-1 bg-[#233544] rounded-lg appearance-none cursor-pointer accent-green-400" />
+                    className="w-full h-1 bg-px-stroke rounded-lg appearance-none cursor-pointer accent-green-400" />
                 </div>
                 <div>
                   <span className="text-slate-500">Z: {lighting.topPos.z}</span>
                   <input type="range" min="-30" max="30" step="1" value={lighting.topPos.z}
                     onChange={(e) => setLighting(l => ({ ...l, topPos: { ...l.topPos, z: parseFloat(e.target.value) } }))}
-                    className="w-full h-1 bg-[#233544] rounded-lg appearance-none cursor-pointer accent-blue-400" />
+                    className="w-full h-1 bg-px-stroke rounded-lg appearance-none cursor-pointer accent-blue-400" />
                 </div>
               </div>
             </div>
             
             {/* Current Values Display */}
-            <div className="mt-3 pt-3 border-t border-[#233544]">
+            <div className="mt-3 pt-3 border-t border-px-stroke">
               <p className="text-[8px] text-slate-500 leading-relaxed">
                 Intensity: A:{lighting.ambient} M:{lighting.main} F:{lighting.fill} T:{lighting.top}<br/>
                 MainPos: ({lighting.mainPos.x},{lighting.mainPos.y},{lighting.mainPos.z})<br/>

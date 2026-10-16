@@ -1,3 +1,4 @@
+import Icon from './presentation/Icon';
 import React, { useState, useEffect, useCallback } from 'react';
 
 const API_BASE = '';
@@ -75,9 +76,9 @@ export default function HubSharePanel() {
 
   return (
     <div className="space-y-5">
-      <div className="p-4 rounded-xl bg-[#0B1120] border border-[#233544]">
-        <h3 className="text-xs font-bold text-[#00E5FF] uppercase tracking-wider mb-1 flex items-center gap-2">
-          <span className="material-icons-outlined text-sm">hub</span>
+      <div className="p-4 rounded-xl bg-app-bg border border-px-stroke">
+        <h3 className="text-xs font-bold text-px-accent uppercase tracking-wider mb-1 flex items-center gap-2">
+          <Icon className="material-icons-outlined text-sm">hub</Icon>
           Coordinator Hub
         </h3>
         <p className="text-[10px] text-slate-500 mb-4">
@@ -86,12 +87,12 @@ export default function HubSharePanel() {
 
         {shareUrl ? (
           <div className="space-y-3">
-            <div className="flex items-center gap-2 p-3 rounded-lg bg-[#161E2E] border border-[#00E5FF]/30">
-              <span className="material-icons-outlined text-[#00E5FF] text-sm shrink-0">link</span>
+            <div className="flex items-center gap-2 p-3 rounded-lg bg-px-panel border border-px-accent/30">
+              <Icon className="material-icons-outlined text-px-accent text-sm shrink-0">link</Icon>
               <code className="text-xs text-white font-mono flex-1 truncate">{shareUrl}</code>
               <button
                 onClick={copyLink}
-                className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/40 hover:bg-[#00E5FF]/30 transition-colors"
+                className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold bg-px-accent/20 text-px-accent border border-px-accent/40 hover:bg-px-accent/30 transition-colors"
               >
                 {copied ? 'Copied!' : 'Copy'}
               </button>
@@ -108,7 +109,7 @@ export default function HubSharePanel() {
         )}
       </div>
 
-      <div className="flex items-center justify-between p-4 rounded-xl bg-[#0B1120] border border-[#233544]">
+      <div className="flex items-center justify-between p-4 rounded-xl bg-app-bg border border-px-stroke">
         <div>
           <p className="text-xs text-white font-medium">Viewer link enabled</p>
           <p className="text-[10px] text-slate-500 mt-0.5">When off, /view shows access denied</p>
@@ -122,19 +123,19 @@ export default function HubSharePanel() {
         </button>
       </div>
 
-      <div className="p-4 rounded-xl bg-[#0B1120] border border-[#233544]">
+      <div className="p-4 rounded-xl bg-app-bg border border-px-stroke">
         <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">Setup checklist</p>
         <ul className="space-y-2 text-[10px] text-slate-400">
           <li className="flex items-start gap-2">
-            <span className="material-icons-outlined text-emerald-400 text-xs mt-0.5">check_circle</span>
+            <Icon className="material-icons-outlined text-emerald-400 text-xs mt-0.5">check_circle</Icon>
             Keep PDUMind running on this laptop while colleagues view
           </li>
           <li className="flex items-start gap-2">
-            <span className="material-icons-outlined text-emerald-400 text-xs mt-0.5">check_circle</span>
+            <Icon className="material-icons-outlined text-emerald-400 text-xs mt-0.5">check_circle</Icon>
             Allow inbound TCP 3000 on Windows Firewall (Private network)
           </li>
           <li className="flex items-start gap-2">
-            <span className="material-icons-outlined text-emerald-400 text-xs mt-0.5">check_circle</span>
+            <Icon className="material-icons-outlined text-emerald-400 text-xs mt-0.5">check_circle</Icon>
             Colleagues open the link in Chrome — bookmark it
           </li>
         </ul>

@@ -2,7 +2,7 @@ import React from 'react';
 import { WEB_ACCESS_MODES } from '../constants/pduSettings';
 
 const fieldClass =
-  'w-full bg-[#161E2E] border border-[#233544] rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-[#00E5FF]';
+  'w-full bg-px-panel border border-px-stroke rounded px-2 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-px-accent';
 
 /**
  * Web access settings matching sys_http.html (HTTP/HTTPS select + ports).

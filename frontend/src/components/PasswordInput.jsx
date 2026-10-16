@@ -1,3 +1,4 @@
+import Icon from './presentation/Icon';
 import React, { useState } from 'react';
 
 /** Password field with optional show/hide toggle. */
@@ -28,11 +29,11 @@ export default function PasswordInput({
         <button
           type="button"
           onClick={() => setVisible(v => !v)}
-          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-[#00E5FF] transition-colors"
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-px-accent transition-colors"
           title={visible ? 'Hide password' : 'Show password'}
           tabIndex={-1}
         >
-          <span className="material-icons-outlined text-sm">{visible ? 'visibility_off' : 'visibility'}</span>
+          <Icon className="material-icons-outlined text-sm">{visible ? 'visibility_off' : 'visibility'}</Icon>
         </button>
       )}
     </div>

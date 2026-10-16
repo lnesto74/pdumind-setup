@@ -1,0 +1,23 @@
+Agoda-2 SNMP check — Windows
+
+Run this on the Windows PC while it is connected to the VPN.
+The script only reads the 14 PDUs. It does not change them.
+The passphrases are typed when the script asks. They are not saved.
+
+1. Install Net-SNMP for Windows (64-bit), if snmpget is not already installed.
+   https://sourceforge.net/projects/net-snmp/files/net-snmp%20binaries/
+   Use the default folder. That puts snmpget here:
+   C:\usr\bin\snmpget.exe
+
+2. Put agoda-snmp-reachability.ps1 in a folder, for example Downloads.
+
+3. Open PowerShell in that folder and run:
+
+   powershell -ExecutionPolicy Bypass -File .\agoda-snmp-reachability.ps1
+
+4. When it asks, paste the SHA passphrase, then the AES passphrase.
+   User is pduuser. Auth is SHA. Privacy is AES.
+
+5. It takes about one minute and writes
+   agoda-snmp-report-<date>.txt
+   in the same folder. Send that txt file back.

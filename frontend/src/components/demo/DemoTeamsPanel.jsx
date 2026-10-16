@@ -1,3 +1,4 @@
+import Icon from '../presentation/Icon';
 import React, { useCallback, useEffect, useState } from 'react';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -22,10 +23,10 @@ function DisciplineColumn({ hall, discipline, subscribers, onMove }) {
     .filter(Boolean);
 
   return (
-    <div className="rounded-xl border border-[#233544] bg-[#161E2E]/60 p-3 min-w-[140px] flex-shrink-0">
+    <div className="rounded-xl border border-px-stroke bg-px-panel/60 p-3 min-w-[140px] flex-shrink-0">
       <div className="flex items-center justify-between mb-2">
         <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wide">{discipline.label}</span>
-        <span className="text-[9px] font-mono text-[#00E5FF]">{members.length}</span>
+        <span className="text-[9px] font-mono text-px-accent">{members.length}</span>
       </div>
       {discipline.next_primary_name && (
         <p className="text-[9px] text-emerald-400/90 mb-2 truncate" title="Next round-robin primary">
@@ -41,7 +42,7 @@ function DisciplineColumn({ hall, discipline, subscribers, onMove }) {
                 ? 'border-dashed border-slate-600 text-slate-500'
                 : m.telegram_linked
                   ? 'border-emerald-500/30 text-slate-200 bg-emerald-500/5'
-                  : 'border-[#233544] text-slate-400'
+                  : 'border-px-stroke text-slate-400'
             }`}
           >
             <span className="truncate flex-1">{m.display_name}</span>
@@ -165,7 +166,7 @@ export default function DemoTeamsPanel({ apiPrefix = '/api/demo' }) {
     <div className="h-full overflow-y-auto p-6 max-w-6xl">
       <div className="mb-6">
         <h2 className="text-lg font-bold text-white flex items-center gap-2">
-          <span className="material-icons-outlined text-[#00E5FF]">groups</span>
+          <Icon className="material-icons-outlined text-px-accent">groups</Icon>
           Ops Teams
         </h2>
         <p className="text-sm text-slate-500 mt-1 max-w-2xl">
@@ -190,8 +191,8 @@ export default function DemoTeamsPanel({ apiPrefix = '/api/demo' }) {
           { label: 'Roster', value: subscribers.length, icon: 'badge' },
           { label: 'Live Telegram', value: activeCount, icon: 'send' },
         ].map((s) => (
-          <div key={s.label} className="rounded-xl border border-[#233544] bg-[#161E2E] p-4">
-            <span className="material-icons-outlined text-slate-500 text-sm">{s.icon}</span>
+          <div key={s.label} className="rounded-xl border border-px-stroke bg-px-panel p-4">
+            <Icon className="material-icons-outlined text-slate-500 text-sm">{s.icon}</Icon>
             <p className="text-2xl font-mono font-bold text-white mt-1">{s.value}</p>
             <p className="text-[10px] uppercase text-slate-500 tracking-wider">{s.label}</p>
           </div>
@@ -206,9 +207,9 @@ export default function DemoTeamsPanel({ apiPrefix = '/api/demo' }) {
             <button
               type="button"
               onClick={() => copyInvite(hall)}
-              className="ml-auto text-xs px-3 py-1.5 rounded-lg border border-[#00E5FF]/30 text-[#00E5FF] hover:bg-[#00E5FF]/10 flex items-center gap-1"
+              className="ml-auto text-xs px-3 py-1.5 rounded-lg border border-px-accent/30 text-px-accent hover:bg-px-accent/10 flex items-center gap-1"
             >
-              <span className="material-icons-outlined text-sm">link</span>
+              <Icon className="material-icons-outlined text-sm">link</Icon>
               {copiedToken === hall.id ? 'Copied!' : 'Copy subscribe link'}
             </button>
           </div>
@@ -231,9 +232,9 @@ export default function DemoTeamsPanel({ apiPrefix = '/api/demo' }) {
         </section>
       ))}
 
-      <section className="mb-8 rounded-xl border border-[#233544] bg-[#161E2E] p-5">
+      <section className="mb-8 rounded-xl border border-px-stroke bg-px-panel p-5">
         <h3 className="text-sm font-bold text-white mb-1 flex items-center gap-2">
-          <span className="material-icons-outlined text-amber-400 text-base">schedule</span>
+          <Icon className="material-icons-outlined text-amber-400 text-base">schedule</Icon>
           Escalation policy
         </h3>
         <p className="text-[11px] text-slate-500 mb-4">Agoda defaults — reminder → hall lead → secondary pool → all ops</p>
@@ -254,7 +255,7 @@ export default function DemoTeamsPanel({ apiPrefix = '/api/demo' }) {
                     step={30}
                     value={policyDraft[key] ?? ''}
                     onChange={(e) => setPolicyDraft({ ...policyDraft, [key]: parseInt(e.target.value, 10) || 0 })}
-                    className="w-full bg-[#0B1120] border border-[#233544] rounded-lg px-3 py-2 text-sm font-mono text-white"
+                    className="w-full bg-app-bg border border-px-stroke rounded-lg px-3 py-2 text-sm font-mono text-white"
                   />
                   <span className="text-[10px] text-slate-600 whitespace-nowrap">{fmtSec(policyDraft[key])}</span>
                 </div>
@@ -266,18 +267,18 @@ export default function DemoTeamsPanel({ apiPrefix = '/api/demo' }) {
           type="button"
           onClick={savePolicy}
           disabled={savingPolicy}
-          className="mt-4 px-4 py-2 rounded-lg bg-[#00E5FF]/20 border border-[#00E5FF]/40 text-[#00E5FF] text-sm font-medium hover:bg-[#00E5FF]/30 disabled:opacity-50"
+          className="mt-4 px-4 py-2 rounded-lg bg-px-accent/20 border border-px-accent/40 text-px-accent text-sm font-medium hover:bg-px-accent/30 disabled:opacity-50"
         >
           {savingPolicy ? 'Saving…' : 'Save escalation policy'}
         </button>
       </section>
 
-      <section className="rounded-xl border border-[#233544] bg-[#161E2E]/40 p-5">
+      <section className="rounded-xl border border-px-stroke bg-px-panel/40 p-5">
         <h3 className="text-sm font-bold text-white mb-3">Subscriber roster</h3>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
-              <tr className="text-left text-slate-500 border-b border-[#233544]">
+              <tr className="text-left text-slate-500 border-b border-px-stroke">
                 <th className="pb-2 pr-4">Name</th>
                 <th className="pb-2 pr-4">Discipline</th>
                 <th className="pb-2 pr-4">Halls</th>
@@ -286,7 +287,7 @@ export default function DemoTeamsPanel({ apiPrefix = '/api/demo' }) {
             </thead>
             <tbody>
               {subscribers.map((s) => (
-                <tr key={s.id} className="border-b border-[#233544]/50 text-slate-300">
+                <tr key={s.id} className="border-b border-px-stroke/50 text-slate-300">
                   <td className="py-2 pr-4">{s.display_name}</td>
                   <td className="py-2 pr-4">{s.discipline_label || s.discipline}</td>
                   <td className="py-2 pr-4 font-mono text-[10px]">{(s.hall_ids || []).join(', ')}</td>

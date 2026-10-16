@@ -1,3 +1,4 @@
+import Icon from './presentation/Icon';
 import React, { useState, useEffect, useCallback } from 'react';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -104,15 +105,15 @@ const RecordReplayControls = ({ isDemoSession = false, selectedHallId, onReplayL
   // --- Admin / real session: record button -------------------------------
   if (!isDemoSession) {
     return (
-      <div className="pt-3 mt-3 border-t border-[#233544]">
+      <div className="pt-3 mt-3 border-t border-px-stroke">
         <button
           type="button"
           onClick={recordHall}
           disabled={busy || !selectedHallId}
-          className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-[11px] font-bold uppercase tracking-wide bg-[#161E2E] border border-[#00E5FF]/30 text-[#00E5FF] hover:bg-[#00E5FF]/10 disabled:opacity-50 transition-all"
+          className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-[11px] font-bold uppercase tracking-wide bg-px-panel border border-px-accent/30 text-px-accent hover:bg-px-accent/10 disabled:opacity-50 transition-all"
           title="Capture this hall's layout + last 24h telemetry for a future demo"
         >
-          <span className={`material-icons-outlined text-sm ${busy ? 'animate-pulse' : ''}`}>fiber_manual_record</span>
+          <Icon className={`material-icons-outlined text-sm ${busy ? 'animate-pulse' : ''}`}>fiber_manual_record</Icon>
           {busy ? 'Recording…' : 'Record hall for demo'}
         </button>
         {msg && (
@@ -124,17 +125,17 @@ const RecordReplayControls = ({ isDemoSession = false, selectedHallId, onReplayL
 
   // --- Demo session: replay picker ---------------------------------------
   return (
-    <div className="pt-3 mt-3 border-t border-[#233544]">
+    <div className="pt-3 mt-3 border-t border-px-stroke">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center justify-between py-2 px-2 rounded-lg text-[11px] font-bold uppercase tracking-wide text-slate-400 hover:text-[#00E5FF] hover:bg-[#161E2E] transition-all"
+        className="w-full flex items-center justify-between py-2 px-2 rounded-lg text-[11px] font-bold uppercase tracking-wide text-slate-400 hover:text-px-accent hover:bg-px-panel transition-all"
       >
         <span className="flex items-center gap-2">
-          <span className="material-icons-outlined text-sm">smart_display</span>
+          <Icon className="material-icons-outlined text-sm">smart_display</Icon>
           Recorded halls
         </span>
-        <span className={`material-icons-outlined text-sm transition-transform ${open ? 'rotate-180' : ''}`}>expand_more</span>
+        <Icon className={`material-icons-outlined text-sm transition-transform ${open ? 'rotate-180' : ''}`}>expand_more</Icon>
       </button>
 
       {replayStatus.active && (
@@ -167,11 +168,11 @@ const RecordReplayControls = ({ isDemoSession = false, selectedHallId, onReplayL
                 type="button"
                 onClick={() => playSnapshot(s.filename)}
                 disabled={busy}
-                className="w-full text-left p-2 rounded-lg border border-[#233544] bg-[#161E2E]/50 hover:border-[#00E5FF]/40 hover:bg-[#161E2E] transition-all disabled:opacity-50"
+                className="w-full text-left p-2 rounded-lg border border-px-stroke bg-px-panel/50 hover:border-px-accent/40 hover:bg-px-panel transition-all disabled:opacity-50"
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] font-medium text-slate-200 truncate">{s.source_hall || s.hall_name}</span>
-                  <span className="material-icons-outlined text-[#00E5FF] text-sm flex-shrink-0">play_arrow</span>
+                  <Icon className="material-icons-outlined text-px-accent text-sm flex-shrink-0">play_arrow</Icon>
                 </div>
                 <p className="text-[9px] text-slate-500 mt-0.5">
                   {s.pdu_count} PDUs · {s.frame_count} samples · {s.captured_at ? new Date(s.captured_at).toLocaleString() : ''}

@@ -1,3 +1,4 @@
+import Icon from '../presentation/Icon';
 import React from 'react';
 import PduMonitoringTree from './PduMonitoringTree';
 
@@ -39,8 +40,8 @@ export default function DemoFleetPanel({
   return (
     <div className="flex flex-1 min-h-0 w-full overflow-hidden">
       {/* PDU list */}
-      <div className="w-[min(320px,32vw)] min-w-[280px] max-w-[360px] flex-shrink-0 border-r border-[#233544] bg-[#0B1120] flex flex-col min-h-0">
-        <div className="px-4 py-3 border-b border-[#233544] flex-shrink-0">
+      <div className="px-fleet-list">
+        <div className="px-4 py-3 border-b border-px-stroke flex-shrink-0">
           <h2 className="text-xs font-bold text-white uppercase tracking-wider mb-2.5">Fleet PDUs</h2>
           <div className="flex gap-1.5">
             {[
@@ -52,8 +53,8 @@ export default function DemoFleetPanel({
                 key={f.id}
                 type="button"
                 onClick={() => onPduFilterChange(f.id)}
-                className={`flex-1 py-1.5 text-[10px] rounded-md uppercase font-bold tracking-wide ${
-                  pduFilter === f.id ? 'bg-[#00E5FF]/20 text-[#00E5FF]' : 'text-slate-500 hover:bg-[#161E2E]'
+                className={`flex-1 py-1.5 text-[11px] rounded-md uppercase font-bold tracking-wide ${
+                  pduFilter === f.id ? 'bg-px-accent/20 text-px-accent' : 'text-slate-500 hover:bg-px-panel'
                 }`}
               >
                 {f.label}
@@ -79,17 +80,17 @@ export default function DemoFleetPanel({
       </div>
 
       {/* Detail pane */}
-      <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-[#0B1120]">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-app-bg">
         {!selected ? (
           <div className="flex-1 flex items-center justify-center text-slate-600 text-sm">
             Select a PDU from the fleet list
           </div>
         ) : (
           <>
-            <div className="flex-shrink-0 border-b border-[#233544] px-5 py-3 bg-[#0B1120]">
+            <div className="flex-shrink-0 border-b border-px-stroke px-5 py-3 bg-app-bg">
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-3">
                 <div className="flex items-center gap-2 min-w-0 flex-1">
-                  <span className="material-icons-outlined text-[#00E5FF] text-xl">dns</span>
+                  <Icon className="material-icons-outlined text-px-accent text-xl">dns</Icon>
                   <div className="min-w-0">
                     <p className="text-base font-bold text-white truncate">{selected.label || selected.ip}</p>
                     <p className="text-[11px] font-mono text-slate-500 truncate">
@@ -98,7 +99,7 @@ export default function DemoFleetPanel({
                     </p>
                   </div>
                 </div>
-                <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase ${
+                <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold uppercase ${
                   pduLiveStatus[selected.ip] === 'online'
                     ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
                     : 'bg-slate-500/15 text-slate-400 border border-slate-500/30'
@@ -107,7 +108,7 @@ export default function DemoFleetPanel({
                   {pduLiveStatus[selected.ip] === 'online' ? 'Live' : 'Offline'}
                 </span>
               </div>
-              <div className="flex gap-1.5 flex-wrap">
+              <div className="px-tabs">
                 {PDU_TABS.map((tab) => {
                   const alarmCount = tab.id === 'warnings' ? (pduAlarms[selected.ip]?.count || 0) : 0;
                   const disabled = tab.id === 'pdu-settings' && !selected.dbId;
@@ -115,21 +116,21 @@ export default function DemoFleetPanel({
                     <button
                       key={tab.id}
                       type="button"
-                      disabled={disabled}
+                      aria-pressed={activeTab===tab.id} disabled={disabled}
                       onClick={() => onTabChange(tab.id)}
                       className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${
                         disabled ? 'opacity-40 cursor-not-allowed text-slate-600'
                           : activeTab === tab.id
-                            ? 'bg-[#00E5FF]/15 text-[#00E5FF] border border-[#00E5FF]/40'
+                            ? 'bg-px-accent/15 text-px-accent border border-px-accent/40'
                             : alarmCount > 0
                               ? 'text-red-400 bg-red-500/10 border border-red-500/30'
-                              : 'text-slate-400 hover:bg-[#161E2E] border border-transparent'
+                              : 'text-slate-400 hover:bg-px-panel border border-transparent'
                       }`}
                     >
-                      <span className="material-icons-outlined text-sm">{tab.icon}</span>
+                      <Icon className="material-icons-outlined text-sm">{tab.icon}</Icon>
                       {tab.label}
                       {alarmCount > 0 && (
-                        <span className="text-[9px] font-mono bg-red-500 text-white px-1 rounded">{alarmCount}</span>
+                        <span className="text-[10px] font-mono bg-red-500 text-white px-1 rounded">{alarmCount}</span>
                       )}
                     </button>
                   );

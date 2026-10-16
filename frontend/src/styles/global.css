@@ -4,12 +4,12 @@
 
 @layer base {
   html {
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-family: 'Aeonik Pro', 'IBM Plex Sans', Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
   code, pre, .font-mono {
-    font-family: 'JetBrains Mono', Menlo, Monaco, monospace;
+    font-family: 'Aeonik Mono', ui-monospace, monospace;
   }
 }
 
@@ -53,7 +53,7 @@
 }
 
 body {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: 'Aeonik Pro', 'IBM Plex Sans', Arial, sans-serif;
   background: #0f172a;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;

@@ -1,3 +1,4 @@
+import Icon from './presentation/Icon';
 import React, { useState, useEffect } from 'react';
 import PasswordInput from './PasswordInput';
 
@@ -92,11 +93,11 @@ export default function LoginPage({ onLogin, version }) {
     }
   };
 
-  const inputClass = 'w-full px-3 py-2.5 rounded-lg bg-[#0B1120] border border-[#233544] text-white text-sm focus:border-[#00E5FF] focus:outline-none transition-colors';
+  const inputClass = 'w-full px-3 py-2.5 rounded-lg bg-app-bg border border-px-stroke text-white text-sm focus:border-px-accent focus:outline-none transition-colors';
   const pwInputClass = `${inputClass} pr-9`;
 
   return (
-    <div className="min-h-screen bg-[#0B1120] flex flex-col items-center justify-center px-4">
+    <div className="min-h-screen bg-app-bg flex flex-col items-center justify-center px-4">
       <div className="w-full max-w-sm">
         <div className="text-center mb-10">
           <img src="/logo/pdumind-logo-2.png" alt="PDUMind" className="h-12 mx-auto mb-6" />
@@ -105,15 +106,15 @@ export default function LoginPage({ onLogin, version }) {
 
         {!showSetup ? (
           <form onSubmit={handleLogin} className="space-y-5">
-            <div className="p-6 rounded-xl bg-[#0f172a] border border-[#233544]">
+            <div className="p-6 rounded-xl bg-[#0f172a] border border-px-stroke">
               <h2 className="text-sm font-bold text-white mb-5 flex items-center gap-2">
-                <span className="material-icons-outlined text-[#00E5FF] text-lg">lock</span>
+                <Icon className="material-icons-outlined text-px-accent text-lg">lock</Icon>
                 Sign In
               </h2>
 
               {error && (
                 <div className="mb-4 px-3 py-2 rounded-lg bg-red-500/15 border border-red-500/30 text-red-400 text-xs flex items-center gap-2">
-                  <span className="material-icons-outlined text-sm">error</span>
+                  <Icon className="material-icons-outlined text-sm">error</Icon>
                   {error}
                 </div>
               )}
@@ -146,7 +147,7 @@ export default function LoginPage({ onLogin, version }) {
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full mt-5 py-2.5 rounded-lg bg-[#00E5FF] text-[#0B1120] font-bold text-sm uppercase tracking-wider hover:bg-[#00d4eb] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full mt-5 py-2.5 rounded-lg bg-px-accent text-app-bg font-bold text-sm uppercase tracking-wider hover:bg-[#00d4eb] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {loading ? 'Signing in...' : 'Sign In'}
               </button>
@@ -154,9 +155,9 @@ export default function LoginPage({ onLogin, version }) {
           </form>
         ) : (
           <form onSubmit={handleCompleteSetup} className="space-y-5">
-            <div className="p-6 rounded-xl bg-[#0f172a] border border-[#233544]">
+            <div className="p-6 rounded-xl bg-[#0f172a] border border-px-stroke">
               <h2 className="text-sm font-bold text-white mb-2 flex items-center gap-2">
-                <span className="material-icons-outlined text-amber-400 text-lg">manage_accounts</span>
+                <Icon className="material-icons-outlined text-amber-400 text-lg">manage_accounts</Icon>
                 Account Setup
               </h2>
               <p className="text-xs text-slate-500 mb-5">
@@ -165,7 +166,7 @@ export default function LoginPage({ onLogin, version }) {
 
               {setupError && (
                 <div className="mb-4 px-3 py-2 rounded-lg bg-red-500/15 border border-red-500/30 text-red-400 text-xs flex items-center gap-2">
-                  <span className="material-icons-outlined text-sm">error</span>
+                  <Icon className="material-icons-outlined text-sm">error</Icon>
                   {setupError}
                 </div>
               )}
@@ -208,7 +209,7 @@ export default function LoginPage({ onLogin, version }) {
 
               <button
                 type="submit"
-                className="w-full mt-5 py-2.5 rounded-lg bg-[#00E5FF] text-[#0B1120] font-bold text-sm uppercase tracking-wider hover:bg-[#00d4eb] transition-colors"
+                className="w-full mt-5 py-2.5 rounded-lg bg-px-accent text-app-bg font-bold text-sm uppercase tracking-wider hover:bg-[#00d4eb] transition-colors"
               >
                 Save & Continue
               </button>

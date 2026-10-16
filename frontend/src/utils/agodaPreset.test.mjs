@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {AGODA_PRESET,savedAppearanceLayout} from './agodaPreset.js';
+assert.equal(AGODA_PRESET.defaultEnabled,false);
+const pdu={id:'actual-device',position:'C'}, rack={id:'layout-id',dbRackId:81,label:'Existing name',rowIndex:0,positionInRow:0,position:{x:1,y:0,z:2},dimensions:{width:.6,height:1.8669,depth:1},heightU:42,pdus:[pdu]};
+const layout={racks:[rack],hall:{length:20,width:25,height:3.5}};
+const before=JSON.stringify(layout);
+const result=savedAppearanceLayout(layout,[{id:81,x_m:0,y_m:.02,z_m:5,rotation_deg:90,width_mm:800,depth_mm:1200,height_u:48}]);
+assert.deepEqual(result.racks[0].position,{x:0,y:.02,z:5});
+assert.equal(result.racks[0].rotationY,Math.PI/2);assert.equal(result.racks[0].dimensions.width,.8);
+assert.equal(result.racks[0].dimensions.height,48*.04445);
+assert.equal(result.racks[0].pdus,rack.pdus);assert.equal(result.racks[0].id,rack.id);assert.equal(result.racks[0].label,rack.label);
+assert.equal(JSON.stringify(layout),before);assert.equal(savedAppearanceLayout(layout,[]),layout);
+const invalid=savedAppearanceLayout(layout,[{id:81,x_m:null,y_m:'bad',width_mm:0,depth_mm:-1,height_u:null}]);
+assert.deepEqual(invalid.racks[0].position,rack.position);assert.deepEqual(invalid.racks[0].dimensions,rack.dimensions);
+console.log('PASS: manual default, saved coordinates including zero, yaw, dimensions, stable IDs/assignments, invalid values, immutable source.');

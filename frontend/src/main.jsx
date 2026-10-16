@@ -2,10 +2,12 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import './api'; // patches fetch/axios with coordinator auth token
 import App from './App';
+import {WorkspaceProvider} from './components/presentation/Workspace';
 import FleetCommandCenter from './components/FleetCommandCenter';
 import MobileIncidentPage from './components/MobileIncidentPage';
 import SubscribeLandingPage from './components/SubscribeLandingPage';
 import './styles/global.css';
+import './styles/hyperspace.css';
 
 const pathname = window.location.pathname;
 const isViewerRoute = pathname === '/view' || pathname.startsWith('/view/');
@@ -22,7 +24,7 @@ function Root() {
   if (isViewerRoute) {
     return <FleetCommandCenter />;
   }
-  return <App />;
+  return <WorkspaceProvider><App /></WorkspaceProvider>;
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(

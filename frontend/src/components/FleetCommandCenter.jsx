@@ -1,3 +1,4 @@
+import Icon from './presentation/Icon';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import DataHallDesigner from './DataHallDesigner/DataHallDesigner';
 
@@ -122,9 +123,9 @@ export default function FleetCommandCenter() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#0B1120] flex items-center justify-center">
+      <div className="min-h-screen bg-app-bg flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-pulse text-[#00E5FF] text-sm mb-2">Fleet Command Center</div>
+          <div className="animate-pulse text-px-accent text-sm mb-2">Fleet Command Center</div>
           <div className="text-slate-600 text-xs">Connecting to coordinator...</div>
         </div>
       </div>
@@ -133,9 +134,9 @@ export default function FleetCommandCenter() {
 
   if (error && !snapshot) {
     return (
-      <div className="min-h-screen bg-[#0B1120] flex items-center justify-center p-6">
-        <div className="max-w-md text-center p-8 rounded-2xl bg-[#0f172a] border border-[#233544]">
-          <span className="material-icons-outlined text-4xl text-amber-400 mb-4">link_off</span>
+      <div className="min-h-screen bg-app-bg flex items-center justify-center p-6">
+        <div className="max-w-md text-center p-8 rounded-2xl bg-[#0f172a] border border-px-stroke">
+          <Icon className="material-icons-outlined text-4xl text-amber-400 mb-4">link_off</Icon>
           <h1 className="text-white font-bold mb-2">Cannot connect</h1>
           <p className="text-sm text-slate-400 mb-4">{error}</p>
           <p className="text-xs text-slate-600">Ask your IT coordinator for the correct hub URL.</p>
@@ -145,16 +146,16 @@ export default function FleetCommandCenter() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0B1120] text-gray-200 flex flex-col">
+    <div className="min-h-screen bg-app-bg text-gray-200 flex flex-col">
       {/* Header */}
-      <header className="sticky top-0 z-50 bg-[#0B1120]/95 backdrop-blur border-b border-[#233544] px-6 py-3">
+      <header className="sticky top-0 z-50 bg-app-bg/95 backdrop-blur border-b border-px-stroke px-6 py-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
             <img src="/logo/pdumind-logo-2.png" alt="PDUMind" className="h-8 w-auto opacity-90" />
             <div>
               <h1 className="text-sm font-bold text-white flex items-center gap-2">
                 Fleet Command Center
-                <span className="text-[9px] font-normal px-2 py-0.5 rounded bg-[#00E5FF]/10 text-[#00E5FF] border border-[#00E5FF]/30 uppercase tracking-wider">
+                <span className="text-[9px] font-normal px-2 py-0.5 rounded bg-px-accent/10 text-px-accent border border-px-accent/30 uppercase tracking-wider">
                   Read-only
                 </span>
               </h1>
@@ -175,16 +176,16 @@ export default function FleetCommandCenter() {
 
       {/* Fleet stats */}
       {fleet && (
-        <div className="px-6 py-4 grid grid-cols-2 md:grid-cols-4 gap-3 border-b border-[#233544]/50">
+        <div className="px-6 py-4 grid grid-cols-2 md:grid-cols-4 gap-3 border-b border-px-stroke/50">
           {[
             { label: 'Fleet Health', value: `${fleet.avg_health_score}`, unit: '/100', icon: 'favorite', accent: healthColor(fleet.avg_health_score) },
             { label: 'PDUs Online', value: `${fleet.online_pdus}`, unit: `/${fleet.total_pdus}`, icon: 'power', accent: 'text-emerald-400' },
             { label: 'Active Alarms', value: `${fleet.alarm_count}`, unit: '', icon: 'notifications_active', accent: fleet.alarm_count > 0 ? 'text-red-400' : 'text-slate-500' },
             { label: 'Fleet Status', value: fleet.status, unit: '', icon: 'dashboard', accent: fleet.status === 'healthy' ? 'text-emerald-400' : fleet.status === 'warning' ? 'text-amber-400' : 'text-red-400' },
           ].map(stat => (
-            <div key={stat.label} className="p-3 rounded-xl bg-[#161E2E] border border-[#233544]">
+            <div key={stat.label} className="p-3 rounded-xl bg-px-panel border border-px-stroke">
               <div className="flex items-center gap-2 mb-1">
-                <span className={`material-icons-outlined text-sm ${stat.accent}`}>{stat.icon}</span>
+                <Icon className={`material-icons-outlined text-sm ${stat.accent}`}>{stat.icon}</Icon>
                 <span className="text-[9px] text-slate-500 uppercase tracking-wider">{stat.label}</span>
               </div>
               <div className={`text-xl font-bold font-mono capitalize ${stat.accent}`}>
@@ -198,10 +199,10 @@ export default function FleetCommandCenter() {
       {/* Main: attention list + 3D */}
       <div className="flex-1 flex min-h-0">
         {/* Attention list */}
-        <aside className="w-72 shrink-0 border-r border-[#233544] bg-[#0f172a] overflow-y-auto hidden lg:block">
-          <div className="p-4 border-b border-[#233544]">
+        <aside className="w-72 shrink-0 border-r border-px-stroke bg-[#0f172a] overflow-y-auto hidden lg:block">
+          <div className="p-4 border-b border-px-stroke">
             <h2 className="text-xs font-bold text-white flex items-center gap-2">
-              <span className="material-icons-outlined text-amber-400 text-sm">priority_high</span>
+              <Icon className="material-icons-outlined text-amber-400 text-sm">priority_high</Icon>
               Needs Attention
             </h2>
             <p className="text-[10px] text-slate-500 mt-1">Sorted by health score</p>
@@ -209,7 +210,7 @@ export default function FleetCommandCenter() {
           <div className="p-3 space-y-2">
             {(snapshot?.attention || []).length === 0 ? (
               <div className="text-center py-8 text-slate-600 text-xs">
-                <span className="material-icons-outlined text-2xl text-emerald-500/50 mb-2">verified</span>
+                <Icon className="material-icons-outlined text-2xl text-emerald-500/50 mb-2">verified</Icon>
                 <p>All PDUs healthy</p>
               </div>
             ) : (
@@ -223,7 +224,7 @@ export default function FleetCommandCenter() {
                     </div>
                     <p className="text-[10px] font-mono text-slate-500 mb-1">{pdu.ip}</p>
                     <div className="flex items-center gap-1">
-                      <span className={`material-icons-outlined text-xs ${si.color}`}>{si.icon}</span>
+                      <Icon className={`material-icons-outlined text-xs ${si.color}`}>{si.icon}</Icon>
                       <span className={`text-[10px] ${si.color}`}>
                         {pdu.issues?.[0] || pdu.status}
                       </span>
@@ -238,11 +239,11 @@ export default function FleetCommandCenter() {
           </div>
 
           {/* Full PDU list */}
-          <div className="p-4 border-t border-[#233544]">
+          <div className="p-4 border-t border-px-stroke">
             <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">All PDUs</h3>
             <div className="space-y-1">
               {(snapshot?.pdus || []).map(pdu => (
-                <div key={pdu.ip} className="flex items-center justify-between py-1.5 px-2 rounded hover:bg-[#161E2E]">
+                <div key={pdu.ip} className="flex items-center justify-between py-1.5 px-2 rounded hover:bg-px-panel">
                   <span className="text-[10px] text-slate-400 truncate flex-1">{pdu.label}</span>
                   <span className={`text-[10px] font-mono font-bold ml-2 ${healthColor(pdu.health_score)}`}>{pdu.health_score}</span>
                 </div>
@@ -266,7 +267,7 @@ export default function FleetCommandCenter() {
         </main>
       </div>
 
-      <footer className="border-t border-[#233544] px-6 py-2 flex justify-between text-[10px] text-slate-600 font-mono">
+      <footer className="border-t border-px-stroke px-6 py-2 flex justify-between text-[10px] text-slate-600 font-mono">
         <span>Powered by Aility Pte Ltd</span>
         <span>Viewer mode — coordinator login at /</span>
       </footer>

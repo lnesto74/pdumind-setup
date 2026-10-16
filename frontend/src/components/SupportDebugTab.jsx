@@ -1,3 +1,4 @@
+import Icon from './presentation/Icon';
 import React, { useState, useEffect, useCallback } from 'react';
 
 const API_BASE = '';
@@ -80,9 +81,9 @@ export default function SupportDebugTab() {
           <button
             onClick={fetchReport}
             disabled={loading}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-[#00E5FF] border border-[#233544] hover:border-[#00E5FF]/30 transition-colors disabled:opacity-50"
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-px-accent border border-px-stroke hover:border-px-accent/30 transition-colors disabled:opacity-50"
           >
-            <span className={`material-icons-outlined text-sm ${loading ? 'animate-spin' : ''}`}>refresh</span>
+            <Icon className={`material-icons-outlined text-sm ${loading ? 'animate-spin' : ''}`}>refresh</Icon>
             Refresh
           </button>
           <button
@@ -91,10 +92,10 @@ export default function SupportDebugTab() {
             className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors disabled:opacity-40 ${
               copied
                 ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                : 'bg-[#00E5FF]/10 text-[#00E5FF] border border-[#00E5FF]/30 hover:bg-[#00E5FF]/20'
+                : 'bg-px-accent/10 text-px-accent border border-px-accent/30 hover:bg-px-accent/20'
             }`}
           >
-            <span className="material-icons-outlined text-sm">{copied ? 'check' : 'content_copy'}</span>
+            <Icon className="material-icons-outlined text-sm">{copied ? 'check' : 'content_copy'}</Icon>
             {copied ? 'Copied!' : 'Copy Report'}
           </button>
         </div>
@@ -125,7 +126,7 @@ export default function SupportDebugTab() {
         <textarea
           readOnly
           value={report.text}
-          className="w-full h-[420px] p-4 rounded-xl bg-[#0B1120] border border-[#233544] text-[11px] font-mono text-slate-300 leading-relaxed resize-none focus:outline-none focus:border-[#00E5FF]/40"
+          className="w-full h-[420px] p-4 rounded-xl bg-app-bg border border-px-stroke text-[11px] font-mono text-slate-300 leading-relaxed resize-none focus:outline-none focus:border-px-accent/40"
           onClick={(e) => e.target.select()}
         />
       )}

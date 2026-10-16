@@ -133,8 +133,9 @@ def detect(ip: str, *, port: int = 80, username: str = "admin",
 
 def commission(ip: str, *, new_ip: str, mask: str, gateway: str, dns: str = "",
                hostname: str = "", username: str = "admin", password: str = "admin",
-               port: int = 80, do_reboot: bool = True) -> Dict[str, Any]:
-    """Full guided step: login → set device name → set static IPv4 → reboot."""
+               port: int = 80, do_reboot: bool = True,
+               snmp: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Full guided step: login → set device name → SNMPv3 → static IPv4 → reboot."""
     client = NPDUWebClient(ip, port, username, password)
     if not client.login():
         return {"success": False, "error": f"NPDU login failed for {username!r} at {ip}"}
@@ -142,22 +143,69 @@ def commission(ip: str, *, new_ip: str, mask: str, gateway: str, dns: str = "",
     cur = client.get_network_config()
     info = client.get_device_info()
     name_ok = True
+    device_name = ""
     if hostname:
+        device_name = short_device_name(hostname, NPDUWebClient.DEVICE_NAME_MAX)
         try:
             name_ok = client.set_system_config(device_name=hostname)
         except Exception:
             name_ok = False
+
+    snmp_ok = None
+    if snmp and (snmp.get("snmpv3") or snmp.get("snmpv3_username")):
+        try:
+            snmp_ok = client.set_snmp(**NPDUWebClient.prepare_snmp_kwargs(snmp))
+        except Exception:
+            snmp_ok = False
+        if not snmp_ok:
+            return {
+                "success": False,
+                "error": "SNMPv3 settings were rejected by the PDU",
+                "previous_ip": cur.get("current_ip"),
+                "mac": info.get("mac"),
+                "snmp_set": False,
+            }
 
     res = client.set_ipv4(new_ip, mask, gateway, dns or cur.get("current_dns1", ""))
     if not res:
         return {"success": False, "error": "setnet rejected by device",
                 "previous_ip": cur.get("current_ip"), "mac": info.get("mac")}
 
-    rebooted = client.reboot() if do_reboot else False
+    # Give the controller a moment to write flash, then restart. Static IPv4
+    # only binds after /setsys — skipping reboot leaves the LCD on factory IP.
+    _time.sleep(1.2)
+    pending = {}
+    try:
+        pending = client.get_network_config() or {}
+    except Exception:
+        pass
+    pending_ip = (pending.get("current_ip") or "").strip()
+    if pending_ip and pending_ip != new_ip:
+        print(f"[npdu] setnet OK but getnet still {pending_ip} (wanted {new_ip}) — rebooting anyway")
+
+    rebooted = False
+    if do_reboot:
+        rebooted = client.reboot()
+        if not rebooted:
+            _time.sleep(0.8)
+            try:
+                client.login()
+            except Exception:
+                pass
+            rebooted = client.reboot()
+        if not rebooted:
+            return {
+                "success": False,
+                "error": "Static IP was written but /setsys reboot failed — power-cycle the PDU",
+                "previous_ip": cur.get("current_ip"), "new_ip": new_ip,
+                "mac": info.get("mac"), "rebooted": False,
+            }
+
     return {
         "success": True, "mac": info.get("mac"),
         "previous_ip": cur.get("current_ip"), "new_ip": new_ip,
-        "hostname_set": name_ok, "rebooted": rebooted, "firmware": info.get("firmware"),
+        "hostname_set": name_ok, "device_name": device_name,
+        "snmp_set": snmp_ok, "rebooted": rebooted, "firmware": info.get("firmware"),
     }
 
 
@@ -227,6 +275,27 @@ class NPDUWebClient:
                 f"NPDU login failed after 5 retries ({self.base_url}, user={self.username})"
             )
 
+    @staticmethod
+    def _write_params(**params) -> Dict[str, str]:
+        """NPDU write CGIs require a trailing '&' (empty last field)."""
+        out = {k: ("" if v is None else str(v)) for k, v in params.items()}
+        out[""] = ""
+        return out
+
+    @staticmethod
+    def _raw_query(**params) -> str:
+        """Build the same query string as snmp.html ajaxget (unencoded $ ! @).
+
+        requests' params= percent-encodes those characters; this firmware then
+        stores '%24' / '%21' as the community or SNMPv3 secret.
+        """
+        parts = []
+        for key, val in params.items():
+            if key == "":
+                continue
+            parts.append(f"{key}={'' if val is None else val}")
+        return "&".join(parts) + "&"
+
     def _get(self, path: str, **params) -> List[str]:
         with self._lock:
             self._ensure_session()
@@ -238,20 +307,34 @@ class NPDUWebClient:
     def _cmd(self, path: str, **params) -> str:
         with self._lock:
             self._ensure_session()
-            r = self._session.get(f"{self.base_url}/{path}", params=params or None, timeout=self.timeout)
+            r = self._session.get(
+                f"{self.base_url}/{path}?{self._raw_query(**params)}",
+                timeout=self.timeout,
+            )
             r.raise_for_status()
             self._login_time = _time.time()
             return (r.text or "").strip()
 
     # -- reboot ----------------------------------------------------------
     def reboot(self) -> bool:
+        """Restart via GET /setsys?a=0& — required after setnet or the LCD/IP stay factory."""
         with self._lock:
             try:
                 if not self._logged_in:
                     self._ensure_session()
-                r = self._session.get(f"{self.base_url}/setsys", params={"a": "0", "": ""}, timeout=self.timeout)
+                r = self._session.get(
+                    f"{self.base_url}/setsys?{self._raw_query(a='0')}",
+                    timeout=self.timeout,
+                )
                 self._logged_in = False
-                return (r.text or "").strip() == "OK" or r.status_code == 200
+                body = (r.text or "").strip()
+                if body in ("OK", "OK1"):
+                    return True
+                # Some firmware drops the TCP session as soon as restart starts.
+                if not body:
+                    return True
+                print(f"[npdu] setsys reboot unexpected body={body[:80]!r} status={r.status_code}")
+                return False
             except requests.RequestException:
                 self._logged_in = False
                 return True  # connection dropped == device rebooting
@@ -316,7 +399,10 @@ class NPDUWebClient:
         resp = self._cmd("setnet", a="0", b=ip, c=mask,
                          d=gateway or cur["current_gateway"],
                          e=dns1 or cur["current_dns1"])
-        return resp == "OK"
+        if resp != "OK":
+            print(f"[npdu] setnet rejected body={resp[:80]!r} ip={ip}")
+            return False
+        return True
 
     def set_dhcp(self, enabled: bool) -> bool:
         cur = self.get_network_config()
@@ -355,6 +441,7 @@ class NPDUWebClient:
                  snmpv3_username: str | None = None, verify_protocol: str | None = None,
                  auth_key: str | None = None, encrypt_protocol: str | None = None,
                  priv_key: str | None = None, trap_ip: str | None = None,
+                 trap_ip2: str | None = None, log_mode: str | None = None,
                  *, verify: bool = True) -> bool:
         cur = self.get_snmp_config()
         # Exclusive firmware modes: 0 disable, 1 V1/V2c, 2 V3 (not 3).
@@ -376,11 +463,11 @@ class NPDUWebClient:
             b=write_community if write_community is not None else cur["community_write"],
             c=read_community if read_community is not None else cur["community_read"],
             d=trap_ip if trap_ip is not None else cur["trap_ip"],
-            e=cur["trap_ip2"],
+            e=trap_ip2 if trap_ip2 is not None else cur["trap_ip2"],
             f=snmpv3_username if snmpv3_username is not None else cur["snmpv3_username"],
             g=auth_key if auth_key is not None else cur["auth_key"],
             h=priv_key if priv_key is not None else cur["priv_key"],
-            i=cur["log_mode"] or "0",
+            i=log_mode if log_mode is not None else (cur["log_mode"] or "0"),
         )
         return resp == "OK"
 
@@ -395,7 +482,11 @@ class NPDUWebClient:
             "snmpv2": bool(snmp.get("snmpv2", snmp.get("snmpv2_enabled", True))),
             "snmpv3": bool(snmp.get("snmpv3", snmp.get("snmpv3_enabled", False))),
             "snmpv3_username": snmp.get("snmpv3_username"),
+            "auth_key": snmp.get("auth_key") or None,
+            "priv_key": snmp.get("priv_key") or None,
             "trap_ip": snmp.get("trap_ip", ""),
+            "trap_ip2": snmp.get("trap_ip2"),
+            "log_mode": snmp.get("log_mode"),
         }
 
     # -- time ------------------------------------------------------------

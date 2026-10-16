@@ -52,3 +52,11 @@ build/
 
 # Logs
 *.log
+
+# Local machine overrides (USB bridge etc.)
+docker-compose.override.yml
+
+# Customer delivery files and runtime data
+data/demo_*.json
+data/ops_*.json
+data/snapshots/

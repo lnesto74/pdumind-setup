@@ -6,14 +6,16 @@ export default {
   ],
   theme: {
     extend: {
+      borderRadius: {lg:'6px',xl:'6px','2xl':'8px'},
       colors: {
-        'app-bg': '#0f172a',
+        slate: {400:"#a9b1bb",500:"#8e98a5",600:"#76808d",700:"#586370"},
+        'app-bg': 'var(--px-bg)', 'px-panel': 'rgb(var(--px-panel-rgb) / <alpha-value>)', 'px-raised': 'rgb(var(--px-raised-rgb) / <alpha-value>)', 'px-stroke': 'rgb(var(--px-stroke-rgb) / <alpha-value>)', 'px-accent': 'rgb(var(--px-accent-rgb) / <alpha-value>)',
         'card-bg': '#1e293b',
         'highlight': '#0ea5e9',
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
-        mono: ['JetBrains Mono', 'Menlo', 'Monaco', 'monospace'],
+        sans: ['Aeonik Pro', 'IBM Plex Sans', 'Arial', 'sans-serif'],
+        mono: ['Aeonik Mono', 'ui-monospace', 'monospace'],
       },
     },
   },

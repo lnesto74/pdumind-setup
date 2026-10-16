@@ -1,3 +1,4 @@
+import Icon from './components/presentation/Icon';
 import { useState, useEffect, useCallback } from 'react';
 import Dashboard from './components/Dashboard';
 import Dashboard2 from './components/Dashboard2';
@@ -84,7 +85,7 @@ export default function App() {
 
   if (!authChecked) {
     return (
-      <div className="min-h-screen bg-[#0B1120] flex items-center justify-center">
+      <div className="min-h-screen bg-app-bg flex items-center justify-center">
         <div className="animate-pulse text-slate-500 text-sm">Loading...</div>
       </div>
     );
@@ -101,11 +102,11 @@ export default function App() {
           <>
             <div className="app-container bg-[#0f172a] text-gray-200 h-screen flex flex-col overflow-hidden">
               {/* Top navigation bar */}
-              <div className="flex-shrink-0 z-50 bg-[#0B1120] backdrop-blur-sm border-b border-[#233544] shadow-lg shadow-cyan-500/10">
+              <div className="px-app-header flex-shrink-0 z-50">
                 <div className="w-full px-6 py-2">
                   <nav className="flex items-center justify-between w-full">
                     <div className="flex items-center gap-4">
-                      <img src="/logo/pdumind-logo-2.png" alt="PDUMind Logo" className="h-10 w-auto" />
+                      <img src="/logo/pdumind-logo-2.png" alt="PDUMind Logo" className="h-7 w-auto" />
                       {user.demo_mode && (
                         <span className="text-[9px] font-bold uppercase tracking-widest px-2 py-1 rounded bg-fuchsia-500/20 text-fuchsia-300 border border-fuchsia-500/40">
                           Demo Mode
@@ -119,16 +120,16 @@ export default function App() {
                           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-fuchsia-300/90 hover:text-fuchsia-200 hover:bg-fuchsia-500/10 transition-colors border border-fuchsia-500/30"
                           title="Reset demo cage to factory state"
                         >
-                          <span className="material-icons-outlined text-sm">restart_alt</span>
+                          <Icon className="material-icons-outlined text-sm">restart_alt</Icon>
                           Reset Demo
                         </button>
                       )}
                       <button
                         onClick={() => setShowShare(true)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-[#00E5FF]/90 hover:text-[#00E5FF] hover:bg-[#00E5FF]/10 transition-colors border border-[#00E5FF]/20 hover:border-[#00E5FF]/40"
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-px-accent/90 hover:text-px-accent hover:bg-px-accent/10 transition-colors border border-px-accent/20 hover:border-px-accent/40"
                         title="Share viewer link with colleagues"
                       >
-                        <span className="material-icons-outlined text-sm">share</span>
+                        <Icon className="material-icons-outlined text-sm">share</Icon>
                         Share
                       </button>
                       <button
@@ -136,19 +137,19 @@ export default function App() {
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-amber-400/90 hover:text-amber-300 hover:bg-amber-500/10 transition-colors border border-amber-500/20 hover:border-amber-500/40"
                         title="Support Debug — copy diagnostic report"
                       >
-                        <span className="material-icons-outlined text-sm">support_agent</span>
+                        <Icon className="material-icons-outlined text-sm">support_agent</Icon>
                         Support
                       </button>
                       <button
                         onClick={() => { setAdminTab('users'); setShowAdmin(true); }}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-[#00E5FF] hover:bg-[#00E5FF]/10 transition-colors border border-transparent hover:border-[#00E5FF]/30"
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-px-accent hover:bg-px-accent/10 transition-colors border border-transparent hover:border-px-accent/30"
                         title="Administration — users & logs"
                       >
-                        <span className="material-icons-outlined text-sm">admin_panel_settings</span>
+                        <Icon className="material-icons-outlined text-sm">admin_panel_settings</Icon>
                         Admin
                       </button>
-                      <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#161E2E] border border-[#233544]">
-                        <span className="material-icons-outlined text-slate-500 text-sm">person</span>
+                      <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-px-panel border border-px-stroke">
+                        <Icon className="material-icons-outlined text-slate-500 text-sm">person</Icon>
                         <span className="text-xs text-slate-400">{user.display_name || user.username}</span>
                       </div>
                       <button
@@ -156,7 +157,7 @@ export default function App() {
                         className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-colors border border-transparent hover:border-red-500/30"
                         title="Logout"
                       >
-                        <span className="material-icons-outlined text-sm">logout</span>
+                        <Icon className="material-icons-outlined text-sm">logout</Icon>
                       </button>
                     </div>
                   </nav>
@@ -175,7 +176,7 @@ export default function App() {
               </div>
 
               {/* Footer */}
-              <footer className="flex-shrink-0 border-t border-[#233544] bg-[#0B1120] px-6 py-2 flex items-center justify-between">
+              <footer className="flex-shrink-0 border-t border-px-stroke bg-app-bg px-6 py-2 flex items-center justify-between">
                 <span className="text-[10px] text-slate-600 font-mono">Powered by Aility Pte Ltd</span>
                 <span className="text-[10px] text-slate-600 font-mono">PDUMind {APP_VERSION}</span>
               </footer>
@@ -183,14 +184,14 @@ export default function App() {
             {currentView === 'agent' && <MaintenanceChatCard />}
             {showShare && (
               <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setShowShare(false)}>
-                <div className="w-full max-w-3xl max-h-[85vh] bg-[#0f172a] border border-[#233544] rounded-2xl shadow-2xl overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
-                  <div className="flex items-center justify-between px-6 py-4 border-b border-[#233544] shrink-0">
+                <div className="w-full max-w-3xl max-h-[85vh] bg-[#0f172a] border border-px-stroke rounded-2xl shadow-2xl overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+                  <div className="flex items-center justify-between px-6 py-4 border-b border-px-stroke shrink-0">
                     <h2 className="text-sm font-bold text-white flex items-center gap-2">
-                      <span className="material-icons-outlined text-[#00E5FF]">share</span>
+                      <Icon className="material-icons-outlined text-px-accent">share</Icon>
                       Share Viewer Link
                     </h2>
                     <button onClick={() => setShowShare(false)} className="text-slate-500 hover:text-white transition-colors">
-                      <span className="material-icons-outlined">close</span>
+                      <Icon className="material-icons-outlined">close</Icon>
                     </button>
                   </div>
                   <div className="p-6 overflow-y-auto">
@@ -202,14 +203,14 @@ export default function App() {
             {showAdmin && <AdminPanel initialTab={adminTab} onClose={() => setShowAdmin(false)} />}
             {showSupport && (
               <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setShowSupport(false)}>
-                <div className="w-full max-w-3xl max-h-[85vh] bg-[#0f172a] border border-[#233544] rounded-2xl shadow-2xl overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
-                  <div className="flex items-center justify-between px-6 py-4 border-b border-[#233544] shrink-0">
+                <div className="w-full max-w-3xl max-h-[85vh] bg-[#0f172a] border border-px-stroke rounded-2xl shadow-2xl overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+                  <div className="flex items-center justify-between px-6 py-4 border-b border-px-stroke shrink-0">
                     <h2 className="text-sm font-bold text-white flex items-center gap-2">
-                      <span className="material-icons-outlined text-amber-400">support_agent</span>
+                      <Icon className="material-icons-outlined text-amber-400">support_agent</Icon>
                       Support Debug
                     </h2>
                     <button onClick={() => setShowSupport(false)} className="text-slate-500 hover:text-white transition-colors">
-                      <span className="material-icons-outlined">close</span>
+                      <Icon className="material-icons-outlined">close</Icon>
                     </button>
                   </div>
                   <div className="p-6 overflow-y-auto">

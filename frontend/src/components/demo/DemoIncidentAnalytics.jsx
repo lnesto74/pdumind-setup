@@ -1,3 +1,4 @@
+import Icon from '../presentation/Icon';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -11,7 +12,7 @@ const PHASES = [
   { id: 'detect', label: 'Detect', color: 'bg-amber-500' },
   { id: 'assign', label: 'Assign', color: 'bg-sky-500' },
   { id: 'notify', label: 'Notify', color: 'bg-blue-500' },
-  { id: 'ack', label: 'Ack', color: 'bg-[#00E5FF]' },
+  { id: 'ack', label: 'Ack', color: 'bg-px-accent' },
   { id: 'resolve', label: 'Resolve', color: 'bg-emerald-500' },
   { id: 'verify', label: 'Verify', color: 'bg-emerald-600' },
   { id: 'close', label: 'Close', color: 'bg-slate-500' },
@@ -102,7 +103,7 @@ function SwimlaneRow({ row }) {
   const closedAt = row.closed_at || row.phases?.close;
 
   return (
-    <div className={`flex items-stretch gap-2 py-2 border-b border-[#233544]/60 min-h-[3.25rem] ${isPending ? 'bg-[#00E5FF]/[0.03]' : ''}`}>
+    <div className={`flex items-stretch gap-2 py-2 border-b border-px-stroke/60 min-h-[3.25rem] ${isPending ? 'bg-px-accent/[0.03]' : ''}`}>
       <div className="w-[11.5rem] flex-shrink-0 min-w-0">
         <p className="text-[8px] font-mono text-slate-500 tabular-nums leading-tight truncate" title={fmtForensic(openedAt)}>
           {fmtForensic(openedAt)}
@@ -114,7 +115,7 @@ function SwimlaneRow({ row }) {
         )}
         <p className="text-[10px] font-medium text-white truncate flex items-center gap-1 mt-0.5">
           {isPending && (
-            <span className="flex-shrink-0 w-1.5 h-1.5 rounded-full bg-[#00E5FF] animate-pulse" title="Awaiting resolve" />
+            <span className="flex-shrink-0 w-1.5 h-1.5 rounded-full bg-px-accent animate-pulse" title="Awaiting resolve" />
           )}
           <span className="truncate">{row.label}</span>
         </p>
@@ -122,7 +123,7 @@ function SwimlaneRow({ row }) {
       </div>
 
       <div className="flex-1 min-w-0 flex flex-col justify-center">
-        <div className="relative h-7 bg-[#0B1120] rounded border border-[#233544] overflow-visible">
+        <div className="relative h-7 bg-app-bg rounded border border-px-stroke overflow-visible">
           {markers.map(({ ph, ts, offset, leftPct }) => {
             const isLastReached = ph.id === lastPhaseId;
             const pulse = isPending && isLastReached;
@@ -131,7 +132,7 @@ function SwimlaneRow({ row }) {
                 key={ph.id}
                 title={`${ph.label}\n${fmtForensic(ts)}\n+${fmtDuration(offset)} from open`}
                 className={`absolute top-1 bottom-1 w-2.5 rounded-sm ${ph.color} z-10 ${
-                  pulse ? 'animate-pulse ring-2 ring-[#00E5FF]/60 shadow-[0_0_8px_rgba(0,229,255,0.5)]' : 'opacity-95'
+                  pulse ? 'animate-pulse ring-2 ring-px-accent/60 shadow-[0_0_8px_rgba(0,229,255,0.5)]' : 'opacity-95'
                 }`}
                 style={{ left: `calc(${leftPct}% - 5px)` }}
               />
@@ -191,11 +192,11 @@ export default function DemoIncidentAnalytics({ apiPrefix = '/api/demo' }) {
   }, [stats?.swimlane]);
 
   return (
-    <div className="mb-8 rounded-xl border border-[#233544] bg-[#161E2E]/40 p-5">
+    <div className="mb-8 rounded-xl border border-px-stroke bg-px-panel/40 p-5">
       <div className="flex flex-wrap justify-between items-start gap-3 mb-4">
         <div>
           <h3 className="text-sm font-bold uppercase tracking-wider text-white flex items-center gap-2">
-            <span className="material-icons-outlined text-purple-400 text-base">analytics</span>
+            <Icon className="material-icons-outlined text-purple-400 text-base">analytics</Icon>
             Incident analytics
           </h3>
           <p className="text-[11px] text-slate-500 mt-1">Forensic swimlane · per-incident timeline scale</p>
@@ -203,7 +204,7 @@ export default function DemoIncidentAnalytics({ apiPrefix = '/api/demo' }) {
         <button
           type="button"
           onClick={fetchAnalytics}
-          className="text-xs px-2 py-1 rounded border border-[#233544] text-slate-500 hover:text-white"
+          className="text-xs px-2 py-1 rounded border border-px-stroke text-slate-500 hover:text-white"
         >
           Refresh
         </button>
@@ -225,7 +226,7 @@ export default function DemoIncidentAnalytics({ apiPrefix = '/api/demo' }) {
               { label: 'Median ack', value: fmtDuration(stats?.median_ack_sec) },
               { label: 'Median resolve', value: fmtDuration(stats?.median_resolve_sec) },
             ].map((m) => (
-              <div key={m.label} className="rounded-lg border border-[#233544] bg-[#0B1120] px-3 py-2">
+              <div key={m.label} className="rounded-lg border border-px-stroke bg-app-bg px-3 py-2">
                 <p className="text-lg font-mono font-bold text-white">{m.value}</p>
                 <p className="text-[9px] uppercase text-slate-500">{m.label}</p>
               </div>
@@ -242,12 +243,12 @@ export default function DemoIncidentAnalytics({ apiPrefix = '/api/demo' }) {
           </div>
 
           {swimlane.length === 0 ? (
-            <p className="text-slate-600 text-sm py-4 text-center border border-dashed border-[#233544] rounded-lg">
+            <p className="text-slate-600 text-sm py-4 text-center border border-dashed border-px-stroke rounded-lg">
               No incidents yet — trigger a demo alarm to populate the swimlane.
             </p>
           ) : (
             <div className="max-h-[360px] overflow-y-auto pr-1">
-              <div className="flex gap-2 pb-1 mb-1 border-b border-[#233544]/40 text-[8px] uppercase text-slate-600 tracking-wide">
+              <div className="flex gap-2 pb-1 mb-1 border-b border-px-stroke/40 text-[8px] uppercase text-slate-600 tracking-wide">
                 <span className="w-[11.5rem] flex-shrink-0">Forensic time · PDU</span>
                 <span className="flex-1 text-right">Lifecycle (scaled per row)</span>
               </div>

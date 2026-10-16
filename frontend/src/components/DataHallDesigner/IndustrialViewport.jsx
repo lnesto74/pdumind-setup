@@ -62,15 +62,16 @@ export function Batch({part,items,onPick,onHover}) {
   return <><GeometryBatch part={part} items={normal} onPick={onPick} onHover={onHover}/><GeometryBatch part={faded} items={dim} onPick={onPick} onHover={onHover}/></>;
 }
 
-export function RackFleet({ racks, selectedRack, hideDoors, openDoors, serviceSide, onSelect, onHover, dimmedIds }) {
-  const { scene } = useGLTF(BASE + 'rack.glb');
+export function RackFleet({ racks, selectedRack, hideDoors, openDoors, serviceSide, onSelect, onHover, dimmedIds, appearanceScene, exposed = false }) {
+  const defaultAsset = useGLTF(BASE + 'rack.glb');
+  const scene = appearanceScene || defaultAsset.scene;
   const parts = useMemo(() => templateParts(scene), [scene]);
   const items = useMemo(() => racks.map(rack => ({ rack, dim:dimmedIds?.has(rack.id), matrix: new THREE.Matrix4().compose(
-    new THREE.Vector3(rack.position.x, rack.position.y || 0, rack.position.z), identity,
+    new THREE.Vector3(rack.position.x, rack.position.y || 0, rack.position.z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),rack.rotationY || 0),
     new THREE.Vector3(rack.dimensions.width / TEMPLATE[0], rack.dimensions.height / TEMPLATE[1], rack.dimensions.depth / TEMPLATE[2])) })), [racks, dimmedIds]);
   const closed = useMemo(() => items.filter(i => !(hideDoors && i.rack.id === selectedRack?.id)), [items, hideDoors, selectedRack?.id]);
   return parts.map(part => {
-    let instances = part.door ? closed : items;
+    let instances = part.door ? (exposed ? closed.filter(i => openDoors && i.rack.id === selectedRack?.id) : closed) : items;
     const side = serviceSide === 'rear' ? 'Rear' : 'Front';
     if (openDoors && part.side === side && part.door) {
       const z = side === 'Front' ? -.492 : .492;
@@ -83,15 +84,34 @@ export function RackFleet({ racks, selectedRack, hideDoors, openDoors, serviceSi
     onPick={i => onSelect(i.rack)} onHover={i => onHover(i?.rack || null)} />; });
 }
 
-export function RackFeedback({ rack, selected, hovered, showLabel, live, alertLevel, hideDoors, heatmapLevel }) {
+function FeedLamps({ rack, devices = [] }) {
+  const lamps = useRef(null);
+  useFrame(({ clock }) => {
+    const glow = 0.45 + 0.55 * (0.5 + 0.5 * Math.sin(clock.elapsedTime * 4));
+    lamps.current?.children.forEach((mesh) => {
+      if (mesh.userData.lit) mesh.material.opacity = glow;
+    });
+  });
+  const d = rack.dimensions;
+  return <group ref={lamps}>
+    {rack.pdus.map((pdu, i) => {
+      const dev = devices.find(item => item.ip === pdu.ip);
+      const lit = dev?.power === 'on' && !dev.disconnected;
+      const color = dev?.state === 'critical' ? '#ed625f' : dev?.state === 'warning' ? '#e4b45e' : lit ? '#3dff8a' : '#2a3138';
+      const y = d.height - 0.06;
+      const x = (i % 2 === 0 ? -1 : 1) * Math.min(0.1, d.width * 0.16);
+      return <mesh key={pdu.ip || i} position={[x, y, -d.depth / 2 - 0.012]} userData={{ lit }}>
+        <boxGeometry args={[0.055, 0.018, 0.012]} />
+        <meshBasicMaterial color={color} toneMapped={false} transparent opacity={lit ? 1 : 0.45} />
+      </mesh>;
+    })}
+  </group>;
+}
+
+export function RackFeedback({ rack, selected, hovered, showLabel, live, alertLevel, hideDoors, heatmapLevel, devices = [] }) {
   const { dimensions: d, position: p } = rack;
-  const connection = rack.pdus.length ? (live ? 'Online' : 'Offline / unknown') : 'Unassigned';
-  const duplicateSlots = new Set(rack.pdus.map(p => p.position)).size < rack.pdus.length;
-  const alarm = alertLevel === 'critical' ? 'Critical alarm' : alertLevel === 'warning' ? 'Warning' : null;
-  const name = rack.label || rack.rackCode || rack.id;
-  const marker = live ? '#81af9e' : '#77818d';
-  const alarmColor = alertLevel === 'critical' ? '#ed625f' : '#e4b45e';
-  return <group position={[p.x, (p.y || 0), p.z]}>
+  return <group position={[p.x, (p.y || 0), p.z]} rotation={[0,rack.rotationY || 0,0]}>
+    <FeedLamps rack={rack} devices={devices} />
     {(selected || hovered) && <lineSegments geometry={edges} position={[0, d.height / 2, 0]} scale={[d.width + .014, d.height + .012, d.depth + .014]}>
       <lineBasicMaterial color={CYAN} transparent opacity={selected ? .9 : .4} />
     </lineSegments>}
@@ -113,20 +133,24 @@ export function PduFleet({ racks, selectedRack, onSelectRack, onPduClick, showPd
   const devices = useMemo(() => racks.flatMap(rack => rack.pdus.map((pdu, index) => {
     const d = rack.dimensions, p = rack.position;
     const slot = ['A', 'B', 'C', 'D'].indexOf(pdu.position);
-    const side = (slot >= 0 ? slot : index) % 2 ? 1 : -1;
+    // A is screen-left when viewing the front, matching Assign's slot map.
+    const side = (slot >= 0 ? slot : index) % 2 ? -1 : 1;
     const layer = Math.floor((slot >= 0 ? slot : index) / 2);
     const height = Math.min(1.62, d.height - .20);
-    const pos = new THREE.Vector3(p.x + side * (d.width / 2 - .09 - layer * .07), (p.y || 0) + .10, p.z + d.depth / 2 - .095);
-    const matrix = new THREE.Matrix4().compose(pos, identity, new THREE.Vector3(1, height / 1.62, 1));
+    const rackRotation = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),rack.rotationY || 0);
+    const rotation = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),(rack.rotationY || 0) + Math.PI);
+    // Mount at the front by default; rotate the PDU face and outlets together.
+    const pos = new THREE.Vector3(side * (d.width / 2 - .09 - layer * .07), .10, -d.depth / 2 + .095).applyQuaternion(rackRotation).add(new THREE.Vector3(p.x,p.y || 0,p.z));
+    const matrix = new THREE.Matrix4().compose(pos, rotation, new THREE.Vector3(1, height / 1.62, 1));
     // Only actual observed outlet inventory creates sockets. Unknown is not zero.
     const count = outletInventory[pdu.ip] ?? pdu.outletCount;
-    return { rack, pdu, pos, height, matrix, dim:dimmedIds?.has(rack.id), labelLevel: layer, count: Number.isInteger(count) && count > 0 ? count : null };
+    return { rack, pdu, pos, height, matrix, rotation, dim:dimmedIds?.has(rack.id), labelLevel: layer, count: Number.isInteger(count) && count > 0 ? count : null };
   })), [racks, outletInventory, dimmedIds]);
   const outlets = useMemo(() => devices.flatMap(item => item.count ? Array.from({ length: item.count }, (_, i) => ({ ...item,
-    matrix: new THREE.Matrix4().compose(new THREE.Vector3(item.pos.x, item.pos.y + .10 + (i + .5) / item.count * (item.height - .38), item.pos.z + .036), identity, unit) })) : []), [devices]);
+    matrix: new THREE.Matrix4().compose(new THREE.Vector3(0,.10 + (i + .5) / item.count * (item.height - .38),.036).applyQuaternion(item.rotation).add(item.pos), item.rotation, unit) })) : []), [devices]);
   const pick = item => { onSelectRack(item.rack); onPduClick?.(item.pdu); };
   return <>
-    {hovered && <lineSegments geometry={edges} position={[hovered.pos.x, hovered.pos.y + hovered.height / 2, hovered.pos.z]} scale={[.065, hovered.height, .07]}><lineBasicMaterial color={CYAN} /></lineSegments>}
+    {hovered && <lineSegments geometry={edges} rotation={[0,hovered.rack.rotationY || 0,0]} position={[hovered.pos.x, hovered.pos.y + hovered.height / 2, hovered.pos.z]} scale={[.065, hovered.height, .07]}><lineBasicMaterial color={CYAN} /></lineSegments>}
     {bodyParts.map(part => <Batch key={part.name} part={part} items={devices} onPick={pick} onHover={setHovered} />)}
     {feedParts.map((part,index) => <Batch key={part.name} part={part} items={devices.filter(i => (['B','D'].includes(i.pdu.position) ? 1 : 0) === index)} onPick={pick} onHover={setHovered} />)}
     {outletParts.map(part => <Batch key={part.name} part={part} items={outlets} onPick={pick} onHover={setHovered} />)}
@@ -150,14 +174,14 @@ export function InspectionCamera({ racks, hall, selectedRack, preset, viewOffset
     const b = new THREE.Box3();
     for (const r of racks) {
       const { position: p, dimensions: d } = r;
-      b.expandByPoint(new THREE.Vector3(p.x - d.width / 2, p.y || 0, p.z - d.depth / 2));
-      b.expandByPoint(new THREE.Vector3(p.x + d.width / 2, (p.y || 0) + d.height, p.z + d.depth / 2));
+      const rotation = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),r.rotationY || 0);
+      for(const x of [-1,1])for(const y of [0,1])for(const z of [-1,1]) b.expandByPoint(new THREE.Vector3(x*d.width/2,y*d.height,z*d.depth/2).applyQuaternion(rotation).add(new THREE.Vector3(p.x,p.y || 0,p.z)));
     }
     if (b.isEmpty()) b.set(new THREE.Vector3(0,0,0), new THREE.Vector3(hall.length,2,hall.width));
     return b;
   }, [racks, hall.length, hall.width]);
   // Bounds signature avoids interrupting the camera on telemetry refreshes.
-  const boundsKey = bounds.min.toArray().concat(bounds.max.toArray()).join(',');
+  const boundsKey = bounds.min.toArray().concat(bounds.max.toArray()).map(v=>v.toFixed(6)).join(',');
   useEffect(() => {
     if (!ref.current) return;
     const focus = selectedRack && preset.mode !== 'overview' ? selectedRack : null;
@@ -170,6 +194,7 @@ export function InspectionCamera({ racks, hall, selectedRack, preset, viewOffset
     }
     camera.aspect = size.width / Math.max(size.height, 1);
     const direction = preset.mode === 'front' ? new THREE.Vector3(0,.10,-1) : preset.mode === 'rear' ? new THREE.Vector3(0,.12,1) : preset.mode === 'selected' ? new THREE.Vector3(.45,.22,-1) : new THREE.Vector3(.85,.48,-1);
+    if (focus?.rotationY) direction.applyAxisAngle(new THREE.Vector3(0,1,0),focus.rotationY);
     const distance = fitInspectionFrame(dims.toArray(), size.width / Math.max(size.height, 1), camera.fov, 1.24, direction.toArray());
     const end = center.clone().addScaledVector(direction.normalize(), distance);
     camera.far = Math.max(100, distance * 5); camera.updateProjectionMatrix();

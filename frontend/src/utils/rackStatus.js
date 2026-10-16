@@ -19,15 +19,31 @@ export function isFresh(timestamp, now = Date.now()) {
   return time != null && now - time >= -5000 && now - time <= STATUS_FRESH_MS;
 }
 const cleaned = v => String(v ?? '').replace(/"/g,'').trim().toLowerCase();
-// Deliberately excludes current, zero voltage, outlet status, reachability and device metadata.
-// These do not establish the whole PDU's confirmed power state.
+const VOLTAGE_NAMES = ['l1_voltage','MasterVoltageP1','phase1Voltage'];
+function voltageOn(results) {
+  const row = (Array.isArray(results) ? results : []).find(r => VOLTAGE_NAMES.includes(r.name) && !r.error);
+  if (!row) return null;
+  const n = parseFloat(String(row.value ?? '').replace(/"/g,''));
+  // A live line voltage means the feed is energised. Zero is not proof it is off.
+  return Number.isFinite(n) && n >= 50 ? row : null;
+}
+// Current, zero voltage, outlet status and reachability alone do not confirm power.
 export function readPowerEvidence(raw = {}) {
   const row = (Array.isArray(raw.results) ? raw.results : []).find(r => ['PowerState','InputPowerState','PduPowerState'].includes(r.name) && !r.error);
-  const value = cleaned(raw.power_state ?? raw.powerState ?? row?.value);
+  let value = cleaned(raw.power_state ?? raw.powerState ?? row?.value);
+  let stamp = row?.timestamp;
+  let fromVoltage = false;
+  if (value !== 'on' && value !== 'off') {
+    const volt = voltageOn(raw.results);
+    if (volt) { value = 'on'; stamp = volt.timestamp ?? volt.measured_at; fromVoltage = true; }
+  }
+  const sample = sourceTime(raw.measured_at ?? raw.collected_at);
+  const rowTime = sourceTime(raw.power_updated_at ?? stamp);
   return {
     state: value === 'on' || value === 'off' ? value : 'unknown',
-    timestamp: sourceTime(raw.power_updated_at ?? row?.timestamp ?? raw.measured_at ?? raw.collected_at ?? raw.ts_utc ?? raw.updated_at ?? raw.timestamp),
+    timestamp: sample ?? rowTime ?? sourceTime(raw.ts_utc ?? raw.updated_at ?? raw.timestamp),
     verified: raw.power_verified !== false && !row?.error,
+    fromVoltage,
   };
 }
 function alarmSeverity(item) {
@@ -38,38 +54,85 @@ function alarmSeverity(item) {
 }
 function isResolved(a) { return a.active === false || !!a.resolved_at || /^(resolved|cleared|normal|ok|inactive|off|0|-)$/.test(cleaned(a.status ?? a.value)); }
 export function mergeCommunicationEvidence(previous = {}, incoming) {
-  if (incoming) return incoming;
-  // A failed request is not evidence of recovery. Preserve the last disconnection
-  // and its timestamp, but do not renew the freshness of a failed response.
-  return {...previous, state: previous.state === 'offline' ? 'offline' : 'unknown', unavailable: true};
+  if (!incoming) {
+    // A failed request is not evidence of recovery. Preserve the last disconnection
+    // and its timestamp, but do not renew the freshness of a failed response.
+    return {...previous, state: previous.state === 'offline' ? 'offline' : 'unknown', unavailable: true};
+  }
+  const nextTs = sourceTime(incoming.probedAt ?? incoming.timestamp);
+  const prevTs = sourceTime(previous.probedAt ?? previous.timestamp);
+  if (nextTs == null || (prevTs != null && nextTs < prevTs)) return previous;
+  const next = {...incoming};
+  delete next.receivedAt;
+  return next;
+}
+function blockingSample(raw) {
+  if (raw.stale === true || raw.authentication === 'failed') return true;
+  const text = (raw.errors || []).map(item => `${item?.error || ''} ${item?.value || ''} ${item?.name || ''}`).join(' ');
+  return /login failed|unreachable|authentication/i.test(text);
+}
+export function mergeDeviceEvidence(previous = {}, incoming) {
+  if (!incoming) return previous;
+  if (incoming.failed && !incoming.telemetry) return {...previous, telemetryUnavailable: true};
+  const prevTel = previous.telemetry || {};
+  const nextTel = incoming.telemetry;
+  if (!nextTel) return {...previous, telemetryUnavailable: !!incoming.failed};
+  const prevAttempt = sourceTime(prevTel.last_attempt_at ?? prevTel.measured_at);
+  const nextAttempt = sourceTime(nextTel.last_attempt_at ?? nextTel.measured_at);
+  if (prevAttempt != null && nextAttempt != null && nextAttempt < prevAttempt) return previous;
+  const prevMeasured = sourceTime(prevTel.measured_at);
+  const nextMeasured = sourceTime(nextTel.measured_at);
+  if (prevMeasured != null && nextMeasured != null && nextMeasured < prevMeasured) {
+    return {
+      ...previous,
+      telemetry: {
+        ...prevTel,
+        stale: nextTel.stale !== false,
+        authentication: nextTel.authentication ?? prevTel.authentication,
+        reachability: nextTel.reachability ?? prevTel.reachability,
+        errors: nextTel.errors ?? prevTel.errors,
+        last_attempt_at: nextTel.last_attempt_at ?? prevTel.last_attempt_at,
+        status: nextTel.status ?? prevTel.status,
+      },
+      alarms: previous.alarms,
+      telemetryUnavailable: false,
+    };
+  }
+  return {...previous, telemetry: nextTel, alarms: incoming.alarms ?? previous.alarms, telemetryUnavailable: !!incoming.failed};
+}
+export function retainHallEvidence(previous, ips) {
+  const allow = ips instanceof Set ? ips : new Set(ips);
+  return Object.fromEntries(Object.entries(previous || {}).filter(([ip]) => allow.has(ip)));
 }
 function deviceStatus(pdu, data, now) {
   const raw = data?.telemetry || {};
   const power = readPowerEvidence(raw);
   const communication = data?.communication || {};
-  // Receipt freshness applies ONLY to the reachability response, never to cached measurements.
-  const commFresh = !communication.unavailable && isFresh(communication.receivedAt, now);
+  const sampleStale = blockingSample(raw);
+  // Probe time belongs to reachability. It is not a measurement time.
+  const commFresh = !communication.unavailable && isFresh(communication.probedAt ?? communication.timestamp, now);
   const comm = commFresh && ['online','offline'].includes(communication.state) ? communication.state : 'unknown';
   const disconnected = communication.state === 'offline';
-  const fresh = !data?.telemetryUnavailable && power.verified && isFresh(power.timestamp, now) && !disconnected && !raw.errors?.length;
+  const powerTimestamp = power.timestamp;
+  const fresh = !data?.telemetryUnavailable && !sampleStale && power.verified && isFresh(powerTimestamp, now) && !disconnected;
   const state = fresh ? power.state : 'unknown';
-  const sourceTimestamp = sourceTime(raw.measured_at ?? raw.collected_at ?? raw.ts_utc ?? raw.updated_at ?? raw.timestamp);
+  const sourceTimestamp = sourceTime(raw.measured_at ?? raw.collected_at ?? raw.ts_utc ?? raw.timestamp);
   const rawAlarms = Array.isArray(raw.alarms) ? raw.alarms : data?.alarms?.entries || [];
   const flags = data?.alarms?.flags || [];
   const all = [...rawAlarms,...flags].filter(a => !isResolved(a)).map(a => {
     const severity = alarmSeverity(a);
-    const timestamp = sourceTime(a.timestamp ?? a.ts_utc ?? a.ts ?? sourceTimestamp);
+    const timestamp = sourceTime(a.timestamp ?? a.measured_at ?? a.ts_utc ?? a.ts ?? sourceTimestamp);
     // Individual explicit active alarms may remain verified even if another PDU loses communication.
-    const active = !data?.telemetryUnavailable && !!severity && a.stale !== true && isFresh(timestamp, now) && !raw.errors?.length && (comm !== 'offline' || a.active === true);
+    const active = !data?.telemetryUnavailable && !sampleStale && !!severity && a.stale !== true && isFresh(timestamp, now) && (comm !== 'offline' || a.active === true);
     return { severity, timestamp, active, summary: a.message || a.detail || `${a.key || a.param || 'Alarm'}: ${a.value || a.status || severity}`, key: a.id || a.key || a.param };
   }).filter(a=>a.severity);
-  if (!all.length && data?.alarms?.count > 0) all.push({severity:'warning',timestamp:sourceTimestamp,active:!data?.telemetryUnavailable&&isFresh(sourceTimestamp,now)&&comm!=='offline'&&!raw.errors?.length,summary:`${data.alarms.count} reported alarms`,key:'reported'});
+  if (!all.length && data?.alarms?.count > 0) all.push({severity:'warning',timestamp:sourceTimestamp,active:!data?.telemetryUnavailable&&!sampleStale&&isFresh(sourceTimestamp,now)&&comm!=='offline',summary:`${data.alarms.count} reported alarms`,key:'reported'});
   const alarms = all.filter((a,i)=>all.findIndex(b=>b.key===a.key && b.summary===a.summary)===i);
   const active = alarms.filter(a=>a.active);
   const main = active.some(a=>a.severity==='critical') ? 'critical' : active.length ? 'warning' : state;
   return { id:pdu.dbId ?? pdu.id ?? pdu.ip, name:pdu.hostname || pdu.label || pdu.ip || pdu.id, slot:pdu.position || pdu.mount_position, ip:pdu.ip,
-    power:state, state:main, communication:comm, communicationUpdated:sourceTime(communication.timestamp), disconnected,
-    timestamp:power.timestamp ?? sourceTimestamp, stale:!fresh || state==='unknown', alarms, lastKnownPower:power.state };
+    power:state, state:main, communication:comm, communicationUpdated:sourceTime(communication.probedAt ?? communication.timestamp), disconnected,
+    timestamp:powerTimestamp ?? sourceTimestamp, stale:!fresh || state==='unknown', alarms, lastKnownPower:power.state };
 }
 export function aggregateRackStatus(rack, evidence = {}, now = Date.now()) {
   const devices=(rack.pdus || []).map(pdu=>deviceStatus(pdu,evidence[pdu.ip],now));
