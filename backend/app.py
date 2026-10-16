@@ -5478,7 +5478,7 @@ def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> No
     client = diag["client"]
     _doctor_check(job_id, it, "web", "Web admin login", "pass", diag.get("url") or "")
 
-    need_net = need_snmp = need_ntp = False
+    need_net = need_snmp = need_ntp = need_https = False
     expected_gw = ""
     net: Dict[str, Any] = {}
     try:
@@ -5486,6 +5486,9 @@ def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> No
         net = client.get_network_config()
         snmp_cfg = client.get_snmp_config()
         time_cfg = client.get_time_config()
+        sys_cfg = client.get_system_config()
+        users = client.get_users()
+        web_cfg = client.get_web_access_config()
 
         mask = net.get("current_mask") or "255.255.255.0"
         gw = (net.get("current_gateway") or "").strip()
@@ -5530,6 +5533,53 @@ def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> No
                           f"PDU has {cur_ntp or 'none'}{'' if ntp_on else ' (disabled)'}, expected {it['ntp1']}"
                           if need_ntp else cur_ntp)
 
+        want_dns = [d for d in (it.get("dns1"), it.get("dns2")) if d]
+        have_dns = [(net.get("current_dns1") or "").strip(), (net.get("current_dns2") or "").strip()]
+        if want_dns:
+            dns_bad = want_dns != have_dns[:len(want_dns)]
+            need_net = need_net or dns_bad
+            _doctor_check(job_id, it, "dns", "DNS servers", "fail" if dns_bad else "pass",
+                          f"PDU has {' / '.join(d or 'none' for d in have_dns)}, expected {' / '.join(want_dns)}"
+                          if dns_bad else " / ".join(want_dns))
+
+        want_host = (it.get("hostname") or "").strip()
+        need_host = False
+        if want_host and want_host != ip:
+            have_host = (sys_cfg.get("router_hostname") or "").strip()
+            have_name = (sys_cfg.get("device_name") or "").strip()
+            need_host = have_host != want_host or have_name != want_host
+            _doctor_check(job_id, it, "hostname", "Hostname", "fail" if need_host else "pass",
+                          f"PDU has {have_host or 'none'} / {have_name or 'none'}, expected {want_host}"
+                          if need_host else want_host)
+
+        cu, cp = (opts.get("console_user") or "").strip(), (opts.get("console_pass") or "").strip()
+        need_user = False
+        if cu:
+            have_user = (users.get("user1_username") or "").strip()
+            need_user = have_user != cu
+            if need_user and not cp:
+                _doctor_check(job_id, it, "console", "Console user", "fail",
+                              f"General user 1 is {have_user or 'empty'}, expected {cu} — type the console password to fix")
+                need_user = False
+                fixes.append(f"console user {cu} missing (no password typed, not confirmed)")
+            else:
+                _doctor_check(job_id, it, "console", "Console user", "fail" if need_user else "pass",
+                              f"General user 1 is {have_user or 'empty'}, expected {cu}" if need_user else cu)
+
+        if opts.get("https"):
+            need_https = str(web_cfg.get("https_http")) != "1"
+            _doctor_check(job_id, it, "https", "HTTPS web console", "fail" if need_https else "pass",
+                          "PDU web console is on HTTP" if need_https else "HTTPS on 443")
+
+        if need_host:
+            _doctor_update(job_id, ip, step="writing hostname")
+            ok = client.set_system_config(router_hostname=want_host, device_name=want_host)
+            fixes.append("hostname set" if ok else "hostname write not confirmed")
+        if need_user:
+            _doctor_update(job_id, ip, step="writing console user")
+            ok = client.set_users(user1_username=cu, user1_password=cp)
+            ok = ok and (client.get_users().get("user1_username") or "").strip() == cu
+            fixes.append(f"console user {cu} added" if ok else "console user write not confirmed")
         if need_snmp:
             _doctor_update(job_id, ip, step="writing SNMPv3")
             ok = client.set_snmp(snmpv3=True, snmpv3_username=it["user"], verify_protocol="SHA",
@@ -5540,11 +5590,19 @@ def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> No
             ok = client.set_time(sntp_enabled="on", sntp_server=it["ntp1"])
             fixes.append("SNTP set" if ok else "SNTP write not confirmed")
         if need_net:
-            _doctor_update(job_id, ip, step="writing gateway")
-            ok = client.set_ipv4(ip, mask, expected_gw,
+            _doctor_update(job_id, ip, step="writing gateway/DNS")
+            ok = client.set_ipv4(ip, mask, expected_gw or gw,
                                  it.get("dns1") or net.get("current_dns1", ""),
                                  it.get("dns2") or net.get("current_dns2", ""))
-            fixes.append(f"gateway set to {expected_gw}" if ok else "gateway write not confirmed")
+            what = ", ".join(x for x in (f"gateway {expected_gw}" if expected_gw and expected_gw != gw else "",
+                                         "DNS" if want_dns and want_dns != have_dns[:len(want_dns)] else "") if x)
+            fixes.append(f"{what or 'network'} set" if ok else "network write not confirmed")
+        if need_https:
+            _doctor_update(job_id, ip, step="switching to HTTPS")
+            ok = client.set_web_access(https_http="1", http_port="80", https_port="443")
+            ok = ok and str(client.get_web_access_config().get("https_http")) == "1"
+            fixes.append("HTTPS enabled" if ok else "HTTPS write not confirmed")
+            need_https = ok
     except Exception as e:
         _doctor_check(job_id, it, "read", "Read PDU settings", "fail", str(e)[:200])
     finally:
@@ -5558,7 +5616,7 @@ def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> No
     after = _doctor_probe_until(it, 10 if (need_snmp or need_ntp) else 0)
 
     rebooted = False
-    if (need_net or not after["ok"]) and opts.get("allow_reboot", True):
+    if (need_net or need_https or not after["ok"]) and opts.get("allow_reboot", True):
         _doctor_update(job_id, ip, step="rebooting controller")
         d2 = _doctor_login(it)
         if d2.get("success"):
@@ -5573,11 +5631,18 @@ def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> No
     _doctor_check(job_id, it, "snmp_after", "SNMPv3 query + telemetry", "pass" if after["ok"] else "fail",
                   (f"sysName {after.get('value')}, telemetry OK" if after["ok"] else after.get("detail", "")))
 
+    on_https = bool(diag.get("use_https"))
+    if need_https:
+        on_https = rebooted and _debug_tcp_reachable(ip, 443, 3.0)
+        _doctor_check(job_id, it, "https", "HTTPS web console", "pass" if on_https else "fail",
+                      "HTTPS on 443 after reboot" if on_https
+                      else ("Reboot was not allowed — HTTPS turns on after a reboot" if not rebooted else "Port 443 not open after reboot"))
+
     if after["ok"]:
         try:
-            web_https = 1 if diag.get("use_https") else 0
+            web_https = 1 if on_https else 0
             patch = {"snmp_version": "3", "snmp_community_ref": it["user"], "snmp_port": 161,
-                     "web_admin_port": int(diag.get("port") or 80), "web_admin_https": web_https,
+                     "web_admin_port": 443 if on_https else int(diag.get("port") or 80), "web_admin_https": web_https,
                      "web_admin_user": diag.get("login_user"), "web_admin_pass": diag.get("login_pass"),
                      "is_active": True}
             if not it.get("in_db") and opts.get("hall_id"):
@@ -5591,6 +5656,18 @@ def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> No
         if gw_fail and not expected_gw:
             return finish("failed", "SNMPv3 works from this laptop, but the gateway is wrong — the customer NMS on another subnet gets no reply",
                           f"Enter the gateway for {'.'.join(ip.split('.')[:3])}.x and press Test & fix again.")
+        unconfirmed = [f for f in fixes if "not confirmed" in f]
+        if need_https and not on_https:
+            unconfirmed.append("HTTPS not active")
+        if unconfirmed:
+            text = ", ".join(unconfirmed)
+            if "no password typed" in text:
+                advice = "Type the console password in the Console password box and press retry on this row."
+            elif "HTTPS not active" in text and not rebooted:
+                advice = "Tick “Reboot the PDU controller if still failing” and press retry — HTTPS needs a reboot."
+            else:
+                advice = "Close any browser tab on this PDU (one web session only) and press retry on this row."
+            return finish("failed", "SNMPv3 OK, but " + text, advice)
         return finish("fixed" if fixes else "pass",
                       ("Fixed: " + ", ".join(fixes)) if fixes else snmp_doctor.CAUSES["ok"])
 
@@ -5704,7 +5781,10 @@ def _run_snmp_doctor(job_id: str, opts: Dict[str, Any]) -> None:
 
 @app.route("/api/commission/snmp-doctor", methods=["POST"])
 def commission_snmp_doctor_start():
-    """Start a hall-wide SNMPv3 test-and-fix job. Body: hall_id, targets, gateways, allow_reboot, only_ip."""
+    """Start a hall-wide test-and-fix job.
+
+    Body: hall_id, targets, gateways, allow_reboot, only_ip, https, console_user, console_pass.
+    """
     import uuid
     data = request.get_json(force=True) if request.data else {}
     hall_id = data.get("hall_id")
@@ -5736,6 +5816,9 @@ def commission_snmp_doctor_start():
     from demo.context import get_active_db_path
     opts = {"hall_id": int(hall_id), "gateways": gateways, "db_path": get_active_db_path(),
             "allow_reboot": data.get("allow_reboot", True) is not False,
+            "https": bool(data.get("https")),
+            "console_user": (data.get("console_user") or "").strip(),
+            "console_pass": data.get("console_pass") or "",
             "only_ip": (data.get("only_ip") or "").strip() or None}
     Thread(target=_run_snmp_doctor, args=(job_id, opts), daemon=True).start()
     return jsonify({"success": True, "job_id": job_id, "total": len(items)})

@@ -16,7 +16,7 @@ const subnetOf = (ip) => (ip || '').split('.').slice(0, 3).join('.');
  * One button: scan the hall (max 60 s), then SNMPv3-test and fix every PDU it reaches.
  * Batch when several answer (customer VPN / switch), one at a time on a local cable.
  */
-const SnmpDoctorPanel = ({ hallId, hallName, targets = [] }) => {
+const SnmpDoctorPanel = ({ hallId, hallName, targets = [], https = false, consoleUser = '', consolePass = '' }) => {
   const gwKey = `pdumind_doctor_gw_${hallId || 'default'}`;
   const [gateways, setGateways] = useState(() => {
     try { return JSON.parse(localStorage.getItem(gwKey) || '{}'); } catch { return {}; }
@@ -49,6 +49,9 @@ const SnmpDoctorPanel = ({ hallId, hallName, targets = [] }) => {
           gateways,
           allow_reboot: allowReboot,
           only_ip: onlyIp,
+          https,
+          console_user: consoleUser,
+          console_pass: consolePass,
         }),
       });
       const data = await res.json();
@@ -90,9 +93,13 @@ const SnmpDoctorPanel = ({ hallId, hallName, targets = [] }) => {
           </p>
           <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
             Sends the same SNMPv3 query the customer's NMS sends (user, SHA, AES, authPriv) to every PDU of this hall.
-            Anything that differs from the hall's last configuration — SNMPv3, gateway, SNTP — is rewritten, and the PDU only
-            passes when SNMPv3 answers with telemetry. On the customer VPN it does all PDUs at once; on a local cable, the one you are plugged into.
+            Anything that differs from the inventory — SNMPv3, gateway, DNS, SNTP, hostname{https ? ', HTTPS' : ''}{consoleUser ? `, console user ${consoleUser}` : ''} — is rewritten
+            with one reboot at most, and the PDU only passes when SNMPv3 answers with telemetry.
+            On the customer VPN it does all PDUs at once; on a local cable, the one you are plugged into.
           </p>
+          {consoleUser && !consolePass && (
+            <p className="text-[11px] text-amber-300 mt-1">Type the console password below so a missing {consoleUser} user can be added.</p>
+          )}
         </div>
         <button
           onClick={() => start()}

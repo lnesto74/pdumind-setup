@@ -1742,7 +1742,8 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                     )}
                   </div>
 
-                  <SnmpDoctorPanel hallId={hallId} hallName={hallName} targets={invTargets} />
+                  <SnmpDoctorPanel hallId={hallId} hallName={hallName} targets={invTargets}
+                    https={invHttpsOn} consoleUser={invWebUser} consolePass={invWebPass} />
 
                   {invTargets.length > 0 && (
                     <>
