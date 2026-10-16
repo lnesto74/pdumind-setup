@@ -5299,6 +5299,459 @@ def commission_guided_web():
         return jsonify({"error": str(e)}), 500
 
 
+# ---------------------------------------------------------------------------
+# SNMP doctor — test every commissioned PDU of a hall with a real SNMPv3 GET
+# (the same query a customer NMS sends), compare the PDU with the hall's last
+# configuration, rewrite what differs, reboot if still failing, and re-test.
+# A PDU only passes when SNMPv3 authPriv answers and telemetry OIDs come back.
+# ---------------------------------------------------------------------------
+import ipaddress as _ipaddress  # noqa: E402
+import snmp_doctor  # noqa: E402
+
+_DOCTOR_JOBS: Dict[str, Dict[str, Any]] = {}
+_DOCTOR_LOCK = Lock()
+_DOCTOR_SCAN_SECONDS = 60
+_DOCTOR_GOOD = ("pass", "fixed")
+
+
+def _doctor_expected(hall_id: int, targets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Expected SNMP/NTP/network per PDU from the hall DB plus the guided inventory."""
+    from collections import Counter
+
+    items: Dict[str, Dict[str, Any]] = {}
+    for row in PDURepo.get_by_hall(int(hall_id)):
+        ip = row.get("ip_address")
+        if not ip or not row.get("is_active", 1):
+            continue
+        try:
+            meta = json.loads(row.get("metadata_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            meta = {}
+        items[ip] = {
+            "ip": ip,
+            "hostname": row.get("hostname") or row.get("label") or ip,
+            "row": row,
+            "in_db": True,
+            "user": meta.get("snmpv3_username") or "",
+            "auth": meta.get("auth_key") or "",
+            "priv": meta.get("priv_key") or "",
+            "ntp1": meta.get("ntp1") or "",
+            "gateway": meta.get("gateway") or "",
+            "dns1": meta.get("dns1") or "",
+            "dns2": meta.get("dns2") or "",
+            "rack": meta.get("rack") or "",
+            "feed": meta.get("feed") or "",
+            "last": meta.get("snmp_doctor") or {},
+            "target": None,
+        }
+    for t in targets or []:
+        ip = (t.get("ip") or "").strip()
+        if not ip:
+            continue
+        snmp = t.get("snmp") or {}
+        it = items.get(ip)
+        if it is None:
+            it = items[ip] = {
+                "ip": ip, "hostname": t.get("hostname") or ip, "row": None, "in_db": False,
+                "user": "", "auth": "", "priv": "", "ntp1": "", "gateway": "", "dns1": "", "dns2": "",
+                "rack": t.get("rack") or "", "feed": t.get("feed") or "", "last": {},
+            }
+        it["target"] = t
+        for key, val in (
+            ("user", snmp.get("snmpv3_username")), ("auth", snmp.get("auth_key")),
+            ("priv", snmp.get("priv_key")), ("ntp1", t.get("ntp1")), ("gateway", t.get("gateway")),
+            ("dns1", t.get("dns1")), ("dns2", t.get("dns2")),
+        ):
+            val = (val or "").strip() if isinstance(val, str) else ""
+            if val and not it.get(key) and not (key in ("auth", "priv") and set(val) <= {"*"}):
+                it[key] = val
+
+    trio = Counter((i["user"], i["auth"], i["priv"]) for i in items.values()
+                   if i["user"] and i["auth"] and i["priv"])
+    ntp = Counter(i["ntp1"] for i in items.values() if i["ntp1"])
+    for i in items.values():
+        if trio and not (i["user"] and i["auth"] and i["priv"]):
+            i["user"], i["auth"], i["priv"] = trio.most_common(1)[0][0]
+        if ntp and not i["ntp1"]:
+            i["ntp1"] = ntp.most_common(1)[0][0]
+    return sorted(items.values(), key=lambda i: (i["hostname"] or "", i["ip"]))
+
+
+def _doctor_public(it: Dict[str, Any]) -> Dict[str, Any]:
+    keep = ("ip", "hostname", "rack", "feed", "in_db", "reachable", "ports", "verdict",
+            "cause", "step", "checks", "fixes", "advice")
+    return {k: it.get(k) for k in keep}
+
+
+def _doctor_update(job_id: str, ip: str, **patch) -> None:
+    with _DOCTOR_LOCK:
+        job = _DOCTOR_JOBS.get(job_id)
+        if not job:
+            return
+        it = job["_items"].get(ip)
+        if it is not None:
+            it.update(patch)
+
+
+def _doctor_check(job_id: str, it: Dict[str, Any], cid: str, label: str, status: str, detail: str = "") -> None:
+    with _DOCTOR_LOCK:
+        checks = it.setdefault("checks", [])
+        checks[:] = [c for c in checks if c["id"] != cid]
+        checks.append({"id": cid, "label": label, "status": status, "detail": detail})
+
+
+def _doctor_probe(it: Dict[str, Any], *, walk: bool = True, timeout: float = 2.0, retries: int = 1) -> Dict[str, Any]:
+    return snmp_doctor.probe(it["ip"], it["user"], it["auth"], it["priv"],
+                             timeout=timeout, retries=retries, walk_enterprise=walk)
+
+
+def _doctor_probe_until(it: Dict[str, Any], seconds: float, every: float = 4.0) -> Dict[str, Any]:
+    deadline = time.time() + seconds
+    res = _doctor_probe(it)
+    while not res["ok"] and time.time() < deadline:
+        time.sleep(every)
+        res = _doctor_probe(it)
+    return res
+
+
+def _doctor_login(it: Dict[str, Any]) -> Dict[str, Any]:
+    row = it.get("row") or {}
+    tried = []
+    for user, pwd in (
+        (row.get("web_admin_user") or "admin", _coalesce_credential(row.get("web_admin_pass"))),
+        ("admin", "admin"),
+    ):
+        if (user, pwd) in tried:
+            continue
+        tried.append((user, pwd))
+        diag = _diagnose_pdu_login(it["ip"], user, pwd, verify_telemetry=False,
+                                   pdu=row or None, keep_session=True)
+        if diag.get("success"):
+            diag["login_user"], diag["login_pass"] = user, pwd
+            return diag
+    return diag
+
+
+def _doctor_wait_back(it: Dict[str, Any], seconds: int = 180) -> bool:
+    time.sleep(15)
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if any(_debug_tcp_reachable(it["ip"], p, 2.0) for p in (443, 80)):
+            return True
+        time.sleep(4)
+    return False
+
+
+def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> None:
+    ip = it["ip"]
+    fixes: List[str] = []
+    it["fixes"] = fixes
+    before = it.get("quick_snmp") or _doctor_probe(it, walk=False)
+
+    def finish(verdict: str, cause: str, advice: str = "") -> None:
+        _doctor_update(job_id, ip, verdict=verdict, cause=cause, advice=advice, step="done")
+        try:
+            if it.get("in_db"):
+                _merge_pdu_metadata(ip, {"snmp_doctor": {
+                    "status": verdict, "cause": cause, "at": int(time.time())}})
+        except Exception as e:
+            print(f"[snmp-doctor] metadata {ip}: {e}")
+
+    if not (it["user"] and it["auth"] and it["priv"]):
+        _doctor_check(job_id, it, "config", "Hall SNMPv3 configuration", "fail",
+                      "No SNMPv3 user/keys stored for this hall — upload the inventory sheet in Guided first")
+        return finish("failed", "No SNMPv3 configuration on record for this PDU",
+                      "Upload the customer inventory (.xlsx) in Guided, then run again.")
+
+    _doctor_check(job_id, it, "snmp_before", "SNMPv3 query before", "pass" if before["ok"] else "fail",
+                  before.get("value") and f"sysName {before['value']}" or before.get("detail", ""))
+
+    _doctor_update(job_id, ip, step="web login")
+    diag = _doctor_login(it)
+    if not diag.get("success"):
+        _doctor_check(job_id, it, "web", "Web admin login", "fail", diag.get("error") or "Login failed")
+        if before["ok"]:
+            return finish("pass", "SNMPv3 works; web admin login failed so settings were not compared",
+                          "Check the web admin password stored for this PDU in Repair.")
+        return finish("failed", f"{before.get('detail')}; web admin login also failed",
+                      "Close any browser tab on this PDU (one web session only), check the admin password, and run again.")
+    client = diag["client"]
+    _doctor_check(job_id, it, "web", "Web admin login", "pass", diag.get("url") or "")
+
+    need_net = need_snmp = need_ntp = False
+    expected_gw = ""
+    net: Dict[str, Any] = {}
+    try:
+        _doctor_update(job_id, ip, step="reading settings")
+        net = client.get_network_config()
+        snmp_cfg = client.get_snmp_config()
+        time_cfg = client.get_time_config()
+
+        mask = net.get("current_mask") or "255.255.255.0"
+        gw = (net.get("current_gateway") or "").strip()
+        prefix = ".".join(ip.split(".")[:3])
+        expected_gw = ((opts.get("gateways") or {}).get(prefix) or it.get("gateway") or "").strip()
+        try:
+            subnet = _ipaddress.ip_network(f"{ip}/{mask}", strict=False)
+            gw_ok = bool(gw) and _ipaddress.ip_address(gw) in subnet and gw != ip
+        except ValueError:
+            gw_ok = False
+        if expected_gw and gw != expected_gw:
+            need_net = True
+            _doctor_check(job_id, it, "gateway", "Default gateway", "fail",
+                          f"PDU has {gw or 'none'}, hall expects {expected_gw}")
+        elif not gw_ok:
+            _doctor_check(job_id, it, "gateway", "Default gateway", "fail",
+                          f"Gateway {gw or 'none'} is not on {subnet if gw else 'the PDU subnet'} — "
+                          "the PDU cannot answer an NMS on another network. Enter this subnet's gateway and run again.")
+        else:
+            _doctor_check(job_id, it, "gateway", "Default gateway", "pass", gw)
+
+        issues = []
+        if not snmp_cfg.get("snmpv3_enabled"):
+            issues.append("SNMPv3 disabled")
+        if (snmp_cfg.get("snmpv3_username") or "") != it["user"]:
+            issues.append(f"user is {snmp_cfg.get('snmpv3_username') or 'empty'}, expected {it['user']}")
+        if snmp_cfg.get("verify_protocol") != "2":
+            issues.append("authentication protocol is not SHA")
+        if snmp_cfg.get("encrypt_protocol") != "2":
+            issues.append("privacy protocol is not AES")
+        if not before["ok"]:
+            issues.append(before.get("detail") or before.get("kind"))
+        need_snmp = bool(issues)
+        _doctor_check(job_id, it, "snmp_cfg", "SNMPv3 settings", "fail" if issues else "pass",
+                      "; ".join(issues) or f"v3 on, user {it['user']}, SHA/AES")
+
+        if it.get("ntp1"):
+            cur_ntp = (time_cfg.get("sntp_server") or "").strip()
+            ntp_on = PDUWebClient._cgi_bool(time_cfg.get("sntp_enabled"))
+            need_ntp = cur_ntp.lower() != it["ntp1"].lower() or not ntp_on
+            _doctor_check(job_id, it, "ntp", "SNTP server", "fail" if need_ntp else "pass",
+                          f"PDU has {cur_ntp or 'none'}{'' if ntp_on else ' (disabled)'}, expected {it['ntp1']}"
+                          if need_ntp else cur_ntp)
+
+        if need_snmp:
+            _doctor_update(job_id, ip, step="writing SNMPv3")
+            ok = client.set_snmp(snmpv3=True, snmpv3_username=it["user"], verify_protocol="SHA",
+                                 auth_key=it["auth"], encrypt_protocol="AES", priv_key=it["priv"])
+            fixes.append("SNMPv3 rewritten" if ok else "SNMPv3 write not confirmed")
+        if need_ntp:
+            _doctor_update(job_id, ip, step="writing SNTP")
+            ok = client.set_time(sntp_enabled="on", sntp_server=it["ntp1"])
+            fixes.append("SNTP set" if ok else "SNTP write not confirmed")
+        if need_net:
+            _doctor_update(job_id, ip, step="writing gateway")
+            ok = client.set_ipv4(ip, mask, expected_gw,
+                                 it.get("dns1") or net.get("current_dns1", ""),
+                                 it.get("dns2") or net.get("current_dns2", ""))
+            fixes.append(f"gateway set to {expected_gw}" if ok else "gateway write not confirmed")
+    except Exception as e:
+        _doctor_check(job_id, it, "read", "Read PDU settings", "fail", str(e)[:200])
+    finally:
+        try:
+            client.logout()
+        except Exception:
+            pass
+
+    gw_fail = any(c["id"] == "gateway" and c["status"] == "fail" for c in it.get("checks", []))
+    _doctor_update(job_id, ip, step="SNMPv3 re-test")
+    after = _doctor_probe_until(it, 10 if (need_snmp or need_ntp) else 0)
+
+    rebooted = False
+    if (need_net or not after["ok"]) and opts.get("allow_reboot", True):
+        _doctor_update(job_id, ip, step="rebooting controller")
+        d2 = _doctor_login(it)
+        if d2.get("success"):
+            rebooted = _trigger_pdu_reboot(d2["client"], ip)
+            fixes.append("controller rebooted" if rebooted else "reboot not confirmed")
+            if rebooted:
+                _doctor_update(job_id, ip, step="waiting for PDU to come back")
+                _doctor_wait_back(it)
+                _doctor_update(job_id, ip, step="SNMPv3 re-test after reboot")
+                after = _doctor_probe_until(it, 45, every=5)
+
+    _doctor_check(job_id, it, "snmp_after", "SNMPv3 query + telemetry", "pass" if after["ok"] else "fail",
+                  (f"sysName {after.get('value')}, telemetry OK" if after["ok"] else after.get("detail", "")))
+
+    if after["ok"]:
+        try:
+            web_https = 1 if diag.get("use_https") else 0
+            patch = {"snmp_version": "3", "snmp_community_ref": it["user"], "snmp_port": 161,
+                     "web_admin_port": int(diag.get("port") or 80), "web_admin_https": web_https,
+                     "web_admin_user": diag.get("login_user"), "web_admin_pass": diag.get("login_pass"),
+                     "is_active": True}
+            if not it.get("in_db") and opts.get("hall_id"):
+                patch.update(hostname=it["hostname"], label=it["hostname"],
+                             metadata=_inventory_meta(it.get("target") or {}, (it.get("target") or {}).get("snmp") or {}))
+                fixes.append("added to hall")
+            PDURepo.upsert(int(opts["hall_id"]), ip, patch)
+            it["in_db"] = True
+        except Exception as e:
+            print(f"[snmp-doctor] DB sync {ip}: {e}")
+        if gw_fail and not expected_gw:
+            return finish("failed", "SNMPv3 works from this laptop, but the gateway is wrong — the customer NMS on another subnet gets no reply",
+                          f"Enter the gateway for {'.'.join(ip.split('.')[:3])}.x and press Test & fix again.")
+        return finish("fixed" if fixes else "pass",
+                      ("Fixed: " + ", ".join(fixes)) if fixes else snmp_doctor.CAUSES["ok"])
+
+    cause = after.get("detail") or "SNMPv3 still not answering"
+    advice = "Run again; if it repeats, power-cycle the PDU controller and check the switch port."
+    if after.get("kind") in ("auth", "priv"):
+        which = after["kind"]
+        stored = snmp_doctor.find_stored_key(ip, it["user"], it["auth"], it["priv"], which)
+        if stored:
+            cause = f"The PDU firmware saved the {'SHA' if which == 'auth' else 'AES'} key {stored}, not as typed"
+            advice = ("The firmware mangles a special character in this key. Ask the customer for a key with "
+                      "letters and digits only, update the inventory, and run again.")
+    elif after.get("kind") == "timeout" and not rebooted and not opts.get("allow_reboot", True):
+        advice = "Allow the controller reboot and run again — SNMP changes on this firmware may need it."
+    finish("failed", cause, advice)
+
+
+def _doctor_next(job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    for it in job["_order"]:
+        i = job["_items"][it]
+        if i.get("verdict") not in _DOCTOR_GOOD:
+            return {"ip": i["ip"], "hostname": i["hostname"]}
+    return None
+
+
+def _run_snmp_doctor(job_id: str, opts: Dict[str, Any]) -> None:
+    from demo import context as _demo_ctx
+    _demo_ctx._tls.db_path = opts.get("db_path")
+    job = _DOCTOR_JOBS[job_id]
+    items = job["_items"]
+    _pause_pdu_poller()
+    try:
+        job["phase"] = "scan"
+        todo = [items[ip] for ip in job["_order"] if not opts.get("only_ip") or ip == opts["only_ip"]]
+
+        def quick(it):
+            ports = [p for p in (443, 80) if _debug_tcp_reachable(it["ip"], p, 1.5)]
+            snmp = _doctor_probe(it, walk=False, timeout=1.5, retries=1) if it["auth"] else None
+            return it, ports, snmp
+
+        deadline = time.time() + _DOCTOR_SCAN_SECONDS
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            futures = [pool.submit(quick, it) for it in todo]
+            try:
+                for fut in as_completed(futures, timeout=max(1, deadline - time.time())):
+                    it, ports, snmp = fut.result()
+                    with _DOCTOR_LOCK:
+                        it["ports"] = ports
+                        it["quick_snmp"] = snmp
+                        it["reachable"] = bool(ports) or bool(snmp and snmp["ok"])
+                        it["step"] = "found" if it["reachable"] else "not reachable from here"
+                        if not it["reachable"] and it.get("last", {}).get("status") in _DOCTOR_GOOD:
+                            it["verdict"] = "not_tested"
+                    job["scanned"] = job.get("scanned", 0) + 1
+            except TimeoutError:
+                pass
+
+        found = [it for it in todo if it.get("reachable")]
+        job["found"] = len(found)
+        job["mode"] = "batch" if len(found) >= 2 else ("local" if found else "none")
+        if not found:
+            first = next((i for i in todo if i.get("last", {}).get("status") not in _DOCTOR_GOOD), todo[0] if todo else None)
+            job["next"] = first and {"ip": first["ip"], "hostname": first["hostname"]}
+            job["message"] = (
+                f"No PDU of {job['hall_name']} answers from this laptop. "
+                + (f"Plug the laptop into {first['hostname']} ({first['ip']}) " if first else "Plug the laptop into a PDU ")
+                + "or join the customer VPN, then press Test & fix again."
+            )
+            return
+
+        job["phase"] = "fixing"
+        workers = 4 if job["mode"] == "batch" else 1
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            def run(it):
+                _demo_ctx._tls.db_path = opts.get("db_path")
+                _batch_hold_ip(it["ip"])
+                try:
+                    _doctor_fix_one(job_id, it, opts)
+                except Exception as e:
+                    import traceback; traceback.print_exc()
+                    _doctor_update(job_id, it["ip"], verdict="failed", cause=str(e)[:200], step="done")
+                finally:
+                    _batch_release_ip(it["ip"])
+            list(pool.map(run, found))
+
+        good = [i for i in found if i.get("verdict") in _DOCTOR_GOOD]
+        bad = [i for i in found if i.get("verdict") not in _DOCTOR_GOOD]
+        job["next"] = _doctor_next(job)
+        if job["mode"] == "local":
+            it = found[0]
+            nxt = job["next"]
+            job["message"] = (
+                f"{it['hostname']}: {it.get('verdict')} — {it.get('cause')}. "
+                + (f"Next: plug into {nxt['hostname']} ({nxt['ip']}) and press Test & fix." if nxt and it.get("verdict") in _DOCTOR_GOOD
+                   else (it.get("advice") or ""))
+            )
+        elif not bad:
+            job["message"] = (
+                f"All {len(good)} reachable PDUs answer SNMPv3 (user {found[0]['user']}, SHA, AES, authPriv) with telemetry. "
+                "If the customer NMS still fails, the block is between their NMS and the PDU subnet: "
+                "it needs a route to the PDU subnet and UDP 161 allowed."
+            )
+        else:
+            job["message"] = f"{len(good)} OK, {len(bad)} still failing — see each row for the cause and the next step."
+    finally:
+        _resume_pdu_poller()
+        job["phase"] = "done"
+        job["status"] = "done"
+        job["finished_at"] = time.time()
+
+
+@app.route("/api/commission/snmp-doctor", methods=["POST"])
+def commission_snmp_doctor_start():
+    """Start a hall-wide SNMPv3 test-and-fix job. Body: hall_id, targets, gateways, allow_reboot, only_ip."""
+    import uuid
+    data = request.get_json(force=True) if request.data else {}
+    hall_id = data.get("hall_id")
+    if not hall_id:
+        return jsonify({"error": "Data hall ID required"}), 400
+    hall = HallRepo.get(int(hall_id)) or {}
+    items = _doctor_expected(int(hall_id), data.get("targets") or [])
+    if not items:
+        return jsonify({"error": "No PDUs in this hall yet — commission them first"}), 400
+    gateways = {}
+    for k, v in (data.get("gateways") or {}).items():
+        v = (v or "").strip()
+        try:
+            if v:
+                _ipaddress.ip_address(v)
+                gateways[".".join(str(k).split(".")[:3])] = v
+        except ValueError:
+            return jsonify({"error": f"Gateway {v!r} is not an IP address"}), 400
+    job_id = str(uuid.uuid4())[:8]
+    job = {
+        "id": job_id, "status": "running", "phase": "starting",
+        "hall_id": int(hall_id), "hall_name": hall.get("name") or f"Hall #{hall_id}",
+        "total": len(items), "scanned": 0, "found": 0, "mode": None, "message": "",
+        "next": None, "started_at": time.time(), "scan_seconds": _DOCTOR_SCAN_SECONDS,
+        "_items": {i["ip"]: i for i in items}, "_order": [i["ip"] for i in items],
+    }
+    with _DOCTOR_LOCK:
+        _DOCTOR_JOBS[job_id] = job
+    from demo.context import get_active_db_path
+    opts = {"hall_id": int(hall_id), "gateways": gateways, "db_path": get_active_db_path(),
+            "allow_reboot": data.get("allow_reboot", True) is not False,
+            "only_ip": (data.get("only_ip") or "").strip() or None}
+    Thread(target=_run_snmp_doctor, args=(job_id, opts), daemon=True).start()
+    return jsonify({"success": True, "job_id": job_id, "total": len(items)})
+
+
+@app.route("/api/commission/snmp-doctor/<job_id>", methods=["GET"])
+def commission_snmp_doctor_status(job_id: str):
+    with _DOCTOR_LOCK:
+        job = _DOCTOR_JOBS.get(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+        out = {k: v for k, v in job.items() if not k.startswith("_")}
+        out["items"] = [_doctor_public(job["_items"][ip]) for ip in job["_order"]]
+    return jsonify(out)
+
+
 def _run_batch_commission(job_id: str, template: dict, pdu_list: list, hall_id: int):
     """Execute batch commissioning in background thread."""
     import socket

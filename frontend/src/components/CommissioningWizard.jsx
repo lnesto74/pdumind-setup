@@ -4,6 +4,7 @@ import PduSnmpSettingsForm from './PduSnmpSettingsForm';
 import PduNtpSettingsForm from './PduNtpSettingsForm';
 import PduWebAccessSettingsForm from './PduWebAccessSettingsForm';
 import PasswordInput from './PasswordInput';
+import SnmpDoctorPanel from './SnmpDoctorPanel';
 import {
   DEFAULT_SNMP_TEMPLATE,
   DEFAULT_NTP_TEMPLATE,
@@ -1740,6 +1741,8 @@ const CommissioningWizard = ({ hallId, hallName, onComplete, onClose }) => {
                         className="text-[11px] text-slate-500 hover:text-red-300 ml-auto">Clear list</button>
                     )}
                   </div>
+
+                  <SnmpDoctorPanel hallId={hallId} hallName={hallName} targets={invTargets} />
 
                   {invTargets.length > 0 && (
                     <>
