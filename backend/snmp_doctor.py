@@ -197,6 +197,66 @@ def probe(host: str, user: str, auth_key: str, priv_key: str, *,
             relay.close()
 
 
+_MISSING_OIDS: Dict[str, set] = {}
+
+
+def get_many(host: str, user: str, auth_key: str, priv_key: str, oids: List[str], *,
+             auth_proto: str = "SHA", priv_proto: str = "AES", timeout: float = 3.0,
+             retries: int = 0, port: int = 161, chunk: int = 20) -> Dict[str, Optional[str]]:
+    """SNMPv3 authPriv GET of many OIDs, ``chunk`` OIDs per request, one request at a time.
+
+    Returns oid -> value (None when missing). Stops at the first timeout so a busy
+    agent is never retried into the ground. Raises TimeoutError in that case.
+    """
+    out: Dict[str, Optional[str]] = {o: None for o in oids}
+    if not (user and auth_key and priv_key) or not oids:
+        return out
+    missing = _MISSING_OIDS.setdefault(host, set())
+    relay = None
+    try:
+        if _bridge_wanted(host):
+            relay = _BridgeUdp(host, port)
+            target = f"udp:127.0.0.1:{relay.port}"
+        else:
+            target = f"udp:{host}:{port}"
+
+        def get(part: List[str]) -> None:
+            cmd = _snmp_cmd("snmpget", target, part[0], user, auth_key, priv_key,
+                            auth_proto, priv_proto, timeout, retries, out_flags="-OQn")[:-1] + part
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True,
+                                     timeout=timeout * (retries + 1) + 3)
+            except subprocess.TimeoutExpired:
+                raise TimeoutError(f"{host}: SNMPv3 timeout")
+            if classify(res.stderr, res.stdout, res.returncode) == "timeout":
+                raise TimeoutError(f"{host}: SNMPv3 timeout")
+            # IPDU firmware fails the whole request when one OID is absent.
+            if res.returncode != 0 and "error in packet" in res.stderr.lower():
+                if len(part) == 1:
+                    missing.add(part[0])
+                else:
+                    get(part[:len(part) // 2])
+                    get(part[len(part) // 2:])
+                return
+            for line in res.stdout.splitlines():
+                oid, sep, val = line.partition(" = ")
+                if not sep:
+                    continue
+                oid = oid.strip()
+                key = oid if oid in out else ("." + oid.lstrip(".") if "." + oid.lstrip(".") in out else oid.lstrip("."))
+                val = val.strip().strip('"')
+                if key in out and not val.startswith(("No Such", "No more")):
+                    out[key] = val
+
+        wanted = [o for o in oids if o not in missing]
+        for i in range(0, len(wanted), chunk):
+            get(wanted[i:i + chunk])
+        return out
+    finally:
+        if relay:
+            relay.close()
+
+
 def key_variants(key: str) -> Dict[str, str]:
     """Forms a firmware may have stored instead of the typed key."""
     out: Dict[str, str] = {}

@@ -1093,6 +1093,7 @@ class PDUWebClient:
         user1_password: str | None = None,
         user2_username: str | None = None,
         user2_password: str | None = None,
+        clear_user1: bool = False,
     ) -> bool:
         with self._lock:
             cur = self.get_users()
@@ -1100,8 +1101,8 @@ class PDUWebClient:
             fields: Dict[str, Any] = {
                 "switch_userset_csrftoken1": csrf,
                 "Meter_admin_User": admin_username or cur["admin_username"],
-                "Meter_User2": user1_username or cur["user1_username"],
-                "Meter_password2": user1_password or "",
+                "Meter_User2": "" if clear_user1 else (user1_username or cur["user1_username"]),
+                "Meter_password2": "" if clear_user1 else (user1_password or ""),
                 "Meter_User3": user2_username or cur["user2_username"],
                 "Meter_password3": user2_password or "",
             }

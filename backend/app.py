@@ -3,6 +3,7 @@ import pdu_via_host  # noqa: F401  — patches PDU sockets before any client con
 from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 import json
+import sqlite3
 import time
 import requests as _requests_lib
 from typing import List, Tuple, Dict, Any, Optional
@@ -417,8 +418,9 @@ POLL_STOP: bool = False
 init_db()
 init_persistence_db()  # Initialize new persistence layer
 try:
-    from db.seed_halls import apply_shipped_halls
+    from db.seed_halls import apply_shipped_halls, apply_default_poll_policies
     apply_shipped_halls()
+    apply_default_poll_policies()
 except Exception as _seed_err:
     print(f"[seed] shipped halls not applied: {_seed_err}")
 register_auth_routes(app)
@@ -1220,25 +1222,127 @@ def _apply_outlet_load_alarms(ip: str, results: Dict[str, Any]) -> None:
         print(f"[outlet_load_monitor] {ip}: {exc}")
 
 
+## ---------------------------------------------------------------------------
+## Polling policy per hall — who is allowed to talk to the PDUs
+## ---------------------------------------------------------------------------
+# web          PDUMind polls through the PDU web console (single session).
+# snmp_shared  PDUMind reads SNMPv3 only, gently; the web console stays free for
+#              people and the SNMP agent is shared with the customer NMS.
+# nms_only     PDUMind never polls; the customer NMS is the only poller.
+POLL_POLICIES = ("web", "snmp_shared", "nms_only")
+_SHARED_POLL_INTERVAL = int(os.getenv("PDUMIND_SHARED_POLL_INTERVAL", "60"))
+_SHARED_ERROR_BACKOFF = 180
+_poll_policy_cache: Dict[int, Tuple[float, str]] = {}
+_snmpv3_creds_cache: Dict[int, Tuple[float, Dict[str, Tuple[str, str, str]]]] = {}
+
+
+def _meta_db_path() -> str:
+    from demo.context import get_active_db_path
+    from db.persistence import DB_PATH
+    return get_active_db_path() or DB_PATH
+
+
+def _hall_poll_policy(hall_id: Any) -> str:
+    if not hall_id:
+        return "web"
+    hall_id = int(hall_id)
+    hit = _poll_policy_cache.get(hall_id)
+    if hit and time.time() - hit[0] < 15:
+        return hit[1]
+    policy = "web"
+    try:
+        conn = sqlite3.connect(_meta_db_path())
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)")
+            row = conn.execute("SELECT value FROM app_meta WHERE key = ?", (f"poll_policy:{hall_id}",)).fetchone()
+        finally:
+            conn.close()
+        if row and row[0] in POLL_POLICIES:
+            policy = row[0]
+    except Exception as e:
+        print(f"[poll-policy] read hall {hall_id}: {e}")
+    _poll_policy_cache[hall_id] = (time.time(), policy)
+    return policy
+
+
+def _set_hall_poll_policy(hall_id: int, policy: str) -> None:
+    conn = sqlite3.connect(_meta_db_path())
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)", (f"poll_policy:{int(hall_id)}", policy))
+        conn.commit()
+    finally:
+        conn.close()
+    _poll_policy_cache.pop(int(hall_id), None)
+
+
+def _pdu_poll_policy(pdu: Optional[Dict[str, Any]]) -> str:
+    return _hall_poll_policy((pdu or {}).get("hall_id"))
+
+
+def _pdu_snmpv3_creds(pdu: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
+    """(user, auth, priv) for this PDU, falling back to the hall consensus."""
+    hall_id = int(pdu.get("hall_id") or 0)
+    hit = _snmpv3_creds_cache.get(hall_id)
+    if not hit or time.time() - hit[0] > 60:
+        creds = {i["ip"]: (i["user"], i["auth"], i["priv"]) for i in _doctor_expected(hall_id, [])
+                 if i["user"] and i["auth"] and i["priv"]}
+        hit = _snmpv3_creds_cache[hall_id] = (time.time(), creds)
+    return hit[1].get(pdu.get("ip_address"))
+
+
+def _detect_mib_family_v3(ip: str, port: int, creds: Tuple[str, str, str]) -> str:
+    cached = _pdu_mib_family.get(ip)
+    if cached:
+        return cached
+    o80, o73 = f"{_E23280}.2.1.5.1", f"{_E23273}.2.1.0"
+    vals = snmp_doctor.get_many(ip, *creds, [o80, o73], port=port)
+    fam = "23280" if vals.get(o80) is not None else "23273" if vals.get(o73) is not None else None
+    if fam:
+        _pdu_mib_family[ip] = fam
+        print(f"[MIB detect] {ip} → enterprise {fam} (SNMPv3)")
+    return fam or "23280"
+
+
 def poll_single_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Poll a single PDU and return (ip, results, errors).
     Uses web admin CGI for remote PDUs, SNMP for local PDUs.
+    Halls on the snmp_shared policy are read over SNMPv3 only, never the web console.
     SNMP auto-detects whether the PDU uses enterprise 23273 (npdu-n-v2)
     or 23280 (PDUMIBV07) and fetches the full telemetry + alarm set."""
-    if pdu.get("web_admin_port"):
+    policy = _pdu_poll_policy(pdu)
+    if policy == "nms_only":
+        raise RuntimeError("PDUMind polling is off for this hall (customer NMS only)")
+    v3 = None
+    if policy == "snmp_shared":
+        v3 = _pdu_snmpv3_creds(pdu)
+        if not v3:
+            raise RuntimeError("SNMPv3 keys not stored for this PDU — run Test & fix SNMP once with the inventory loaded")
+    elif pdu.get("web_admin_port"):
         return _poll_remote_pdu(pdu)
 
     ip = pdu["ip_address"]
-    port = pdu.get("snmp_port", 161)
+    port = int(pdu.get("snmp_port") or 161)
     sv = pdu.get("snmp_version", "2c") or "2c"
 
     results: Dict[str, Any] = {}
     errors: Dict[str, Any] = {}
 
-    mib = _detect_mib_family(ip, port, snmp_version=sv)
+    def fetch(oid_list: List[Tuple[str, str]]) -> None:
+        if not v3:
+            _snmp_fetch_oids(ip, port, oid_list, results, errors, snmp_version=sv)
+            return
+        vals = snmp_doctor.get_many(ip, *v3, [oid for _, oid in oid_list], port=port)
+        for name, oid in oid_list:
+            if vals.get(oid) is not None:
+                results[name] = {"name": name, "oid": oid, "value": str(vals[oid])}
+            else:
+                errors[name] = {"name": name, "oid": oid, "error": "No response"}
+
+    mib = _detect_mib_family_v3(ip, port, v3) if v3 else _detect_mib_family(ip, port, snmp_version=sv)
 
     if mib == "23273":
-        _snmp_fetch_oids(ip, port, _NPDU_TELEMETRY_OIDS, results, errors, snmp_version=sv)
+        fetch(_NPDU_TELEMETRY_OIDS)
         # Convenience aliases for the dashboard (expects TotalCurrent, TotalPower, etc.)
         _alias_map = {
             "TotalCurrent": "MasterCurrentP1",
@@ -1268,9 +1372,13 @@ def poll_single_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str,
                 results[cgi_key] = {"name": cgi_key, "oid": f"snmp:{cgi_key}", "value": results[src]["value"]}
 
     else:
-        _snmp_fetch_oids(ip, port, _V07_DEVICE_OIDS, results, errors, snmp_version=sv)
-        _snmp_fetch_oids(ip, port, _V07_PHASE_OIDS, results, errors, snmp_version=sv)
-        _snmp_fetch_oids(ip, port, _V07_SENSOR_OIDS, results, errors, snmp_version=sv)
+        if v3:
+            fetch(_V07_DEVICE_OIDS + _V07_PHASE_OIDS + _V07_SENSOR_OIDS
+                  + [("deviceSummary", f"{_E23280}.2.1.14.1")])
+        else:
+            fetch(_V07_DEVICE_OIDS)
+            fetch(_V07_PHASE_OIDS)
+            fetch(_V07_SENSOR_OIDS)
 
         # --- Scale raw integer values per PDUMIBV07.mib spec ---
         # -1 means "not applicable / sensor absent" — replace with None
@@ -1309,6 +1417,17 @@ def poll_single_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str,
                     results[key]["value"] = str(round(scaled, 3))
                 except (ValueError, TypeError):
                     pass
+
+        # IPDU 1.0.58 reports phase current in mA, not the 0.01 A of the MIB;
+        # its summary string carries the amps the web console shows.
+        summary = results.pop("deviceSummary", None)
+        if summary:
+            import re as _re
+            m = _re.search(r"current=([\d.]+)/([\d.]+)/([\d.]+)", summary["value"])
+            if m:
+                for _ph in (1, 2, 3):
+                    if f"phase{_ph}Current" in results:
+                        results[f"phase{_ph}Current"]["value"] = m.group(_ph)
 
         # Detect phase count (single-phase if phase2Voltage is absent or was -1)
         phase_count = 1
@@ -1378,7 +1497,11 @@ def poll_single_pdu(pdu: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str,
                 results[cgi_key] = {"name": cgi_key, "oid": f"snmp:{cgi_key}", "value": results[src]["value"]}
 
     # ---- Outlets (same OIDs for both MIBs – enterprise 23273 prefix) ----
-    for outlet in range(1, 25):
+    if v3:
+        if mib == "23273":
+            fetch([(f"Output{n}{k}", f"{OUTPUT_PREFIXES[k]}.{n}.0")
+                   for n in range(1, 25) for k in ("Status", "Current", "Energy", "Name")])
+    for outlet in range(1, 25 if not v3 else 1):
         status_oid = f"{OUTPUT_PREFIXES['Status']}.{outlet}.0"
         current_oid = f"{OUTPUT_PREFIXES['Current']}.{outlet}.0"
         energy_oid = f"{OUTPUT_PREFIXES['Energy']}.{outlet}.0"
@@ -1478,8 +1601,13 @@ def multi_pdu_poller():
                 fails = _pdu_consecutive_failures.get(ip, 0)
 
                 # Determine polling interval based on PDU type and health
+                policy = _pdu_poll_policy(pdu)
+                if policy == "nms_only":
+                    continue
                 if fails >= _MAX_CONSECUTIVE_FAILURES:
                     interval = _UNREACHABLE_BACKOFF
+                elif policy == "snmp_shared":
+                    interval = (_SHARED_ERROR_BACKOFF if last_err > last else _SHARED_POLL_INTERVAL) + sum(map(ord, ip)) % 15
                 elif pdu.get("web_admin_port"):
                     interval = _REMOTE_PDU_ERROR_BACKOFF if last_err > last else _REMOTE_PDU_POLL_INTERVAL
                 else:
@@ -1717,6 +1845,7 @@ def outlet_fast_poller():
             due = [
                 ip for ip in watch_ips
                 if now - _outlet_fast_last_poll.get(ip, 0) >= _OUTLET_FAST_POLL_INTERVAL
+                and _pdu_poll_policy(PDURepo.get_by_ip(ip)) == "web"
             ]
             if not due:
                 time.sleep(0.25)
@@ -5442,13 +5571,16 @@ def _doctor_probe_until(it: Dict[str, Any], seconds: float, every: float = 4.0) 
     return res
 
 
-def _doctor_login(it: Dict[str, Any]) -> Dict[str, Any]:
+def _doctor_login(it: Dict[str, Any], opts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     row = it.get("row") or {}
+    opts = opts or {}
+    candidates = [(row.get("web_admin_user") or "admin", _coalesce_credential(row.get("web_admin_pass")))]
+    cu, cp = (opts.get("console_user") or "").strip(), opts.get("console_pass") or ""
+    if opts.get("console_admin") and cu and cp:
+        candidates.append((cu, cp))
+    candidates.append(("admin", "admin"))
     tried = []
-    for user, pwd in (
-        (row.get("web_admin_user") or "admin", _coalesce_credential(row.get("web_admin_pass"))),
-        ("admin", "admin"),
-    ):
+    for user, pwd in candidates:
         if (user, pwd) in tried:
             continue
         tried.append((user, pwd))
@@ -5495,7 +5627,7 @@ def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> No
                   before.get("value") and f"sysName {before['value']}" or before.get("detail", ""))
 
     _doctor_update(job_id, ip, step="web login")
-    diag = _doctor_login(it)
+    diag = _doctor_login(it, opts)
     if not diag.get("success"):
         _doctor_check(job_id, it, "web", "Web admin login", "fail", diag.get("error") or "Login failed")
         if before["ok"]:
@@ -5506,7 +5638,8 @@ def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> No
     client = diag["client"]
     _doctor_check(job_id, it, "web", "Web admin login", "pass", diag.get("url") or "")
 
-    need_net = need_snmp = need_ntp = need_https = False
+    need_net = need_snmp = need_ntp = need_https = need_admin = False
+    cu, cp = (opts.get("console_user") or "").strip(), (opts.get("console_pass") or "").strip()
     expected_gw = gw = ""
     gw_ok = False
     net: Dict[str, Any] = {}
@@ -5583,9 +5716,21 @@ def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> No
                           f"PDU has {have_host or 'none'} / {have_name or 'none'}, expected {want_host}"
                           if need_host else want_host)
 
-        cu, cp = (opts.get("console_user") or "").strip(), (opts.get("console_pass") or "").strip()
         need_user = False
-        if cu:
+        admin_mode = bool(opts.get("console_admin") and cu)
+        if admin_mode:
+            have_admin = (users.get("admin_username") or "").strip()
+            need_admin = not (have_admin == cu and diag.get("login_user") == cu)
+            if need_admin and not cp:
+                _doctor_check(job_id, it, "superadmin", "Superadmin user", "fail",
+                              f"Superadmin is {have_admin or 'empty'}, expected {cu} — type the console password to fix")
+                need_admin = False
+                fixes.append(f"superadmin {cu} not set (no password typed, not confirmed)")
+            else:
+                _doctor_check(job_id, it, "superadmin", "Superadmin user", "fail" if need_admin else "pass",
+                              f"Superadmin is {have_admin or 'empty'}, expected {cu}" if need_admin
+                              else f"{cu} logs in as superadmin")
+        elif cu:
             have_user = (users.get("user1_username") or "").strip()
             need_user = have_user != cu
             if need_user and not cp:
@@ -5634,6 +5779,11 @@ def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> No
             ok = ok and str(client.get_web_access_config().get("https_http")) == "1"
             fixes.append("HTTPS enabled" if ok else "HTTPS write not confirmed")
             need_https = ok
+        if need_admin:
+            _doctor_update(job_id, ip, step=f"making {cu} the superadmin")
+            # Firmware 1.0.58 ignores the superuser rename when the password changes in the same save.
+            client.set_users(admin_password=cp, clear_user1=(users.get("user1_username") or "").strip() == cu)
+            client.set_users(admin_username=cu, admin_password=cp)
     except Exception as e:
         _doctor_check(job_id, it, "read", "Read PDU settings", "fail", str(e)[:200])
     finally:
@@ -5642,6 +5792,37 @@ def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> No
         except Exception:
             pass
 
+    if need_admin:
+        _doctor_update(job_id, ip, step=f"logging in as {cu}")
+        v = _diagnose_pdu_login(ip, cu, cp, verify_telemetry=False, pdu=it.get("row") or None, keep_session=True)
+        admin_ok = viewer_left = False
+        if v.get("success"):
+            try:
+                u = v["client"].get_users()
+                admin_ok = (u.get("admin_username") or "").strip() == cu
+                viewer_left = (u.get("user1_username") or "").strip() == cu
+            except Exception as e:
+                print(f"[snmp-doctor] superadmin read-back {ip}: {e}")
+            finally:
+                try:
+                    v["client"].logout()
+                except Exception:
+                    pass
+        if admin_ok:
+            diag["login_user"], diag["login_pass"] = cu, cp
+            it["row"] = {**(it.get("row") or {}), "web_admin_user": cu, "web_admin_pass": cp}
+            if it.get("in_db") and opts.get("hall_id"):
+                try:
+                    PDURepo.upsert(int(opts["hall_id"]), ip, {"web_admin_user": cu, "web_admin_pass": cp})
+                except Exception as e:
+                    print(f"[snmp-doctor] superadmin DB {ip}: {e}")
+            fixes.append(f"superadmin is now {cu}" + (f" (viewer {cu} still listed)" if viewer_left else ""))
+            _doctor_check(job_id, it, "superadmin", "Superadmin user", "pass", f"{cu} logs in as superadmin")
+        else:
+            fixes.append(f"superadmin {cu} login not confirmed")
+            _doctor_check(job_id, it, "superadmin", "Superadmin user", "fail",
+                          f"Login as {cu} after the change: {v.get('error') or 'not superadmin'}")
+
     gw_fail = any(c["id"] == "gateway" and c["status"] == "fail" for c in it.get("checks", []))
     _doctor_update(job_id, ip, step="SNMPv3 re-test")
     after = _doctor_probe_until(it, 10 if (need_snmp or need_ntp) else 0)
@@ -5649,7 +5830,7 @@ def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> No
     rebooted = False
     if (need_net or need_https or not after["ok"]) and opts.get("allow_reboot", True):
         _doctor_update(job_id, ip, step="rebooting controller")
-        d2 = _doctor_login(it)
+        d2 = _doctor_login(it, opts)
         if d2.get("success"):
             rebooted = _trigger_pdu_reboot(d2["client"], ip)
             fixes.append("controller rebooted" if rebooted else "reboot not confirmed")
@@ -5685,6 +5866,8 @@ def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> No
             final_gw = expected_gw if need_net and expected_gw else gw
             if final_gw and (gw_ok or need_net):
                 _merge_pdu_metadata(ip, {"gateway_seen": final_gw})
+            _merge_pdu_metadata(ip, {"snmpv3_username": it["user"], "auth_key": it["auth"], "priv_key": it["priv"]})
+            _snmpv3_creds_cache.pop(int(opts["hall_id"]), None)
         except Exception as e:
             print(f"[snmp-doctor] DB sync {ip}: {e}")
         if gw_fail and not expected_gw:
@@ -5697,6 +5880,9 @@ def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> No
             text = ", ".join(unconfirmed)
             if "no password typed" in text:
                 advice = "Type the console password in the Console password box and press retry on this row."
+            elif "superadmin" in text:
+                advice = (f"Open https://{ip} and try {cu} with the console password, then admin/admin — "
+                          "whichever works is the superadmin now. Press retry on this row once you know.")
             elif "HTTPS not active" in text and not rebooted:
                 advice = "Tick “Reboot the PDU controller if still failing” and press retry — HTTPS needs a reboot."
             else:
@@ -5857,9 +6043,30 @@ def commission_snmp_doctor_start():
             "https": bool(data.get("https")),
             "console_user": (data.get("console_user") or "").strip(),
             "console_pass": data.get("console_pass") or "",
+            "console_admin": bool(data.get("console_admin")),
             "only_ip": (data.get("only_ip") or "").strip() or None}
     Thread(target=_run_snmp_doctor, args=(job_id, opts), daemon=True).start()
     return jsonify({"success": True, "job_id": job_id, "total": len(items)})
+
+
+@app.route("/api/halls/<int:hall_id>/poll-policy", methods=["GET", "POST"])
+def hall_poll_policy(hall_id: int):
+    if request.method == "POST":
+        policy = ((request.get_json(force=True) or {}).get("policy") or "").strip()
+        if policy not in POLL_POLICIES:
+            return jsonify({"error": f"policy must be one of {', '.join(POLL_POLICIES)}"}), 400
+        _set_hall_poll_policy(hall_id, policy)
+        if policy != "web":
+            for pdu in PDURepo.get_by_hall(hall_id):
+                try:
+                    _evict_all_pdu_clients_for_host(pdu.get("ip_address") or "")
+                except Exception:
+                    pass
+    policy = _hall_poll_policy(hall_id)
+    pdus = [p for p in PDURepo.get_by_hall(hall_id) if p.get("is_active", 1)]
+    with_keys = sum(1 for p in pdus if _pdu_snmpv3_creds(p)) if policy == "snmp_shared" else None
+    return jsonify({"hall_id": hall_id, "policy": policy, "pdus": len(pdus), "pdus_with_snmpv3_keys": with_keys,
+                    "interval_s": _SHARED_POLL_INTERVAL if policy == "snmp_shared" else None})
 
 
 @app.route("/api/commission/snmp-doctor/gateways", methods=["GET"])

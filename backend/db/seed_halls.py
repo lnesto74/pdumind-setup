@@ -93,6 +93,38 @@ def _import_hall(conn: sqlite3.Connection, hall: Dict[str, Any]) -> Dict[str, in
     return added
 
 
+def apply_default_poll_policies() -> None:
+    """Give seeded halls their shipped polling policy unless one was already chosen."""
+    if not os.path.isdir(SEED_DIR):
+        return
+    for fname in sorted(os.listdir(SEED_DIR)):
+        if not fname.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(SEED_DIR, fname), encoding="utf-8") as f:
+                halls = json.load(f).get("halls") or []
+        except Exception:
+            continue
+        with _db_lock:
+            conn = sqlite3.connect(DB_PATH)
+            try:
+                _ensure_meta(conn)
+                for hall in halls:
+                    if not hall.get("poll_policy"):
+                        continue
+                    row = conn.execute("SELECT id FROM halls WHERE name = ?", (hall["name"],)).fetchone()
+                    if row:
+                        cur = conn.execute(
+                            "INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)",
+                            (f"poll_policy:{row[0]}", hall["poll_policy"]),
+                        )
+                        if cur.rowcount:
+                            print(f"[seed] {hall['name']}: polling policy {hall['poll_policy']}")
+                conn.commit()
+            finally:
+                conn.close()
+
+
 def apply_shipped_halls() -> None:
     if not os.path.isdir(SEED_DIR):
         return

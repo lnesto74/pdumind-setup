@@ -12,6 +12,12 @@ const VERDICT = {
 
 const subnetOf = (ip) => (ip || '').split('.').slice(0, 3).join('.');
 
+const POLICIES = [
+  { id: 'snmp_shared', label: 'Shared with customer NMS — PDUMind reads SNMPv3 only, every 60 s' },
+  { id: 'nms_only', label: 'Customer NMS only — PDUMind does not poll' },
+  { id: 'web', label: 'PDUMind web polling — only when no other system polls' },
+];
+
 /**
  * One button: scan the hall (max 60 s), then SNMPv3-test and fix every PDU it reaches.
  * Batch when several answer (customer VPN / switch), one at a time on a local cable.
@@ -22,6 +28,9 @@ const SnmpDoctorPanel = ({ hallId, hallName, targets = [], https = false, consol
     try { return JSON.parse(localStorage.getItem(gwKey) || '{}'); } catch { return {}; }
   });
   const [allowReboot, setAllowReboot] = useState(true);
+  const adminKey = `pdumind_doctor_admin_${hallId || 'default'}`;
+  const [consoleAdmin, setConsoleAdmin] = useState(() => localStorage.getItem(adminKey) === '1');
+  useEffect(() => { setConsoleAdmin(localStorage.getItem(adminKey) === '1'); }, [adminKey]);
   const [job, setJob] = useState(null);
   const [error, setError] = useState(null);
   const [open, setOpen] = useState(null);
@@ -52,7 +61,21 @@ const SnmpDoctorPanel = ({ hallId, hallName, targets = [], https = false, consol
     } catch {}
   };
 
-  useEffect(() => { loadLearned(); }, [hallId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [policy, setPolicy] = useState(null);
+  const loadPolicy = async (body) => {
+    if (!hallId) return;
+    try {
+      const r = await fetch(`${API_BASE}/api/halls/${hallId}/poll-policy`, body ? {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      } : undefined);
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+      setPolicy(d);
+    } catch (e) { setError(e.message); }
+  };
+
+  useEffect(() => { loadLearned(); loadPolicy(); }, [hallId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (job?.status === 'done') loadPolicy(); }, [job?.status]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (job?.status === 'done') loadLearned(); }, [job?.status]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => clearInterval(pollRef.current), []);
 
@@ -63,6 +86,10 @@ const SnmpDoctorPanel = ({ hallId, hallName, targets = [], https = false, consol
     setError(null);
     if (badGateway) {
       setError(`Gateway ${gateways[badGateway]} is not on ${badGateway}.x — fix it before running.`);
+      return;
+    }
+    if (consoleAdmin && consoleUser && !consolePass) {
+      setError(`Type the console password before making ${consoleUser} the superadmin.`);
       return;
     }
     try { localStorage.setItem(gwKey, JSON.stringify(gateways)); } catch {}
@@ -79,6 +106,7 @@ const SnmpDoctorPanel = ({ hallId, hallName, targets = [], https = false, consol
           https,
           console_user: consoleUser,
           console_pass: consolePass,
+          console_admin: consoleAdmin && !!consoleUser,
         }),
       });
       const data = await res.json();
@@ -163,7 +191,37 @@ const SnmpDoctorPanel = ({ hallId, hallName, targets = [], https = false, consol
           <input type="checkbox" checked={allowReboot} onChange={e => setAllowReboot(e.target.checked)} />
           Reboot the PDU controller if still failing
         </label>
+        {consoleUser && (
+          <label className="flex items-center gap-2 text-[11px] text-red-200 pb-1.5"
+            title={`Renames the superadmin to ${consoleUser} with the console password, removes the ${consoleUser} viewer, and logs in again to confirm before saving.`}>
+            <input type="checkbox" checked={consoleAdmin}
+              onChange={e => { setConsoleAdmin(e.target.checked); try { localStorage.setItem(adminKey, e.target.checked ? '1' : '0'); } catch {} }} />
+            Make {consoleUser} the superadmin (replaces admin/admin)
+          </label>
+        )}
       </div>
+
+      {policy && (
+        <div className="flex flex-wrap items-center gap-2 text-[11px]">
+          <label className="text-[10px] text-slate-500 uppercase">Who polls these PDUs</label>
+          <select
+            value={policy.policy}
+            onChange={e => loadPolicy({ policy: e.target.value })}
+            className="bg-app-bg border border-px-stroke rounded px-2 py-1 text-white text-[11px]"
+          >
+            {POLICIES.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+          </select>
+          {policy.policy === 'snmp_shared' && (
+            <span className={policy.pdus_with_snmpv3_keys < policy.pdus ? 'text-amber-300' : 'text-slate-500'}>
+              {policy.pdus_with_snmpv3_keys}/{policy.pdus} PDUs have SNMPv3 keys
+              {policy.pdus_with_snmpv3_keys < policy.pdus ? ' — run Test & fix with the inventory loaded to store the rest' : ''}
+            </span>
+          )}
+          {policy.policy === 'web' && (
+            <span className="text-amber-300">The PDU web console allows one session: a second system or browser logged in blocks SNMP.</span>
+          )}
+        </div>
+      )}
 
       {error && <p className="text-[11px] text-red-300">{error}</p>}
 
