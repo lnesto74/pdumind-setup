@@ -5377,6 +5377,24 @@ def _doctor_expected(hall_id: int, targets: List[Dict[str, Any]]) -> List[Dict[s
     return sorted(items.values(), key=lambda i: (i["hostname"] or "", i["ip"]))
 
 
+def _doctor_learned_gateway(hall_id: Any, prefix: str) -> str:
+    """Gateway read from a PDU on the same /24 that passed SNMPv3 from the customer side or here."""
+    if not hall_id:
+        return ""
+    from collections import Counter
+    seen = Counter()
+    for row in PDURepo.get_by_hall(int(hall_id)):
+        if not (row.get("ip_address") or "").startswith(prefix + "."):
+            continue
+        try:
+            gw = (json.loads(row.get("metadata_json") or "{}").get("gateway_seen") or "").strip()
+        except (TypeError, json.JSONDecodeError):
+            gw = ""
+        if gw.startswith(prefix + "."):
+            seen[gw] += 1
+    return seen.most_common(1)[0][0] if seen else ""
+
+
 def _doctor_public(it: Dict[str, Any]) -> Dict[str, Any]:
     keep = ("ip", "hostname", "rack", "feed", "in_db", "reachable", "ports", "verdict",
             "cause", "step", "checks", "fixes", "advice")
@@ -5479,7 +5497,8 @@ def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> No
     _doctor_check(job_id, it, "web", "Web admin login", "pass", diag.get("url") or "")
 
     need_net = need_snmp = need_ntp = need_https = False
-    expected_gw = ""
+    expected_gw = gw = ""
+    gw_ok = False
     net: Dict[str, Any] = {}
     try:
         _doctor_update(job_id, ip, step="reading settings")
@@ -5493,7 +5512,8 @@ def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> No
         mask = net.get("current_mask") or "255.255.255.0"
         gw = (net.get("current_gateway") or "").strip()
         prefix = ".".join(ip.split(".")[:3])
-        expected_gw = ((opts.get("gateways") or {}).get(prefix) or it.get("gateway") or "").strip()
+        expected_gw = ((opts.get("gateways") or {}).get(prefix) or it.get("gateway")
+                       or _doctor_learned_gateway(opts.get("hall_id"), prefix) or "").strip()
         try:
             subnet = _ipaddress.ip_network(f"{ip}/{mask}", strict=False)
             gw_ok = bool(gw) and _ipaddress.ip_address(gw) in subnet and gw != ip
@@ -5651,6 +5671,9 @@ def _doctor_fix_one(job_id: str, it: Dict[str, Any], opts: Dict[str, Any]) -> No
                 fixes.append("added to hall")
             PDURepo.upsert(int(opts["hall_id"]), ip, patch)
             it["in_db"] = True
+            final_gw = expected_gw if need_net and expected_gw else gw
+            if final_gw and (gw_ok or need_net):
+                _merge_pdu_metadata(ip, {"gateway_seen": final_gw})
         except Exception as e:
             print(f"[snmp-doctor] DB sync {ip}: {e}")
         if gw_fail and not expected_gw:
