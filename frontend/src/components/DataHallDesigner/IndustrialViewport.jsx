@@ -195,7 +195,7 @@ export function InspectionCamera({ racks, hall, selectedRack, preset, viewOffset
     camera.aspect = size.width / Math.max(size.height, 1);
     const direction = preset.mode === 'front' ? new THREE.Vector3(0,.10,-1) : preset.mode === 'rear' ? new THREE.Vector3(0,.12,1) : preset.mode === 'selected' ? new THREE.Vector3(.45,.22,-1) : new THREE.Vector3(.85,.48,-1);
     if (focus?.rotationY) direction.applyAxisAngle(new THREE.Vector3(0,1,0),focus.rotationY);
-    const distance = fitInspectionFrame(dims.toArray(), size.width / Math.max(size.height, 1), camera.fov, 1.24, direction.toArray());
+    const distance = fitInspectionFrame(dims.toArray(), size.width / Math.max(size.height, 1), camera.fov, 1.08, direction.toArray());
     const end = center.clone().addScaledVector(direction.normalize(), distance);
     camera.far = Math.max(100, distance * 5); camera.updateProjectionMatrix();
     motion.current = { end, target: center };
